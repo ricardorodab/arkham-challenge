@@ -95,7 +95,9 @@ reported_vs_calculated_pct_gap = reported_outage_pct - offline_pct
 
 The metric definition remains version **1**. Both outputs use the unrounded ratio and Python `Decimal`, precision **28**, **`ROUND_HALF_UP`**. `offline_pct` is not calculated from the already quantized share. Storage types are `DECIMAL(24,12)` for the share and `DECIMAL(24,9)` for the percentage. On September 3, 2026, 1,507.338 MW / 97,620.5 MW yields share `0.015440793686`, calculated percent `1.544079369`, and separately preserved reported percent `1.540000000`.
 
-Null/non-positive capacity or null outage makes both derived outputs null and adds `metric_undefined`. Source flags remain visible. Finite out-of-range values are preserved with flags rather than clipped into 0–100%. The 91 Indian Point zero-capacity observations remain in the base facts despite not supporting a valid ratio.
+Null/non-positive capacity or null outage makes both derived outputs null and adds `metric_undefined`. Source flags remain visible. Finite out-of-range values are preserved with flags rather than clipped into 0–100%, provided the source and derived values fit their declared decimal contracts. The 91 Indian Point zero-capacity observations remain in the base facts despite not supporting a valid ratio.
+
+The numeric storage envelope is deliberate. For example, capacity `0.000000001` MW and outage `10000` MW each fit a source `DECIMAL(24,9)`, but their share `10000000000000` exceeds `DECIMAL(24,12)`. A derived overflow or inability to quantize at the specified Decimal precision fails the complete candidate build with `invalid_model`; neither publication pointer advances. It is not converted to zero, infinity, a clipped percentage or an apparently ordinary null. The prior valid raw/model pair remains available. Supporting a wider numerical envelope requires an explicit schema/metric-contract review, rather than silently changing historical types. Source validity alone does not guarantee that every derived expression is representable.
 
 The metric describes **EIA/NRC-reported offline capacity**, not energy generated, daily MWh loss or capacity factor. Daily reported capacity/status is not an integral of electricity output. Show the numerator, denominator and observation date. [EIA capacity and generation definitions](https://www.eia.gov/tools/faqs/faq.php?id=101&t=3).
 
@@ -160,6 +162,27 @@ Ingest builds and verifies a model for its candidate source before publication. 
 Column types, identity, metric semantics and source-unit changes require an explicit model-version decision. Unexpected source schema or unit drift fails validation instead of being silently coerced.
 
 Model version **2** corrects catalog unit labels: absolute percentage values use `percent`, while differences use `percentage points`. The numeric observations, schemas and fleet metric formula are unchanged. The development version 1 contract is frozen in [model-v1.json](../src/outage_explorer/contracts/model-v1.json); its immutable artifacts remain readable with an explicit warning about the old metadata labels. Historical metadata is preserved under its original contract rather than rewritten as the current contract. The fleet metric definition stays at version **1** because its numerical meaning has not changed.
+
+## Scaling to substantially larger volumes
+
+The current implementation favors complete verification at the measured 1.16-million-observation volume. It uses a staging DuckDB database with one thread and a configured 256 MB engine memory limit, 8,192-row Python batches, sorted ZSTD files and persisted reconciliation/quality results. The engine setting is not a hard process-RSS limit, and batching does not make every sort or aggregation memory-free. Full rebuilds, ordered logical hashing and repeated file integrity checks still process the complete relevant datasets. JSON evidence reports currently accumulate their result rows in Python. These costs are explicit limits of this delivery.
+
+The following are proposed changes, to be selected through measurement rather than claimed as implemented:
+
+| Trigger / workload | Change to evaluate | Benefit and cost |
+| --- | --- | --- |
+| Date-filtered scans grow beyond acceptable latency | Partition large daily facts by year; consider months only when their measured file sizes justify it. Retain date/key sorting and compact small outputs | Prunes irrelevant files, but adds file/metadata operations and cross-partition query complexity. Avoid partitioning by facility or generator unless benchmarks justify the many small files |
+| Repeated queries or join-heavy trusted reports dominate | Compare direct Parquet scans with a disposable/materialized DuckDB read model | May improve repeated work and join planning, but consumes another data copy and introduces a rebuild/invalidation responsibility |
+| Refresh spends most time rebuilding unchanged history | Rebuild changed date/entity partitions and reference unchanged immutable files from the new manifest | Saves I/O, but must invalidate national/facility aggregates, latest-name dimensions and previous/next entity observations used by gap/change rules. A correction or deletion can affect both sides of a partition boundary |
+| Hashing, reporting or staging consumes the operating budget | Measure bytes read/written, peak RSS, spill size, build duration and filtered/full-history latency. Stream large report outputs and reserve bounded temporary disk | Makes the actual bottleneck visible; adds operational limits and cleanup/recovery work. Do not remove integrity checks merely to improve a benchmark |
+| Retained versions consume the disk budget | Add reference-aware retention and off-machine backup with a tested restore | Bounds storage, but must preserve published, pinned-analysis and in-use versions. An immutable file is not a backup |
+| Concurrency or scale exceeds a single-machine service | Evaluate a shared transactional catalog and private object storage, with separately bounded analytical workers | Separates operational and analytical capacity, but adds latency, network failure modes and deployment/authorization complexity |
+
+A multi-file model is a storage-contract migration: today's adapter intentionally accepts exactly `<dataset_id>.parquet`. A future manifest must enumerate and checksum the authorized files for one version; a broad directory glob must never combine historical generations. Publication must still advance the source/model references atomically, and old contracts must remain readable. Incremental output must be compared against a full rebuild, including corrected/deleted observations and quality events spanning partition boundaries.
+
+For representative benchmarks, compare a 30-day fleet query, a 30-day facility filter, full-history reconciliation and an overlap refresh. Record correctness parity as well as latency, RSS, temporary disk and bytes read; no larger-volume throughput target has been measured here. Part 3's isolated user-query runtime additionally has a whole-file transfer and input-size budget, so making model files larger does not automatically make them usable through that endpoint.
+
+DuckDB documents projection/filter pushdown for Parquet, row-group/file-size trade-offs, and cases where a materialized database can help repeated or join-heavy workloads. These support the options above; they do not establish their benefit for this project's unmeasured future workload. [Parquet reading](https://duckdb.org/docs/2.0/data/parquet/overview), [file-format performance](https://duckdb.org/docs/2.0/guides/performance/file_formats), [workload tuning](https://duckdb.org/docs/2.0/guides/performance/how_to_tune_workloads).
 
 ## Catalog access metadata and operating commands
 

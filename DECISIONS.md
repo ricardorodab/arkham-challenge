@@ -124,7 +124,7 @@ Genuine sanitized metadata and first-page responses for all three routes, plus a
 
 ## 15. Derive US-08 from national operands with explicit decimal semantics
 
-**Choice:** use national outage divided by national capacity for the same day. Python `Decimal` uses precision 28 and `ROUND_HALF_UP`; share is stored at 12 decimal places, percentage at nine. Calculate each from the unrounded ratio. Nonpositive/null denominator or null outage yields a null result and quality flag. Preserve all source values, including implausible ratios.
+**Choice:** use national outage divided by national capacity for the same day. Python `Decimal` uses precision 28 and `ROUND_HALF_UP`; share is stored at 12 decimal places, percentage at nine. Calculate each from the unrounded ratio. Nonpositive/null denominator or null outage yields a null result and quality flag. Preserve representable source values and implausible ratios without clipping. If a derived value exceeds the declared decimal envelope or cannot be quantized at the specified precision, reject the entire candidate with `invalid_model` and retain the prior raw/model publication. Source values fitting their own types do not guarantee every derived expression will fit; widening that envelope requires a versioned contract decision.
 
 **Rejected:** averaging child percentages, dividing through binary floating point for the canonical metric, silently substituting child totals, or clipping to 0–100%.
 

@@ -20,9 +20,26 @@ This delivery implements Part 2 of the supplied challenge, including its five ex
 | Metric definitions in catalog | Versioned formula, operands, units, null/rounding policy; metadata filtered by persona | `model catalog`, catalog tests and installed-wheel check |
 | Automated anomaly checks | Deterministic quality events on every build, including all three primary examples; structural failures block publication | `data_quality_events`, automated evidence SQL, DQ/rollback tests |
 
-## Published real data
+## Revalidation against the current project — 2026-11-01
 
-At acceptance, the current raw snapshot is `1e6f80a89cb4455d949d541a6fe68e2a`; its model is `9811a42ac9a34b4581d00a9bbd5d5d9b`, model version **2**, US-08 metric version **1**. The local catalog binds them in the same publication transaction.
+Part 2's six core requirements and five extras were checked again against pages 4–5 of the supplied PDF and the current implementation. The model now published locally is **`a9163784f25249189aca6c2877c17889`**, bound to source **`9b3e376033ba44298d86cbf754b85335`**, model version **2**, metric version **1**. These IDs supersede the original acceptance's current-pointer IDs below; its historical results remain evidence of that earlier run.
+
+Observed checks in this revalidation:
+
+- Fresh CLI verification passed for all ten datasets, their file/logical hashes, primary keys, the 12 foreign keys and the bound raw snapshot. SQLite integrity was `ok`, with no FK violations or source count/SHA binding differences.
+- An independent direct-from-raw comparison found no missing keys or changed fields/source hashes across all **1,160,019** facts. A separate precision-70 Decimal calculation matched all **7,243** US-08 dates; independent reaggregation matched all **438,119** facility and **7,243** national reconciliation rows, including null/zero-denominator semantics.
+- All **18** freshly executed query outputs matched both the retained `FINDINGS.md` model and the original report exactly. September still has 30 national and 1,650 facility comparisons, zero nonmatching MW rows, and three concrete stored anomaly-evidence records. All ten logical model hashes and three raw logical hashes still match the retained baseline.
+- The focused model/store/publication/CLI/report/crash suite passed **85 tests** on Python 3.14.2 in **63.11 seconds**, including two new real-ingestion decimal-overflow regressions. This is a focused rerun, not a claim that the whole later backend/frontend suite was rerun here. Ruff lint/format and dependency consistency passed.
+- All **13** publication tests also passed on **Python 3.12.14** in **24.52 seconds**, importing the current source through an existing isolated environment. This is not a new clean-checkout run.
+- The actual EIA key and generated application secrets were absent from the audited Git objects, tracked files, persisted data JSON, work-root logs/reports, application/catalog SQLite bytes, and all **65 Parquet files / 270 decompressed VARCHAR columns**. Credential files remain ignored and untracked. The receipt records exact scope counts.
+
+Review closed two documentation gaps: the larger-volume strategy is now an explicit section in `docs/DATA_MODEL.md`, and the derived numeric envelope is stated accurately. Valid raw operands can produce a ratio too large for the declared derived decimal type. Such a candidate fails with `invalid_model`, preserving both prior publication pointers and their readable history; it is never clipped or silently converted to null. The two new regressions exercise both a stored-share overflow and a Decimal quantization overflow without mocking the builder.
+
+For a concise Spanish explanation and live-demo commands, see [docs/PART2_GUIDE.md](docs/PART2_GUIDE.md). Fresh local receipts are retained under ignored `work/`: `part2-revalidation-current-verify.json`, `part2-revalidation-independent-audit.json`, `part2-revalidation-current-report.json`, `part2-revalidation-pinned-report.json`, `part2-revalidation-report-comparison.json`, `part2-revalidation-tests.log` and `part2-revalidation-secret-audit.json`. The earlier full-suite, clean-checkout and installed-wheel results below retain their original versions and dates.
+
+## Published real data at the original Part 2 acceptance
+
+At the original acceptance, the current raw snapshot was `1e6f80a89cb4455d949d541a6fe68e2a`; its model was `9811a42ac9a34b4581d00a9bbd5d5d9b`, model version **2**, US-08 metric version **1**. The local catalog bound them in the same publication transaction.
 
 | Dataset | Rows |
 | --- | ---: |

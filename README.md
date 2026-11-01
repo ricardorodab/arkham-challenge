@@ -122,6 +122,8 @@ To inspect local state and verify published files:
 
 ## Build and inspect the analytical model
 
+For a Spanish walkthrough of Part 2, the role of each tool, design decisions and live-demo commands, see [docs/PART2_GUIDE.md](docs/PART2_GUIDE.md). The current requirement audit and separately dated historical evidence are in [PART2_ACCEPTANCE.md](PART2_ACCEPTANCE.md).
+
 New ingestions automatically build and validate the model before publishing source and model pointers in the same transaction. If you already have a Part 1 snapshot, or change transformation code, build a new model without network access or an API key:
 
 ```powershell
