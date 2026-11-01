@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import uuid
 from copy import deepcopy
+from datetime import date
 from decimal import Decimal
 
 import pytest
 
 from outage_explorer import model_store
+from outage_explorer.domain import ROUTES, validate_row
 from outage_explorer.model_store import (
     open_model_connection,
     prepare_model,
@@ -79,6 +81,54 @@ def test_model_construction_failure_preserves_both_publication_pointers(tmp_path
         assert catalog.current().id == before.manifest["source_snapshot_id"]
         assert catalog.history()[0]["status"] == "failed"
         assert catalog.model_history()[0]["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "outage",
+    [
+        pytest.param("10000", id="derived-share-exceeds-storage-envelope"),
+        pytest.param("100000000000000", id="ratio-exceeds-decimal-quantize-envelope"),
+    ],
+)
+def test_derived_numeric_overflow_preserves_both_published_versions(tmp_path, outage):
+    before = seed(tmp_path)
+    source_before = before.manifest["source_snapshot_id"]
+    rows = source_rows()
+    candidate = rows["us-nuclear-outages"][0]
+    candidate.update(capacity="0.000000001", outage=outage, percentOutage="100")
+    # Both finite operands fit the raw DECIMAL(24,9) contract. Their ratio
+    # exceeds a derived numeric envelope; this is a model failure, not raw
+    # rejection or permission to clip the observation into a valid-looking ratio.
+    national = next(spec for spec in ROUTES if spec.name == "national")
+    admitted = validate_row(national, candidate, date(2026, 9, 1), date(2026, 9, 3))
+    assert "outage_above_capacity" in admitted.flags
+    with Catalog(tmp_path) as catalog:
+        raw_count = catalog._db.execute("SELECT count(*) FROM snapshots").fetchone()[0]
+        model_count = catalog._db.execute("SELECT count(*) FROM model_snapshots").fetchone()[0]
+
+    with pytest.raises(ModelError) as error:
+        ingest(IngestConfig(tmp_path, "recent"), FakeClient(rows))
+
+    assert error.value.code == "invalid_model"
+    with Catalog(tmp_path) as catalog:
+        assert catalog.current().id == source_before
+        assert catalog.current_model().id == before.id
+        assert catalog.snapshot(source_before).id == source_before
+        assert catalog.model(before.id).manifest == before.manifest
+        assert catalog._db.execute("SELECT count(*) FROM snapshots").fetchone()[0] == raw_count
+        assert (
+            catalog._db.execute("SELECT count(*) FROM model_snapshots").fetchone()[0] == model_count
+        )
+        raw_history = catalog.history()
+        assert raw_history[0]["status"] == "failed"
+        assert raw_history[0]["error_code"] == "invalid_model"
+        assert raw_history[1]["status"] == "succeeded"
+        assert raw_history[1]["snapshot_id"] == source_before
+        model_history = catalog.model_history()
+        assert model_history[0]["status"] == "failed"
+        assert model_history[1]["status"] == "succeeded"
+        assert model_history[1]["model_id"] == before.id
+    assert verify_model(before)["verified"]
 
 
 def test_sqlite_model_insert_abort_rolls_back_raw_and_model_together(tmp_path):
