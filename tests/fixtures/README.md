@@ -12,3 +12,8 @@ Tests inject HTTP status and Retry-After headers separately. Actual integration
 recordings, when added, must identify their collection period and be sanitized
 before persistence. Fixtures are evidence for client behavior, not for complete
 source coverage or analytical findings.
+
+The `recorded/` subdirectory now contains genuine sanitized source responses:
+six metadata/data captures and a separately captured HTTP 403 failure. Its README
+and provenance hashes distinguish those recordings from the representative
+fixtures in this directory.

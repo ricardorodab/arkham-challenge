@@ -36,8 +36,13 @@ class AdvertisedBoundsClient(FakeClient):
             "request": {"params": {"api_key": SECRET}},
         }
         return RouteMetadata(
-            route, start, end, {name: {"units": unit} for name, unit in UNITS.items()},
-            raw, ("daily",), spec.key_fields[1:],
+            route,
+            start,
+            end,
+            {name: {"units": unit} for name, unit in UNITS.items()},
+            raw,
+            ("daily",),
+            spec.key_fields[1:],
         )
 
 
@@ -135,9 +140,7 @@ def test_publication_fault_keeps_previous_snapshot_and_failed_quality(
         assert latest["status"] == "failed"
         assert latest["snapshot_id"] is None
         assert catalog._db.execute("SELECT count(*) FROM snapshots").fetchone()[0] == 1
-    quality = json.loads(
-        (tmp_path / "runs" / latest["run_id"] / "quality.json").read_text("utf-8")
-    )
+    quality = json.loads((tmp_path / "runs" / latest["run_id"] / "quality.json").read_text("utf-8"))
     assert quality["status"] == "failed"
     assert quality["error_code"] == error.value.code
 
@@ -170,6 +173,7 @@ def test_reporting_failures_never_mask_original_source_error(
     original_error = client.raised_error
     original_write = pipeline.write_json
     if broken_reporter in {"artifact", "both"}:
+
         def failed_artifact(path, value):
             if path.name in {"failure.json", "quality.json"}:
                 raise OSError("Simulated disk exhaustion.")
@@ -177,6 +181,7 @@ def test_reporting_failures_never_mask_original_source_error(
 
         monkeypatch.setattr(pipeline, "write_json", failed_artifact)
     if broken_reporter in {"catalog", "both"}:
+
         def failed_status(*args, **kwargs):
             raise OSError("Simulated unavailable catalog.")
 
@@ -260,9 +265,7 @@ def test_additive_field_outside_refresh_interval_is_retained_in_snapshot_contrac
 
 @pytest.mark.parametrize("mode", ["full", "recent"])
 @pytest.mark.parametrize("shrinking_side", ["start", "end"])
-def test_source_coverage_regression_never_discards_prior_history(
-    tmp_path, mode, shrinking_side
-):
+def test_source_coverage_regression_never_discards_prior_history(tmp_path, mode, shrinking_side):
     baseline = ingest(configuration(tmp_path), FakeClient())
 
     class ShrinkingCoverageClient(FakeClient):

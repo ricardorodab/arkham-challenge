@@ -1,0 +1,68 @@
+{
+  "source": "EIA Open Data API v2, nuclear-outages",
+  "source_base_url": "https://api.eia.gov/v2/nuclear-outages/",
+  "capture_run_id": "662caeb500d1433ab55a5df82d403ca8",
+  "capture_run_finished_at_utc": "2026-11-01T05:52:15.389907+00:00",
+  "capture_local_date": "2026-10-31",
+  "capture_local_timezone": "America/Los_Angeles",
+  "observation_start": "2026-09-01",
+  "observation_end": "2026-09-03",
+  "page_size": 50,
+  "scope": "Each route metadata and first non-empty page only; facility and generator pages are partial samples.",
+  "capture_run_result": "Responses captured before an OS fsync failure; no successful publication is implied.",
+  "sanitization": "Where present, request.params.api_key was redacted before these source recordings were persisted.",
+  "timestamp_definition": "stored_at_utc is the original recording file modification time, not an EIA publication timestamp.",
+  "records": [
+    {
+      "file": "national_metadata.json",
+      "source_record": "national/metadata.json",
+      "stored_at_utc": "2026-11-01T05:51:40.427750+00:00",
+      "sha256": "da2d54e14c4574b9314d8d6103e62a6cb3a4fa0b58972390ac9418a01451b54c",
+      "row_count": null
+    },
+    {
+      "file": "national_page.json",
+      "source_record": "national/page-000000000000.json",
+      "stored_at_utc": "2026-11-01T05:52:01.655638+00:00",
+      "sha256": "6fc28dd47ad4799a0b79197923f279afabe1afa02a4e719bc9e801542ac2320e",
+      "row_count": 3
+    },
+    {
+      "file": "facility_metadata.json",
+      "source_record": "facility/metadata.json",
+      "stored_at_utc": "2026-11-01T05:51:40.427750+00:00",
+      "sha256": "bd4364b2c8a64f15488690da67dd508c913ff1594b43ca3835ba7f2f51776431",
+      "row_count": null
+    },
+    {
+      "file": "facility_page.json",
+      "source_record": "facility/page-000000000000.json",
+      "stored_at_utc": "2026-11-01T05:52:04.027645+00:00",
+      "sha256": "d984540277f69bd571d38de4c9b2890e5afec89d8417cfe9e2329c54845676a0",
+      "row_count": 50
+    },
+    {
+      "file": "generator_metadata.json",
+      "source_record": "generator/metadata.json",
+      "stored_at_utc": "2026-11-01T05:51:40.428746+00:00",
+      "sha256": "6bf27f614f29fa65bb28d311d1cb3abff079117ad4c7ea147b7dc479b5489405",
+      "row_count": null
+    },
+    {
+      "file": "generator_page.json",
+      "source_record": "generator/page-000000000000.json",
+      "stored_at_utc": "2026-11-01T05:52:02.856050+00:00",
+      "sha256": "9dfa3777de2967f501938dac8ad29c38762ec4af9ee8aefc089aacd75cf20f8a",
+      "row_count": 50
+    },
+    {
+      "file": "invalid_credentials.json",
+      "source_record": "Separate intentionally invalid-credential probe",
+      "outside_capture_run": true,
+      "stored_at_utc": "2026-11-01T05:57:39.401552+00:00",
+      "sha256": "544a20886275638d0a545dac7627dbfa998a432378616f54d3fcf3c542f81120",
+      "http_status": 403,
+      "row_count": null
+    }
+  ]
+}
