@@ -1,0 +1,8 @@
+{
+  "name": "outage-explorer-query-sandbox",
+  "private": true,
+  "version": "0.3.0",
+  "description": "Pinned server-only DuckDB WebAssembly query runtime",
+  "engines": { "node": ">=24.13.0 <25" },
+  "dependencies": { "@duckdb/duckdb-wasm": "1.33.1-dev57.0" }
+}

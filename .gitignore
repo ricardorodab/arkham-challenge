@@ -9,6 +9,9 @@ Software Engineer - Technical Challenge.pdf
 # Local datasets, control database, logs, recordings and scratch work.
 /data/
 /work/
+/.service/
+/node_modules/
+/.npm/
 *.sqlite3
 *.sqlite3-*
 

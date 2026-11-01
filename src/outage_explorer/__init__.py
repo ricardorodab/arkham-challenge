@@ -1,3 +1,3 @@
-"""EIA nuclear-outage connector. Analytical API and UI are separate future work."""
+"""Versioned EIA nuclear-outage data and a secure analytical service."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

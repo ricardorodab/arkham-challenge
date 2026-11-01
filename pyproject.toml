@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "outage-explorer"
-version = "0.2.0"
-description = "Versioned EIA nuclear outage connector and verified analytical model"
+version = "0.3.0"
+description = "Versioned nuclear outage data and a secure Django analytical service"
 requires-python = ">=3.12"
-dependencies = ["duckdb==2.0.0"]
+dependencies = ["duckdb==2.0.0", "Django==5.2.18", "sqlglot==30.27.0", "waitress==3.0.2"]
 
 [project.optional-dependencies]
-dev = ["pytest==9.2.0", "ruff==0.17.3"]
+dev = ["pytest==9.2.0", "ruff==0.17.3", "pytest-django==4.14.0"]
 
 [project.scripts]
 outage-explorer = "outage_explorer.cli:main"
@@ -19,7 +19,7 @@ outage-explorer = "outage_explorer.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-outage_explorer = ["sql/*.sql", "contracts/*.json"]
+outage_explorer = ["sql/*.sql", "contracts/*.json", "sandbox/*", "service/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
