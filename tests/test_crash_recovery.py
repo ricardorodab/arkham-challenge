@@ -1,4 +1,4 @@
-"""Kill actual child processes at the two publication boundaries, without sleeps."""
+"""Kill actual child processes at three publication boundaries, without sleeps."""
 
 from __future__ import annotations
 
