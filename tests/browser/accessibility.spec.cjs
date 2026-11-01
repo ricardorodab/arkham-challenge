@@ -72,6 +72,8 @@ test('overview, explorer and SQL remain accessible and contain body overflow at3
             id: node.id,
             text: node.textContent,
             height: text.height,
+            lineFragments: [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0).length,
+            lineBoxHeight: node.getBoundingClientRect().height,
             lineHeight: Number.parseFloat(getComputedStyle(node).lineHeight),
             textBounds: { left: text.left, right: text.right, top: text.top, bottom: text.bottom },
             contentBounds: {
@@ -95,7 +97,8 @@ test('overview, explorer and SQL remain accessible and contain body overflow at3
   for (const value of narrowMetrics.values) {
     expect(value.height, `${value.id} must contain visible text`).toBeGreaterThan(0);
     expect(value.lineHeight, `${value.id} needs a measurable line height`).toBeGreaterThan(0);
-    expect(value.height, `${value.id} must fit on one line at 320px`).toBeLessThanOrEqual(value.lineHeight + 1);
+    expect(value.lineFragments, `${value.id} must have one rendered text line at 320px`).toBe(1);
+    expect(value.lineBoxHeight, `${value.id} must occupy one line box`).toBeLessThanOrEqual(value.lineHeight + 1);
     expect(value.textBounds.left, `${value.id} left edge`).toBeGreaterThanOrEqual(value.contentBounds.left - 1);
     expect(value.textBounds.right, `${value.id} right edge`).toBeLessThanOrEqual(value.contentBounds.right + 1);
     expect(value.textBounds.top, `${value.id} top edge`).toBeGreaterThanOrEqual(value.contentBounds.top - 1);
