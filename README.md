@@ -1,10 +1,10 @@
-# Outage Explorer — versioned data and a secure Django API
+# Outage Explorer — a secure nuclear outage workspace
 
 A local, rerunnable connector and analytical model for the three daily EIA nuclear-outage datasets. It discovers source metadata, downloads every page, validates rows, and publishes source data and ten modeled Parquet datasets together as immutable snapshots.
 
-This repository implements **Parts 1–3** of the technical challenge: the connector, verified analytical model and authenticated Django backend. Part 4's web application and the Azure pilot remain future work. See `PART3_ACCEPTANCE.md` for the backend requirement matrix and actual verification evidence.
+This repository implements **all four parts** of the technical challenge: the connector, verified analytical model, authenticated Django backend and browser application. It uses Django templates and native JavaScript modules, with no frontend build step or external fonts/scripts. Azure hosting remains a separately planned pilot. See [PART4_ACCEPTANCE.md](PART4_ACCEPTANCE.md) for the browser requirement matrix and executed evidence, [PRODUCT.md](PRODUCT.md) for product choices, and [docs/FRONTEND.md](docs/FRONTEND.md) for the implementation map.
 
-## Run the backend locally
+## Run the application locally
 
 Use Python 3.12–3.14 and **Node 24.13 or later within the 24.x series**, with npm. Run these commands from the project directory. The existing `data` folder is immediately usable; a fresh clone needs the ingestion described below before analytical requests can succeed.
 
@@ -19,7 +19,19 @@ npm ci --ignore-scripts
 
 `init` creates the SQLite application database and three real accounts: **viewer**, **analyst**, **admin**. Their independently generated passwords and Django signing key live in ignored `.service/local-config.json`, restricted to the current Windows user or POSIX mode 0600. No default password is committed or printed. Open that private file locally to obtain credentials. Repeating initialization preserves passwords; reset requires explicit `init --reset-passwords`. The web launcher removes EIA and seed-password variables from its environment.
 
-The service listens on **http://127.0.0.1:8000**. This is the backend API; Part 4's login screen and web UI are not included here. In another PowerShell terminal, authenticate and inspect the national catalog:
+Open **http://127.0.0.1:8000/login/** and sign in with a generated local account:
+
+| Account | Product access |
+| --- | --- |
+| `viewer` | National/fleet overview, the two national datasets and permitted SQL |
+| `analyst` | All ten analytical datasets, date/facility preview filters and SQL |
+| `admin` | Analyst capabilities plus queued data refresh and owned job outcomes |
+
+The overview shows the stored US-08 metric with its MW operands and observation date. Explore data uses backend pages; SQL supports schema insertion, `Ctrl+Enter` / `Cmd+Enter`, session-scoped history and current-page CSV export. Tables retain exact numeric values. A refresh announces a new publication and asks you to choose **Use latest** before moving the workspace to it. A separate worker is required for refresh, as described below.
+
+![Fleet overview using the local EIA data](docs/screenshots/overview-desktop.png)
+
+The same server exposes `/api/v1`. In another PowerShell terminal, you can authenticate and inspect the national catalog directly:
 
 ```powershell
 $localConfig = Get-Content -LiteralPath .service/local-config.json -Raw | ConvertFrom-Json
@@ -45,6 +57,8 @@ Admin refresh creates a durable job and returns `202` with its status URL. Start
 The API does not start background ingestion threads. Without a worker, jobs remain queued. Poll the returned URL as the same Admin. Refresh preserves the prior published source/model pair on failure and retains historical versions. A worker interrupted after publication can leave a committed version with an interrupted job; its message directs the operator to publication history instead of pretending that nothing changed.
 
 The API contract and examples are in [docs/API.md](docs/API.md); authenticated OpenAPI 3.1 is served at `/api/v1/openapi.json`. [docs/SECURITY.md](docs/SECURITY.md) describes the actual trust boundaries, tested limits and deployment requirements.
+
+The browser's protected home redirects unauthenticated navigation to login. Sessions survive reload while the server session remains valid. Logout/revocation clears private workspace state; returning to a tab rechecks access before revealing data. Query history retains at most ten query texts/statuses within the current server session, with no result rows or credentials in browser storage. CSV export covers only the displayed page; formula-like text and zero-padded text IDs receive a spreadsheet-safety prefix. The typed API remains available for canonical programmatic imports.
 
 ## Backend architecture and limits
 
@@ -274,12 +288,22 @@ Configuration rejected before a run starts has no ingestion run record. Error re
 
 ## Verification and deliverables
 
+Install dependencies before starting runtime acceptance. The browser suite starts its own `DEBUG=False` Waitress service on port 8766 with fresh synthetic data/state and test-only credentials; it never reads the operator's key, private account file or real analytical directory. Keep that port free. Its real query/refresh success paths exercise the backend rather than substituting API mocks.
+
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m ruff format --check src tests
 .\.venv\Scripts\python.exe -m pip check
+npm run test:unit
+npx playwright install chromium
+npm run test:browser
+node tests/browser/summarize.cjs
 ```
+
+The browser configuration uses Chromium, one worker and zero retries. See `work/browser-results/evidence.json` and `work/browser-report/` after execution; `npx playwright show-report work/browser-report` opens the report. `OUTAGE_TEST_PYTHON` can select another installed project interpreter. [tests/browser/README.md](tests/browser/README.md) explains synthetic fixtures, controlled failure interception and desktop/mobile accessibility checks. GitHub Actions also runs JavaScript units in its Python/OS matrix and browser acceptance on Windows/Python 3.12; remote CI execution is not claimed by local results.
+
+Browser limitations are explicit: SQL remains the documented single-dataset subset, result/export pages stay within backend caps, autocomplete suggests permitted identifiers rather than every SQL grammar position, refresh progress is indeterminate until the worker reports an outcome, and saved queries do not persist across server sessions. Automated accessibility checks and keyboard/visual review cover basics; screen-reader user testing and hosted Linux/Azure acceptance remain follow-up work.
 
 Offline tests must cover pagination and failure responses, validation, secret canaries, incremental replacement, idempotent reruns, partial failure, concurrent writers, and crash recovery. Live ingestion is a separate acceptance check using a user-supplied key. A green offline suite alone does not prove the remote API was extracted.
 
@@ -309,6 +333,8 @@ See `PART1_ACCEPTANCE.md` for exact fingerprints and completed fresh-checkout ve
 - `PART1_ACCEPTANCE.md`: requirement-by-requirement implementation and acceptance evidence.
 - `PART2_ACCEPTANCE.md`: model, live refresh, reconciliation and Part 2 verification evidence.
 - `PART3_ACCEPTANCE.md`: backend behavior, HTTP acceptance and security/failure verification.
+- `PART4_ACCEPTANCE.md`, `PRODUCT.md`: browser requirements/evidence, UX decisions and follow-up priorities.
+- `docs/FRONTEND.md`: browser modules, lifecycle, exact values and verification commands.
 - `docs/API.md`, `docs/SECURITY.md`: API usage and actual authorization/execution boundaries.
 - `FINDINGS.md`: three real anomalies, concrete observations, explanations and reproducible queries.
 - `docs/DATA_MODEL.md` and `docs/ER.mmd`: typed schema, keys, relationships, metric and scaling policy.

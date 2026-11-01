@@ -11,7 +11,7 @@ Use the [README](../README.md) for installation and the local operator commands.
 | `GET /auth/csrf` | Public | `200`, CSRF bootstrap token and cookie |
 | `POST /auth/login` | Public, valid CSRF | `200`, user/persona and rotated CSRF token |
 | `POST /auth/logout` | Signed in, valid CSRF | `200`, `{"signed_out":true}` |
-| `GET /auth/session` | Signed in | `200`, current username/persona |
+| `GET /auth/session` | Signed in | `200`, current username/persona and opaque session scope |
 | `GET /catalog` | Signed in | `200`, permitted logical dataset metadata |
 | `GET /data/{dataset_id}` | Dataset permission | `200`, filtered, ordered preview page |
 | `POST /query` | Dataset permission, valid CSRF | `200`, one page of a bounded SQL result |
@@ -32,6 +32,8 @@ Paths in the table are relative to `/api/v1`. Viewer may access **`national_dail
 4. Send that header and the browser cookies on **every POST**, including `/query`, `/refresh`, `/auth/logout`, and subsequent login attempts. Logout's JSON body is `{}`.
 
 For `fetch`, use same-origin credentials. The CSRF response token is a Django token; do not assume it is textually identical to the cookie. Session cookies are HttpOnly and SameSite=Lax. Sessions expire after 1,800 seconds and at browser close. Changing a password, deleting the persisted session, disabling the user or changing the persona is checked against current server state. Refresh or query cursors are not authentication credentials.
+
+`GET /api/v1/auth/session` also returns top-level `session_scope`: an opaque 64-character lowercase hexadecimal HMAC shared with the protected HTML bootstrap. It binds browser state to the current persisted session/authentication/persona, so a new session for the same username and role is distinguishable. It stays stable when analytical data is refreshed. The browser uses it to retire old query-history scopes and revalidate restored pages. It is neither a credential nor a cursor: authentication still requires the valid session cookie, and sending this value does not grant access. The exact response is defined by OpenAPI's `SessionResponse`; see [FRONTEND.md](FRONTEND.md) for its client use.
 
 An incorrect username/password returns the same `401 invalid_credentials`. Shared login throttles allow 10 attempts per username and 30 per client address in a five-minute window; successful attempts count too. A limit returns `429` with `Retry-After`. Raw usernames and addresses are not stored in rate-limit bucket keys.
 

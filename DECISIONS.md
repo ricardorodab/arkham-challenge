@@ -1,6 +1,8 @@
-# Engineering decisions — Parts 1–3
+# Engineering decisions — Parts 1–4
 
-This document describes the implemented connector, analytical model and Django API. The web application and Azure hosting remain future work.
+This document describes the implemented connector, analytical model, Django API and browser application. Azure hosting remains a future pilot.
+
+The challenge's seven required decisions map to these sections: natural keys (§1); kept-current semantics (§5); missing/mismatching parents (§7, §14, §16); asynchronous refresh (§25); supported/rejected SQL (§22); complete reference discovery before authorization (§22); and additional product choices (§27–31). Each states the choice, an alternative and the reason.
 
 ## 1. Natural keys follow the actual source grains
 
@@ -120,6 +122,8 @@ Genuine sanitized metadata and first-page responses for all three routes, plus a
 
 **Choice:** separate national, facility and generator facts, with date and observed-identity dimensions. A generator key includes its facility. Observation-time names remain in the facts; the facility dimension carries the latest observed descriptive name. Reconciliation uses full outer coverage rather than inner joins.
 
+**Rejected:** discarding generators without a matching facility-day parent, rescaling child measures to force agreement, or replacing a published parent's values with child sums.
+
 **Reason:** the three routes are independently published observations. A generator can exist while its facility-day observation is absent. Its FK points to the identity dimension, not to a facility fact, so that absence survives as evidence. No missing row becomes zero, and no generator is discarded to satisfy a relationship. The dimensional name is not a claim of complete temporal ownership/name history.
 
 ## 15. Derive US-08 from national operands with explicit decimal semantics
@@ -213,3 +217,43 @@ Native DuckDB 2.0 remains trusted ingestion/modeling code; the pinned npm runtim
 **Rejected:** process-local counters, a LIMIT-only cost policy, unbounded queues, or passing engine exceptions and physical paths to clients.
 
 **Reason:** multiple HTTP processes must share capacity, and aggregate/sort cost is independent of returned row count. OS locks release on process death. Public liveness reveals no data; readiness requires Admin and checks local model/runtime availability. The shipped Waitress launcher binds loopback with explicit HTTP/body/connection/thread limits. It is a local backend, not an Azure deployment or an availability guarantee.
+
+## 27. Build the browser on Django templates and native modules
+
+**Choice:** protected Django HTML, a compact allowlisted set of packaged assets and native ES modules calling the existing API. Authentication, dataset policy, metrics, pagination and SQL execution remain server-owned.
+
+**Rejected:** a separate frontend framework/build service or a second analytical engine in the browser.
+
+**Reason:** the user already knows Django, and the four core browser flows do not require a second application platform. This keeps the local/wheel setup inspectable and avoids duplicating authorization or formulas. Richer product interactions can justify a framework later; adding one now would not prove better correctness or usability. Assets work with `DEBUG=False` without a development server or runtime asset build.
+
+## 28. Pin the whole workspace and explicitly adopt refreshes
+
+**Choice:** one catalog model ID pins overview, explorer and SQL. Draft changes disable incompatible continuation; sequence/version guards reject obsolete responses. Successful refresh announces a new publication; **Use latest** resets cursors/results while retaining relevant draft/filter intent.
+
+**Rejected:** silently switching active charts, tables or later pages to whatever model is current when each request arrives.
+
+**Reason:** a correct individual response can still mislead when displayed under a changed question or mixed with another generation. Explicit adoption preserves an investigation while keeping freshness visible. Browser requests serialize analytics for the server's per-user budget; bounded recoverable retries respect its busy response rather than changing limits.
+
+## 29. Scope retained query text to the actual server session
+
+**Choice:** keep at most ten query texts/statuses in `sessionStorage`, under an opaque HMAC session scope; store no result rows. Login, logout, role/session replacement and revocation retire private state. Focus/visibility/bfcache return shield content during confirmation, including escalation of an already-running background check. Unknown network outcomes keep a retry shield.
+
+**Rejected:** unscoped `localStorage`, raw session identifiers in JavaScript, assuming the same username means the same session, or claiming logout succeeded after an unknown network response.
+
+**Reason:** query text can contain sensitive filters. Server-side authorization remains primary, while the browser avoids presenting another session's retained state. The scope is additive API metadata, not a credential or authority. Already observed information cannot be remotely erased; the documented lifecycle bounds the actual behavior without promising instant revocation of every visible pixel.
+
+## 30. Preserve exact values and expose a chart alternative
+
+**Choice:** render external scalars as text; keep exact decimal/integer strings and text IDs through tables/exports. CSV includes the displayed page only, with guards for formula-like text. Plot the stored US-08 series, retain actual zero, and break the line at nulls or absent dates. Supply the same observations in a semantic table, with native keyboard controls and responsive contained scrolling.
+
+**Rejected:** converting all scalars to JavaScript numbers, interpolating result HTML, connecting missing dates as if observed, or silently exporting more rows than shown.
+
+**Reason:** large integers and decimal precision must survive presentation, missingness is analytical evidence, and keyboard/table access makes the insight useful beyond the chart. CSV import typing belongs to spreadsheet software; canonical types remain explicit in the API. These choices are tested with zero, gaps, very large numeric text, hostile-looking names and formula-shaped cells.
+
+## 31. Show real refresh states and verify the complete browser flow
+
+**Choice:** owned Admin jobs show queued/running indeterminate progress and explicit outcomes. Unknown POST outcomes reuse an idempotency key. Tests run an isolated synthetic service, real query worker and separate refresh worker, alongside a separately recorded real-data UI acceptance. Chromium has one worker and zero automatic retries; desktop/mobile axe scans complement keyboard and visual checks.
+
+**Rejected:** invented completion percentages, a browser-only fake refresh, running destructive test controls against operator state, or interpreting a clean automated scan as full accessibility certification.
+
+**Reason:** the pipeline has no truthful percentage-complete signal, and a multi-minute job must remain understandable after HTTP returns. Isolated fixtures provide repeatable failure/gap cases while real local acceptance checks integration with the published EIA data. Separate evidence records prevent synthetic results from being presented as source findings.
