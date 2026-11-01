@@ -146,6 +146,9 @@ def test_mutation_schemas_are_strict_and_limits_match_execution_contract(specifi
     query = specification["components"]["schemas"]["QueryRequest"]
     assert query["required"] == ["dataset_id", "sql"]
     assert query["properties"]["max_rows"]["maximum"] == 1000
+    assert "default" not in query["properties"]["page_size"]
+    assert "min(100, max_rows)" in query["properties"]["page_size"]["description"]
+    assert limits["compiler_timeout_seconds"] == 2 and limits["queue_wait_seconds"] == 5
     assert query["properties"]["sql"]["x-max-utf8-bytes"] == 16384
 
 

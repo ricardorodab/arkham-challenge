@@ -1,6 +1,6 @@
-# Engineering decisions — Parts 1 and 2
+# Engineering decisions — Parts 1–3
 
-This document describes the implemented connector and analytical model. Decisions about the future web app, arbitrary user SQL, authenticated authorization, and Azure hosting remain future work.
+This document describes the implemented connector, analytical model and Django API. The web application and Azure hosting remain future work.
 
 ## 1. Natural keys follow the actual source grains
 
@@ -154,10 +154,62 @@ The first local model version 1 used incorrect catalog unit labels for absolute 
 
 **Choice:** logical dataset IDs, explicit contracts/metric definitions and a context-managed DuckDB adapter for trusted backend code. Resolve one model per operation; reject disallowed datasets before reading their Parquet; verify selected file hashes before registering views. Only national/fleet metadata is available to the Viewer policy. Reports run fixed packaged SELECT assets with bound dates.
 
-**Reason:** later Django handlers can consume stable modeled data without learning physical paths or reimplementing metrics. A caller able to execute arbitrary SQL on a local DuckDB connection can bypass a view-only convention; therefore the adapter is not exposed to untrusted user SQL. Authentication, every-table query authorization, isolation and resource enforcement belong to Part 3 and the larger plan.
+**Reason:** Django handlers can consume stable modeled data without reimplementing metrics. A caller able to execute arbitrary SQL on a local DuckDB connection can bypass a view-only convention; therefore the adapter remains trusted-code-only. Part 3 adds separate authenticated capabilities and an isolated user-query path; it never exposes this native connection to submitted SQL.
 
 ## 20. Automate anomaly detection without silently repairing history
 
 **Choice:** deterministic review events for nonpositive capacity, zero-capacity/nonzero percentage, observed-span entity gaps, consecutive capacity changes and reconciliation issues. Check rules during every model build; structural violations fail publication, semantic warnings are preserved.
 
 **Reason:** the three documented historical anomalies now have concrete stored events and reproducible SQL. Coverage events identify missing observations between observed dates; they do not infer a plant's entire operating lifetime. A capacity change of at least 100 MW and 10% is a review threshold, not proof of an EIA mistake. Thresholds, units and event identity are part of the versioned model contract.
+
+## 21. Use Django sessions and a single server-owned product persona
+
+**Choice:** Django 5.2 LTS, server-side sessions, CSRF on all POSTs, and one validated Viewer/Analyst/Admin record per user. Seed accounts use environment-supplied passwords; the explicit local setup generates private random credentials. Product Admin has no Django staff/superuser privilege.
+
+**Rejected:** trusting a persona header/body field, granting implicit product access to staff, or shipping a shared hardcoded demo password.
+
+**Reason:** this fits the user's Django experience and supplies established password/session handling. The policy reloads the active user, persona, authentication hash and persisted unexpired session before access and delivery. Revocation during execution cannot be hidden by cached request identity or cached results. The CLI/local filesystem is an operator boundary, not a remote product capability.
+
+## 22. Keep user SQL deliberately small and inspect every reference
+
+**Choice:** one selected dataset; SELECT projections, predicates, arithmetic, ordering, grouping and explicit safe scalar/aggregate functions. Reject commands, writes, table functions, arbitrary functions, JOIN/CTE/subquery/UNION/window syntax, database/schema qualifiers and unknown columns. Compile using SQLGlot's DuckDB dialect, then execute only regenerated SQL.
+
+**Rejected:** first-keyword checks, regex table extraction, trusting a client-selected dataset while ignoring other references, or supporting SQL syntax without defining its full authorization behavior.
+
+**Reason:** the minimum is useful and defensible within this part. The compiler walks every table node, preserving references even when a query shape is unsupported; the web service authorizes each discovered logical name before analytical I/O. Unsupported syntax cannot smuggle detail through a permitted national dataset. Broader SQL is an optional future language expansion requiring new scope/column/permission tests.
+
+Compilation itself runs in a disposable Python process with bounded input/output, memory and a two-second subdeadline, rather than parsing untrusted text recursively inside Django. Input tokens, depth, AST size and generated SQL are also bounded. No in-process compilation or native-engine fallback exists.
+
+## 23. Use a real WASM capability boundary for the local query engine
+
+**Choice:** a disposable DuckDB-WASM process receives one checksummed Parquet buffer over stdin through a custom BUFFER-only runtime. Bootstrap preloads one pinned offline Parquet extension, then disables external access/autoload and locks configuration. Application secrets, model host paths and other datasets are absent. Windows Job Objects apply hard process memory/CPU/lifetime limits; WASM/V8 and output/deadline limits add independent bounds.
+
+**Rejected:** treating DuckDB settings or SQLGlot as a sandbox, same-user native DuckDB with full host capabilities, or declaring an unavailable Docker/WSL environment tested.
+
+**Reason:** the actual Windows machine has neither Docker nor installed WSL. DuckDB's primary security guidance explicitly lists WASM as a sandbox option. The custom runtime was necessary because the npm package's normal Node runtime can access the host filesystem. Engine-level tests independently deny host CSV/Parquet, HTTP, COPY and ATTACH, without relying on AST rejection. [DuckDB security guidance](https://www.duckdb.org/docs/2.0/operations_manual/securing_duckdb/overview).
+
+Native DuckDB 2.0 remains trusted ingestion/modeling code; the pinned npm runtime embeds DuckDB 1.5.4. Interoperable Parquet and exact decimal/date behavior are tested. This costs another runtime and startup/whole-file-transfer overhead; a per-query 64 MiB input limit is explicit. POSIX allocation limits are implemented but not asserted live-verified here. The deployment platform must repeat acceptance before hosting.
+
+## 24. Pin navigation and private cached results to immutable generations
+
+**Choice:** signed, expiring cursors bind user/session/persona, request parameters and one model. Preview uses full-primary-key keysets. SQL returns at most 1,000 retained rows and pages within that cap. A 60-second cache includes the owner/authentication binding, canonical query, selected model and current publication generation; only eight entries per user are retained.
+
+**Rejected:** a shared SQL-string-only cache, unsigned offsets, applying permissions only when a result is first generated, or silently moving a continuation to new data.
+
+**Reason:** identical text does not imply identical authorization or source version. Permission checks precede lookup and repeat before delivery. A new publication changes the cache generation even if cleanup fails, while an explicitly pinned cursor can still read immutable history. A cache hit remains subject to admission and reauthorization.
+
+## 25. Refresh asynchronously through a durable, separately invoked worker
+
+**Choice:** Admin POST creates a database job and returns 202/status URL. A separate worker consumes it, owns the EIA environment key and calls the existing joint-publication pipeline. DB constraints enforce one queued/running refresh; owner-scoped idempotency keys deduplicate retries. Job status is visible only to its active Admin owner.
+
+**Rejected:** doing a multi-minute download inside an HTTP request, background threads that vanish with a web process, or exposing a generic shell/task endpoint.
+
+**Reason:** the real full-history rebuild takes minutes while HTTP polling stays responsive. A distinct OS worker-control lock distinguishes an active worker from an abandoned job. After process death, the next worker records interrupted work. Publication is authoritative in the data catalog: a crash after its commit but before the separate job completion may have published, so the job message explicitly requests publication review. It never falsely promises an unchanged source. No exactly-once external-source transaction is claimed.
+
+## 26. Bound admission and expose an inspectable API contract
+
+**Choice:** process-shared OS locks permit two admitted operations, one per account and eight waiting. Queue wait is capped at five seconds; compiler/startup/input/execution share eight admitted seconds. Row/output limits apply independently. Errors use Problem Details, static safe messages and server-generated request IDs; logs omit SQL, bodies, cookies, credentials and concrete filter values. OpenAPI 3.1 and health endpoints document the contract.
+
+**Rejected:** process-local counters, a LIMIT-only cost policy, unbounded queues, or passing engine exceptions and physical paths to clients.
+
+**Reason:** multiple HTTP processes must share capacity, and aggregate/sort cost is independent of returned row count. OS locks release on process death. Public liveness reveals no data; readiness requires Admin and checks local model/runtime availability. The shipped Waitress launcher binds loopback with explicit HTTP/body/connection/thread limits. It is a local backend, not an Azure deployment or an availability guarantee.

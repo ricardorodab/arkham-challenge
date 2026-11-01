@@ -1,8 +1,64 @@
-# Outage Explorer — EIA connector and verified analytical model
+# Outage Explorer — versioned data and a secure Django API
 
 A local, rerunnable connector and analytical model for the three daily EIA nuclear-outage datasets. It discovers source metadata, downloads every page, validates rows, and publishes source data and ten modeled Parquet datasets together as immutable snapshots.
 
-This repository implements **Parts 1 and 2** of the technical challenge. Django, the web application, authenticated user authorization, arbitrary user SQL, and Azure deployment belong to later parts. See `PART2_ACCEPTANCE.md` for the Part 2 requirement matrix and actual acceptance evidence.
+This repository implements **Parts 1–3** of the technical challenge: the connector, verified analytical model and authenticated Django backend. Part 4's web application and the Azure pilot remain future work. See `PART3_ACCEPTANCE.md` for the backend requirement matrix and actual verification evidence.
+
+## Run the backend locally
+
+Use Python 3.12–3.14 and **Node 24.13 or later within the 24.x series**, with npm. Run these commands from the project directory. The existing `data` folder is immediately usable; a fresh clone needs the ingestion described below before analytical requests can succeed.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.lock
+.\.venv\Scripts\python.exe -m pip install --no-deps -e .
+npm ci --ignore-scripts
+.\.venv\Scripts\python.exe -m outage_explorer.web.local init
+.\.venv\Scripts\python.exe -m outage_explorer.web.local serve --port 8000
+```
+
+`init` creates the SQLite application database and three real accounts: **viewer**, **analyst**, **admin**. Their independently generated passwords and Django signing key live in ignored `.service/local-config.json`, restricted to the current Windows user or POSIX mode 0600. No default password is committed or printed. Open that private file locally to obtain credentials. Repeating initialization preserves passwords; reset requires explicit `init --reset-passwords`. The web launcher removes EIA and seed-password variables from its environment.
+
+The service listens on **http://127.0.0.1:8000**. This is the backend API; Part 4's login screen and web UI are not included here. In another PowerShell terminal, authenticate and inspect the national catalog:
+
+```powershell
+$localConfig = Get-Content -LiteralPath .service/local-config.json -Raw | ConvertFrom-Json
+$webSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+$csrf = Invoke-RestMethod http://127.0.0.1:8000/api/v1/auth/csrf -WebSession $webSession
+$loginBody = @{ username = 'viewer'; password = $localConfig.OUTAGE_VIEWER_PASSWORD } | ConvertTo-Json
+$login = Invoke-RestMethod http://127.0.0.1:8000/api/v1/auth/login -Method Post -WebSession $webSession -ContentType application/json -Headers @{ 'X-CSRFToken' = $csrf.csrf_token } -Body $loginBody
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/catalog -WebSession $webSession
+$queryBody = @{ dataset_id = 'fleet_daily'; sql = 'SELECT period, offline_pct FROM fleet_daily ORDER BY period DESC LIMIT 10' } | ConvertTo-Json
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/query -Method Post -WebSession $webSession -ContentType application/json -Headers @{ 'X-CSRFToken' = $login.csrf_token } -Body $queryBody
+```
+
+Login rotates the CSRF token; use the returned token for later POSTs. All four capabilities require a server-derived persona. Viewer sees only national/fleet datasets; Analyst sees all analytical datasets; Admin adds refresh. No request body, header, staff flag or superuser flag selects a persona.
+
+Admin refresh creates a durable job and returns `202` with its status URL. Start a separate worker terminal, supplying `EIA_API_KEY` through the environment as shown in the ingestion instructions below:
+
+```powershell
+.\.venv\Scripts\python.exe -m outage_explorer.web.local worker
+# Or consume at most one queued job, then exit:
+.\.venv\Scripts\python.exe -m outage_explorer.web.local worker --once
+```
+
+The API does not start background ingestion threads. Without a worker, jobs remain queued. Poll the returned URL as the same Admin. Refresh preserves the prior published source/model pair on failure and retains historical versions. A worker interrupted after publication can leave a committed version with an interrupted job; its message directs the operator to publication history instead of pretending that nothing changed.
+
+The API contract and examples are in [docs/API.md](docs/API.md); authenticated OpenAPI 3.1 is served at `/api/v1/openapi.json`. [docs/SECURITY.md](docs/SECURITY.md) describes the actual trust boundaries, tested limits and deployment requirements.
+
+## Backend architecture and limits
+
+Session authentication and CSRF use Django. A shared, default-deny policy authorizes the selected dataset and every parsed table reference before analytical data access. Persisted session, account state and role are checked again before delivering or caching results, so logout and revocation during execution take effect.
+
+Submitted SQL is compiled in a bounded Python process, then regenerated SQL runs in a disposable **DuckDB-Wasm** process with a custom buffer-only filesystem. The engine receives only the selected checksummed Parquet bytes, with no application secrets or dataset host path. It cannot read other host files, reach HTTP, load arbitrary extensions, or write files. Native DuckDB 2.0 remains the trusted ingestion/modeling engine; the pinned WASM runtime embeds DuckDB 1.5.4. Parquet compatibility and exact decimal/date serialization are tested across that boundary. The bundled offline Parquet extension has recorded origin, license and SHA-256 in `sandbox/PROVENANCE.md`.
+
+The SQL subset includes one table, filters, projections, arithmetic, ordering, grouping and basic aggregates. JOINs, CTEs, subqueries, UNIONs, windows, table functions, unknown functions and write/configuration statements are rejected. The grammar and engine restrictions complement the WASM boundary; parser validation alone is not the sandbox.
+
+Queries have a **1,000-row total result cap**, **2 MiB response cap**, and shared **eight-second compilation/execution budget**; compilation itself has a two-second ceiling. Windows enforces a hard 512 MiB process limit, with separate WASM/V8 limits. Admission permits two requests executing, one per user, up to eight waiting and five seconds of queue wait; saturation returns `429` with `Retry-After`. POSIX allocation limits are implemented but have not been executed on this Windows machine; hosted Linux acceptance remains necessary before deployment.
+
+Preview uses signed keyset cursors. SQL pagination pages within the capped result and repeats the same SQL/request fields. Both retain one immutable model and bind cursors to user, session, persona, filters/order and limits. The 60-second query cache is also bound to user/session/persona, canonical SQL and model/publication generation; refresh invalidates reuse. Cached results are reauthorized before delivery.
+
+Local HTTP is explicitly limited to loopback. For a hosted configuration use environment-owned secrets, `OUTAGE_LOCAL_HTTP=0`, HTTPS and reviewed host/proxy settings. The local launcher is not an Azure deployment. `outage_explorer.web.manage` exposes ordinary Django management commands for operators who supply configuration directly through environment variables.
 
 ## Why these tools
 
@@ -10,13 +66,13 @@ This repository implements **Parts 1 and 2** of the technical challenge. Django,
 - **DuckDB** reads and writes those files locally. It avoids requiring a database server or a separate Parquet library for this part.
 - **SQLite** records local run history, watermarks, and the current snapshot in one transaction. It is operational state, not a second copy of the analytical data. The future deployed service will use PostgreSQL for this responsibility.
 
-The connector uses Python's standard HTTP client. It does not need Django, SQLGlot, Azure credentials, or a running external database. Part 2 executes fixed application-owned SQL; SQLGlot is reserved for the future user-query service, where syntax validation will also require process isolation.
+The connector uses Python's standard HTTP client. The analytical API uses Django and SQLGlot; it needs no Azure account or database server. Part 2's model and report commands remain offline operations over published local data.
 
 ## Install and run
 
 Requirements: Python 3.12 or later, network access to `api.eia.gov`, and an EIA API key for ingestion. Tests and local inspection run without a key.
 
-Direct runtime and development dependencies are pinned in `pyproject.toml`; `requirements.txt` provides the pinned DuckDB runtime dependency, and `requirements-dev.lock` fixes the direct and transitive test/tool dependencies. The implementation environment uses Python 3.14, while the supported minimum is Python 3.12.
+Direct runtime and development dependencies are pinned in `pyproject.toml`; `requirements.txt` fixes runtime dependencies and `requirements-dev.lock` fixes runtime/test/tool dependencies. `package-lock.json` fixes the isolated WASM engine's npm graph. The implementation environment uses Python 3.14, while the supported minimum is Python 3.12.
 
 From this directory in PowerShell:
 
@@ -24,6 +80,7 @@ From this directory in PowerShell:
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.lock
 .\.venv\Scripts\python.exe -m pip install --no-deps -e .
+npm ci --ignore-scripts
 .\.venv\Scripts\python.exe -m pytest
 ```
 
@@ -33,7 +90,7 @@ Supply the key through the **process environment**. This example hides interacti
 $env:EIA_API_KEY = [System.Net.NetworkCredential]::new('', (Read-Host 'EIA API key' -AsSecureString)).Password
 ```
 
-The application reads `EIA_API_KEY`; it does not automatically read `key.txt` or load a `.env` file. `.env.example` documents configuration without containing credentials. Keep keys outside version control.
+Ingestion and the refresh worker read `EIA_API_KEY`; they do not automatically read `key.txt` or load a `.env` file. `.env.example` documents configuration without containing credentials. The explicit `web.local` launcher reads only its generated local Django/demo configuration. Keep credentials outside version control.
 
 For an initial short extraction that also exercises pagination:
 
@@ -249,6 +306,8 @@ See `PART1_ACCEPTANCE.md` for exact fingerprints and completed fresh-checkout ve
 - `NOTES.md`: AI attribution, corrections, and verification record.
 - `PART1_ACCEPTANCE.md`: requirement-by-requirement implementation and acceptance evidence.
 - `PART2_ACCEPTANCE.md`: model, live refresh, reconciliation and Part 2 verification evidence.
+- `PART3_ACCEPTANCE.md`: backend behavior, HTTP acceptance and security/failure verification.
+- `docs/API.md`, `docs/SECURITY.md`: API usage and actual authorization/execution boundaries.
 - `FINDINGS.md`: three real anomalies, concrete observations, explanations and reproducible queries.
 - `docs/DATA_MODEL.md` and `docs/ER.mmd`: typed schema, keys, relationships, metric and scaling policy.
 

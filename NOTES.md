@@ -1,10 +1,10 @@
-# Engineering notes — Parts 1 and 2
+# Engineering notes — Parts 1–3
 
 ## Attribution and scope
 
-The connector, analytical model, tests, and supporting documents were authored with AI assistance in this Codex chat, including delegated implementation and independent review. The user supplied the challenge and API credential, selected the overall product direction, and requested the implementation. No code should be attributed to manual user authorship without evidence.
+The connector, analytical model, Django backend, tests, and supporting documents were authored with AI assistance in this Codex chat, including delegated implementation and independent review. The user supplied the challenge and API credential, selected Django/product constraints, and requested the implementation. No code should be attributed to manual user authorship without evidence.
 
-This delivery includes Parts 1 and 2. The Django application, authenticated role authorization, arbitrary-SQL sandbox, and Azure deployment remain future work. The local catalog's persona filter prepares the backend contract; the CLI does not authenticate operators.
+This delivery includes Parts 1–3. Part 4's web UI and Azure deployment remain future work. The backend uses authenticated personas and an isolated, deliberately bounded SELECT subset. The local CLI remains an operator tool.
 
 ## A concrete AI design correction
 
@@ -73,3 +73,12 @@ Part 2 verification includes exact Decimal edge cases, duplicate/invalid-key rej
 The integration live refresh published raw snapshot `1e6f80a89cb4455d949d541a6fe68e2a` with model `9811a42ac9a34b4581d00a9bbd5d5d9b`. It observed zero added/changed/deleted rows and preserved all ten analytical logical hashes. `FINDINGS.md` deliberately retains its earlier model pin so subsequent refreshes cannot silently change the evidence.
 
 The Part 2 full suite passed on Python 3.14.2 and 3.12.14 with 302 passes and one Windows privilege-dependent skip. A new checkout at `f3b7cd6`, fresh Python 3.12 environment and locked dependencies reproduced all 302 passes without a key or copied data. The installed-wheel report also matched the canonical report outside the source tree. Complete current-model verification and the supplied-key persistence audit passed; `PART2_ACCEPTANCE.md` records their scope, commands and observed results.
+
+## Part 3: concrete generated-code mistakes caught by review
+
+1. **Cached request identity survived server-side logout.** The first recheck reloaded the user/persona and password hash but trusted the request's already-loaded session fields. Deleting the persisted session while a query ran could still allow its result and cache write. Independent review reproduced this; policy now checks the actual unexpired Session row and its user/backend/auth hash. Tests delete/expire/corrupt that row or perform a real same-session logout during execution, then require 401 and no cache entry.
+2. **Malformed selectors silently selected current data.** Falsy JSON values such as `false`, `0`, `[]` or an empty model ID reached a helper that interpreted them as “not supplied.” Explicit API validation now accepts only null/absence or a 32-character hexadecimal model ID before model resolution. Tests prove invalid values cause 400 without analytical I/O. Lone-surrogate Unicode credentials also initially caused an encoding 500; UTF-8 validation now rejects them before throttling/authentication.
+3. **A process limit initially killed normal compilation.** V8 optimizing WASM compilation exceeded the intended 512 MiB Windows Job limit. The fix retained the limit and selected one baseline compilation task with no optimizing tier-up; actual full generator counts and previews then passed. A separate Windows Python-venv redirector attempted a second process inside the one-process Job. The compiler now launches the trusted base interpreter with the venv launcher environment, still in isolated Python mode. Resource tests verify hard memory denial, deadline kill/reap and subsequent recovery.
+4. **Parser work had remained inside Django.** Bounded SQL text alone did not fulfill the plan to move potentially expensive parsing out of the web process. Compilation now runs in a separate time/memory-limited Python child; every returned reference is authorized before data access. The compiler and WASM share the same admitted eight-second deadline. Tests prove there is no parent-process parser fallback and that an exhausted budget never starts the engine.
+
+Verification went beyond happy-path responses: direct engine probes bypassed the SQL policy to test the actual file/network boundary; private canary files and a localhost HTTP receiver remained inaccessible. SQL injection/unsupported AST tests, session/role revocation, cache and cursor isolation, process-shared admission and real killed-worker recovery test distinct boundaries. OpenAPI was checked by a standards validator; a real Waitress HTTP session then exercised all three personas and a genuine queued EIA refresh. `PART3_ACCEPTANCE.md` records observed counts, versions, timings and limitations. Linux resource behavior is not inferred from a Windows pass.

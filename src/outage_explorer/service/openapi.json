@@ -27,7 +27,9 @@
     "query_cache_ttl_seconds": 60,
     "active_queries_per_user": 1,
     "global_execution_slots": 2,
-    "global_queue_slots": 8
+    "global_queue_slots": 8,
+    "compiler_timeout_seconds": 2,
+    "queue_wait_seconds": 5
   },
   "paths": {
     "/api/v1/auth/csrf": {
@@ -482,7 +484,7 @@
       "post": {
         "operationId": "executeQuery",
         "summary": "Execute the bounded single-dataset SELECT subset",
-        "description": "Execute one SELECT over the chosen logical dataset. Supported: projections and stars, quoted/case-insensitive identifiers, aliases, literals, arithmetic/comparisons/boolean predicates, WHERE, DATE literals and safe scalar CAST, ORDER BY, GROUP BY/HAVING, COUNT/SUM/AVG/MIN/MAX (including single-expression aggregate DISTINCT), ROUND/COALESCE/ABS and LIKE/ILIKE. Unsupported: writes, joins, CTEs, subqueries, unions, windows, top-level DISTINCT, table functions, external paths/URLs, schema/catalog qualification, sampling/pivots and unknown functions/nodes. SQL OFFSET is unsupported; API cursors own pagination. The server authorizes every named table before opening any model, validates columns, regenerates the accepted AST and adds deterministic primary/group key ordering and a cap+1 sentinel. It never executes or logs the original SQL. max_rows caps the entire retained result (1000 maximum); page_size pages within that result. Repeat identical dataset/SQL/cap/page_size with next_cursor; the cursor binds actor and immutable model for 15 minutes. Query cache TTL is 60 seconds and binds owner, persona, session, SQL, model and current publication. Permission changes are rechecked before execution and result/cache publication. On cache expiry the pinned query is re-executed; refresh changes the generation and invalidates cached reuse. A cap-truncated result is explicitly marked truncated; next_cursor only traverses retained rows. Maximum query execution is 8 seconds and complete response size is 2 MiB.",
+        "description": "Execute one SELECT over the chosen logical dataset. Supported: projections and stars, quoted/case-insensitive identifiers, aliases, literals, arithmetic/comparisons/boolean predicates, WHERE, DATE literals and safe scalar CAST, ORDER BY, GROUP BY/HAVING, COUNT/SUM/AVG/MIN/MAX (including single-expression aggregate DISTINCT), ROUND/COALESCE/ABS and LIKE/ILIKE. Unsupported: writes, joins, CTEs, subqueries, unions, windows, top-level DISTINCT, table functions, external paths/URLs, schema/catalog qualification, sampling/pivots and unknown functions/nodes. SQL OFFSET is unsupported; API cursors own pagination. A separate bounded Python compiler process (maximum 2 seconds under OS memory limits) discovers all named references and validates/regenerates the AST. Every reference is authorized before model/file access, including references inside a rejected query. There is no in-process parser fallback. Accepted SQL gains deterministic primary/group key ordering and a cap+1 sentinel. It never executes or logs the original SQL. max_rows caps the entire retained result (1000 maximum); page_size pages within that result. Repeat identical dataset/SQL/cap/page_size with next_cursor; the cursor binds actor and immutable model for 15 minutes. Query cache TTL is 60 seconds and binds owner, persona, session, SQL, model and current publication. Permission changes are rechecked before execution and result/cache publication. On cache expiry the pinned query is re-executed; refresh changes the generation and invalidates cached reuse. A cap-truncated result is explicitly marked truncated; next_cursor only traverses retained rows. Compilation and isolated DuckDB execution share one 8-second deadline. Admission permits one active request per user, two global execution slots and eight waiting requests, with a maximum 5-second queue wait. Complete response size is 2 MiB.",
         "x-allowed-personas": [
           "viewer",
           "analyst",
@@ -1275,8 +1277,7 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 1000,
-            "default": 100,
-            "description": "Must be <= max_rows. If max_rows is below 100, also explicitly supply a page_size no greater than that cap."
+            "description": "Defaults to min(100, max_rows). Must be <= max_rows; pagination traverses only the capped retained result."
           },
           "cursor": {
             "anyOf": [
@@ -2136,7 +2137,7 @@
         }
       },
       "503": {
-        "description": "No model is published, the selected immutable version/file fails integrity, or the isolated runtime is unavailable. Existing publication remains usable when refresh fails.",
+        "description": "No model is published, the selected immutable version/file fails integrity, or the isolated runtime is unavailable. Existing publication remains usable when refresh fails. compiler_unavailable means the separate bounded SQL compiler could not start or satisfy its protocol; no in-process fallback executes.",
         "headers": {
           "X-Request-ID": {
             "$ref": "#/components/headers/RequestId"
