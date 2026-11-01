@@ -6,6 +6,10 @@ connector before persistence. Their exact source recording timestamps and SHA-25
 hashes are in `provenance.json`. The timestamps describe local recording, not an
 EIA publication or revision time.
 
+Fixture JSON is serialized as UTF-8 with LF line endings. Hashes cover these
+sanitized, portable files, not unsanitized HTTP wire bytes. This avoids checksum
+changes when Git checks the repository out on another platform.
+
 Collection run: `662caeb500d1433ab55a5df82d403ca8`.
 
 - Metadata: each of the three nuclear-outage routes.

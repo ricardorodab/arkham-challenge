@@ -18,6 +18,8 @@ This correction illustrates why a plausible generated design is not sufficient e
 2. **Failure reporting hiding the real failure:** attempting to persist a diagnostic artifact could itself fail and replace the original typed API/data error. A regression test injects reporting I/O failure. Recording status and artifacts is now best effort, preserving the primary failure and the previous publication.
 3. **Coverage validation:** pagination ending with an empty page did not establish that an advertised source boundary had been received. A guard now rejects missing metadata-advertised boundaries and records other missing requested dates. Review also caught an indentation mistake while adding that guard: deletion-confirmation comparison had become unreachable. The comparison was moved back to its own deletion branch, with a regression test that requires the confirmation contents to match.
 
+4. **Fixture bytes after Git checkout:** the first clean checkout failed the recorded-response hash test because a Windows-created HTTP 403 fixture used CRLF while Git stored LF. The working directory alone had passed. The fixtures and provenance were normalized to UTF-8/LF, and a regression test now checks portable serialization. This was a fixture-provenance problem, not a change to downloaded Parquet or source values; checkout verification must pass after the correction.
+
 These are errors in generated work, not hypothetical defects. Named regression tests and live reruns provide distinct evidence; the existence of a fix alone is not proof.
 
 ## Verification approach

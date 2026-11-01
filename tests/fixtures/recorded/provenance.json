@@ -60,9 +60,10 @@
       "source_record": "Separate intentionally invalid-credential probe",
       "outside_capture_run": true,
       "stored_at_utc": "2026-11-01T05:57:39.401552+00:00",
-      "sha256": "544a20886275638d0a545dac7627dbfa998a432378616f54d3fcf3c542f81120",
+      "sha256": "607ce3f5c4c7dfaa4c28b129b0b726b6407fe935aa9f443be29590c7777af6ed",
       "http_status": 403,
       "row_count": null
     }
-  ]
+  ],
+  "serialization": "Sanitized fixture files use UTF-8 and LF line endings; hashes describe these portable files, not unsanitized HTTP wire bytes."
 }

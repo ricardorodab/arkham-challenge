@@ -146,7 +146,7 @@ Local snapshots protect against a failed refresh; they are **not an off-machine 
 
 For each route, recent extraction starts at its successful watermark minus 29 days, bounded by the source start. It ends at that route's captured metadata end. The successfully fetched interval is replaced, rather than merely upserted, so confirmed source deletions can be represented. Bounded full runs also replace only their requested interval and preserve existing observations outside it. An unbounded full run replaces the complete stored route with the newly extracted history. Unexpectedly empty replacement does not erase existing data.
 
-If observations would be deleted, a second independently paginated extraction must have the same logical content before publication. If the source changes between the two passes, the run fails. Source end dates that move behind an existing recent watermark also fail rather than silently moving coverage backwards.
+If observations would be deleted, a second independently paginated extraction must have the same logical content before publication. If the source changes between the two passes, the run fails. In either mode, an advertised source start later than stored coverage or an end behind the stored watermark fails before data requests, rather than silently shrinking history.
 
 The overlap handles recent revisions, not every possible historical correction. EIA exposes no general last-updated timestamp. Run a full extraction periodically to detect revisions outside the overlap; scheduling is not implemented in Part 1. Watermarks advance only when all routes have been successfully published together.
 

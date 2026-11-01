@@ -27,6 +27,15 @@ def load(name):
     return json.loads((RECORDED / name).read_text(encoding="utf-8"))
 
 
+def test_recorded_json_uses_portable_lf_bytes_for_provenance_hashes():
+    # Git checkout must not silently change the bytes covered by provenance.
+    for source in RECORDED.glob("*.json"):
+        raw = source.read_bytes()
+        assert b"\r\n" not in raw, source.name
+        assert raw.endswith(b"\n"), source.name
+        raw.decode("utf-8")
+
+
 class RecordedResponse(io.BytesIO):
     def __init__(self, payload):
         super().__init__(json.dumps(payload).encode("utf-8"))

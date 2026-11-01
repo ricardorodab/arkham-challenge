@@ -44,7 +44,7 @@ The full deployed product is planned to move this authority to PostgreSQL. Part 
 
 **Reason:** EIA can revise older observations and has no general update timestamp. The overlap catches recent changes; periodic full refresh is still needed. Scheduling belongs to later operational work. Display actual source coverage and extraction times instead of promising that today's data must already exist.
 
-An explicit start is accepted only with full mode. Bounded full extraction replaces its interval while retaining observations outside it; unbounded full extraction replaces all stored history. If a refresh would delete observations, a second extraction must confirm identical logical source content. Recent metadata regression behind the stored watermark fails instead of silently moving coverage backwards.
+An explicit start is accepted only with full mode. Bounded full extraction replaces its interval while retaining observations outside it; unbounded full extraction replaces all stored history. If a refresh would delete observations, a second extraction must confirm identical logical source content. In full and recent modes, a source start later than stored coverage or an end before the stored watermark fails before data requests, rather than silently shrinking history.
 
 ## 6. Treat source totals as diagnostic metadata
 
