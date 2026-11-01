@@ -2,7 +2,7 @@
 
 This matrix covers **Part 1: Data Connector**. This acceptance record does not claim that Parts 2–4, Django, arbitrary SQL, authentication, or Azure deployment are complete.
 
-Status: the full-history live extraction, real incremental rerun, published-file verification, recorded-response replay coverage, secret audit, and complete local test runs on Python 3.12/3.14 have been completed. Fresh-clone and final repository-state verification remain below. Entries distinguish implementation, actual execution, and remaining checks.
+Status: the full-history live extraction, real incremental rerun, published-file verification, recorded-response replay coverage, secret audit, and complete local test runs on Python 3.12/3.14 have been completed. A fresh checkout and new Python environment also passed the full suite without the supplied credential file. Entries distinguish implementation, actual execution, and source limitations.
 
 ## Core requirements
 
@@ -13,7 +13,7 @@ Status: the full-history live extraction, real incremental rerun, published-file
 | Required fields validated, with rationale | `domain.validate_row`; explicit schema, date/key/unit/numeric contracts; `tests/test_domain.py`. Rationale in README and DECISIONS. | All published files reopened with their exact recorded schema, valid unique keys and matching counts/hashes. The live run preserved 91 non-positive-capacity flags in each of facility and generator rather than altering source values. |
 | Stored locally as Parquet, with logging | `pipeline._route` writes typed ZSTD Parquet; CLI JSON logs use stderr; `Catalog._verify_files` reopens each file. | Full and recent snapshots each contain national/facility/generator Parquet and a manifest. Both passed `verify`; structured live logs passed the actual-key scan. |
 | Safe to rerun without duplicates or corruption | Immutable snapshots, OS writer lock, one SQLite publication transaction, per-grain natural keys, duplicate/conflict handling. Pipeline/storage tests cover idempotency, interval replacement, concurrent writers, failures and tampering. | Recent run `981a8f4ed5214ef6be4ad3cc5b4eee01` reread the 30-day overlap, added/changed/deleted zero observations, retained identical logical hashes for all three datasets, and passed verification with no duplicate keys. |
-| Deliberate failure behavior documented | README failure matrix and exit codes; EIA typed safe errors; pipeline preserves current snapshot; best-effort diagnostic persistence. | Full suite: 220 passed/one skipped on each of Python 3.12 and 3.14. A genuine HTTP 403 is replayed without retry. Real subprocess death before/after commit, diagnostic I/O failure, corruption, and source failures are covered. |
+| Deliberate failure behavior documented | README failure matrix and exit codes; EIA typed safe errors; pipeline preserves current snapshot; best-effort diagnostic persistence. | Full suite: 221 passed/one skipped on each of Python 3.12 and 3.14. A genuine HTTP 403 is replayed without retry. Real subprocess death before/after commit, diagnostic I/O failure, corruption, and source failures are covered. |
 
 ## Extras implemented and their evidence
 
@@ -77,14 +77,14 @@ Live ingestion additionally requires `EIA_API_KEY` in the process environment. D
 
 ## Final execution record
 
-Recorded completed-command evidence and remaining final checks:
+Recorded completed-command evidence:
 
-- Final combined suite: Python 3.14 — 220 passed, one skipped, 28.29 seconds; Python 3.12 — 220 passed, one skipped, 31.38 seconds. The single skip in each run is Windows symbolic-link privilege availability; both process-crash cases are included in the 220 passed.
-- Ruff lint passed; formatting checks passed for 19 source/test files; `pip check` passed. Fresh-clone execution: pending.
+- Final combined suite: Python 3.14 — 221 passed, one skipped, 27.11 seconds; fresh checkout with Python 3.12 — 221 passed, one skipped, 26.88 seconds. The single skip in each run is Windows symbolic-link privilege availability; both process-crash cases and portable-recording regression are included in the 221 passed.
+- Ruff lint, formatting of 19 source/test files, and `pip check` passed in the main and fresh-checkout environments. The fresh checkout at commit `2550ad2` used a newly created virtual environment, `requirements-dev.lock`, an editable package installation, no `key.txt`, and an empty `EIA_API_KEY`.
 - Full-history and recent run IDs, timing, row counts and fingerprints: completed and recorded above.
 - `verify` for both full and current snapshots: completed successfully, including manifest/file hashes, schema, row counts, date coverage, natural keys and logical hashes.
 - Recorded-response provenance and actual HTTP 403 replay coverage: completed; see the recorded fixture directory and `tests/test_recorded.py`.
 - Secret/credential exclusion scan: passed for all Git objects, 44 project files, 10 persisted JSON files, six Parquet files with decompressed source-row inspection, and full/recent logs. `key.txt` is ignored and untracked. These counts identify the audit scope at execution time.
-- Incremental commits exist; final clean tracked working state: pending after documentation and final verification are committed.
+- Implementation, ordinary fixes, recordings and evidence are preserved in incremental commits without rewriting history. Final delivery requires the committed working tree to be clean; ignored local inputs, virtual environments and datasets remain available.
 
 No completion claim should be based solely on this matrix's existence or on successful synthetic tests.

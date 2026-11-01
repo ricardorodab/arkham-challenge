@@ -210,9 +210,9 @@ The run made 239 HTTP requests, no retries, and took 878.913 seconds. A recent r
 
 The full run reported zero duplicate keys and no missing calendar dates in these stored routes. It preserved 91 `capacity_non_positive` flags in the facility grain and 91 in the generator grain; these counts do not imply distinct events or a diagnosed source error. The facility response declared 714,657 rows while the observed facility extract contained 438,119, which is retained as a metadata-quality warning rather than used to truncate or fabricate data.
 
-The complete local suite passed on both Python 3.14 (220 passed, one skipped; 28.29 seconds) and Python 3.12 (220 passed, one skipped; 31.38 seconds). The only skip was Windows symbolic-link privilege availability. Both real-process crash cases, OS writer-lock contention, and path traversal checks passed. Ruff lint, formatting of all 19 source/test files, and dependency consistency checks passed.
+The complete local suite passed on both Python 3.14 (221 passed, one skipped; 27.11 seconds) and a fresh checkout on Python 3.12 (221 passed, one skipped; 26.88 seconds). The only skip was Windows symbolic-link privilege availability. Both real-process crash cases, OS writer-lock contention, and path traversal checks passed. Ruff lint, formatting of all 19 source/test files, and dependency consistency checks passed.
 
-See `PART1_ACCEPTANCE.md` for exact fingerprints and remaining fresh-clone/final repository checks. CI is configured for Windows/Linux and Python 3.12/3.14; configuration is not a claim that a remote GitHub Actions run has occurred.
+See `PART1_ACCEPTANCE.md` for exact fingerprints and completed fresh-checkout verification. A clean checkout without `key.txt` had 221 passing tests and one Windows privilege-dependent skip using the locked dependencies. CI is configured for Windows/Linux and Python 3.12/3.14; configuration is not a claim that a remote GitHub Actions run has occurred.
 
 - `DECISIONS.md`: choices, rejected alternatives, and consequences for this part.
 - `NOTES.md`: AI attribution, corrections, and verification record.
