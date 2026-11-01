@@ -218,6 +218,41 @@ def test_runtime_status_contains_no_local_paths():
     assert status["available"] is True
     assert status["isolation"] == "wasm-buffer-v1"
     assert "D:\\" not in json.dumps(status)
+    assert status["process_memory_limit_mib"] == (512 if os.name == "nt" else None)
+    assert status["data_allocation_limit_mib"] == (512 if os.name != "nt" else None)
+
+
+@pytest.mark.parametrize("version", ["v22.13.0", "v24.12.0", "v25.0.0"])
+def test_unsupported_node_is_denied_before_reading_selected_data_or_worker_spawn(
+    parquet, monkeypatch, version
+):
+    source_sha256 = hashlib.sha256(parquet.read_bytes()).hexdigest()
+    original_open = Path.open
+
+    def protected_open(path, *args, **kwargs):
+        if path == parquet:
+            pytest.fail("Do not read selected data with an unsupported runtime")
+        return original_open(path, *args, **kwargs)
+
+    def worker_forbidden(*args, **kwargs):
+        pytest.fail("Do not spawn a worker with an unsupported runtime")
+
+    def version_result(args, **kwargs):
+        assert args[-1] == "--version"
+        return subprocess.CompletedProcess(args, 0, stdout=version.encode() + b"\n", stderr=b"")
+
+    monkeypatch.setattr(Path, "open", protected_open)
+    monkeypatch.setattr(sandbox.subprocess, "run", version_result)
+    monkeypatch.setattr(sandbox.subprocess, "Popen", worker_forbidden)
+    sandbox._node_version.cache_clear()
+    try:
+        with pytest.raises(sandbox.SandboxError) as error:
+            sandbox.run_query(
+                parquet, "sample", "SELECT * FROM sample", expected_sha256=source_sha256
+            )
+        assert error.value.code == "sandbox_unavailable"
+    finally:
+        sandbox._node_version.cache_clear()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job Object boundary")

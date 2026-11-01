@@ -124,7 +124,8 @@ def runtime_status() -> dict[str, Any]:
             "package": PACKAGE_VERSION,
             "engine": ENGINE_VERSION,
             "isolation": "wasm-buffer-v1",
-            "process_memory_limit_mib": 512,
+            "process_memory_limit_mib": 512 if os.name == "nt" else None,
+            "data_allocation_limit_mib": 512 if os.name != "nt" else None,
             "wasm_memory_limit_mib": 256,
         }
     except (SandboxError, OSError, subprocess.SubprocessError, UnicodeError):
