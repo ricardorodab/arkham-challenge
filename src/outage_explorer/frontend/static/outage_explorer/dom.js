@@ -63,21 +63,23 @@ const TITLES = {
   national_reconciliation_daily: 'National reconciliation',
   data_quality_events: 'Data quality events',
 };
-export const datasetTitle = (id) => TITLES[id] || id.replaceAll('_', ' ');
+export const datasetTitle = (id) =>
+  Object.hasOwn(TITLES, id) ? TITLES[id] : id.replaceAll('_', ' ');
+const COLUMN_TITLES = {
+  capacity_mw: 'Capacity (MW)',
+  outage_mw: 'Offline (MW)',
+  offline_pct: 'Offline share (%)',
+  offline_share: 'Offline share',
+  reported_outage_pct: 'Reported outage (%)',
+  period: 'Date',
+  facility_id: 'Facility ID',
+  generator_id: 'Generator ID',
+  facility_name: 'Facility',
+  quality_flags: 'Quality flags',
+  source_row_hash: 'Source fingerprint',
+};
 export const columnTitle = (name) =>
-  ({
-    capacity_mw: 'Capacity (MW)',
-    outage_mw: 'Offline (MW)',
-    offline_pct: 'Offline share (%)',
-    offline_share: 'Offline share',
-    reported_outage_pct: 'Reported outage (%)',
-    period: 'Date',
-    facility_id: 'Facility ID',
-    generator_id: 'Generator ID',
-    facility_name: 'Facility',
-    quality_flags: 'Quality flags',
-    source_row_hash: 'Source fingerprint',
-  })[name] || name.replaceAll('_', ' ');
+  Object.hasOwn(COLUMN_TITLES, name) ? COLUMN_TITLES[name] : name.replaceAll('_', ' ');
 
 export function isoDate(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;

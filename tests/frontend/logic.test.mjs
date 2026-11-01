@@ -15,6 +15,7 @@ import {
   dateLabel,
   numberLabel,
   scalarLabel,
+  columnTitle,
 } from '../../src/outage_explorer/frontend/static/outage_explorer/dom.js';
 import {
   csvCell,
@@ -85,6 +86,13 @@ test('zero, missing values, exact decimals and text identifiers remain distinct'
   assert.equal(scalarLabel('1234.123456789012', 'DECIMAL(24,12)'), '1,234.123456789012');
   assert.equal(scalarLabel('100.250000000', 'DECIMAL(24,9)'), '100.25');
   assert.equal(scalarLabel(null, 'DECIMAL(24,9)'), '—');
+});
+
+test('user SQL aliases do not resolve inherited JavaScript object properties', () => {
+  assert.equal(columnTitle('constructor'), 'constructor');
+  assert.equal(columnTitle('toString'), 'toString');
+  assert.equal(typeof columnTitle('__proto__'), 'string');
+  assert.equal(columnTitle('capacity_mw'), 'Capacity (MW)');
 });
 
 test('spreadsheet-safe CSV protects formulas, leading whitespace and leading-zero text IDs', () => {

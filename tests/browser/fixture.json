@@ -1,0 +1,10 @@
+{
+  "passwords": {
+    "viewer": "Synthetic-Viewer-Browser-2026!",
+    "analyst": "Synthetic-Analyst-Browser-2026!",
+    "admin": "Synthetic-Admin-Browser-2026!"
+  },
+  "secret_key": "synthetic-browser-fixture-secret-only-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  "periods": ["2026-09-01", "2026-09-03", "2026-09-04"],
+  "missing_period": "2026-09-02"
+}
