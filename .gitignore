@@ -1,0 +1,31 @@
+# Credentials and supplied inputs must never be staged.
+key.txt
+*.key
+.env
+.env.*
+!.env.example
+Software Engineer - Technical Challenge.pdf
+
+# Local datasets, control database, logs, recordings and scratch work.
+/data/
+/work/
+*.sqlite3
+*.sqlite3-*
+
+# Python tooling and generated packages.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Editor / operating-system files.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
