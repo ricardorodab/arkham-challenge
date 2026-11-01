@@ -16,11 +16,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import duckdb
 
 from .domain import ROUTES, SCHEMA_VERSION, canonical_json, identifier
+
+if TYPE_CHECKING:
+    from .modeling import ModelBundle
 
 
 class StorageError(Exception):
@@ -106,7 +109,13 @@ class Catalog:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.snapshots = self.root / "snapshots"
-        for directory in (self.root / ".staging", self.snapshots, self.root / "runs"):
+        for directory in (
+            self.root / ".staging",
+            self.snapshots,
+            self.root / "runs",
+            self.root / "models",
+            self.root / ".model-staging",
+        ):
             if directory.is_symlink():
                 raise StorageError("Storage directories cannot be symbolic links.")
             directory.mkdir(exist_ok=True)
@@ -146,6 +155,28 @@ class Catalog:
                 current_snapshot_id TEXT REFERENCES snapshots(snapshot_id)
             );
             INSERT OR IGNORE INTO publication(singleton,current_snapshot_id) VALUES(1,NULL);
+            CREATE TABLE IF NOT EXISTS model_builds (
+                model_id TEXT PRIMARY KEY,
+                source_snapshot_id TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed','interrupted')),
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                error_code TEXT,
+                error_message TEXT
+            );
+            CREATE TABLE IF NOT EXISTS model_snapshots (
+                model_id TEXT PRIMARY KEY,
+                source_snapshot_id TEXT NOT NULL REFERENCES snapshots(snapshot_id),
+                relative_path TEXT NOT NULL UNIQUE,
+                manifest_json TEXT NOT NULL,
+                manifest_sha256 TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS model_publication (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                current_model_id TEXT REFERENCES model_snapshots(model_id)
+            );
+            INSERT OR IGNORE INTO model_publication(singleton,current_model_id) VALUES(1,NULL);
         """)
         self._db.commit()
 
@@ -161,6 +192,11 @@ class Catalog:
     def recover_interrupted(self) -> int:
         """Call only while holding the OS writer lock, never from a reader."""
         with self._db:
+            self._db.execute(
+                "UPDATE model_builds SET status='interrupted',finished_at=?,error_code='interrupted',"
+                "error_message='The process stopped before publication.' WHERE status='running'",
+                (_utc_now(),),
+            )
             result = self._db.execute(
                 "UPDATE runs SET status='interrupted',finished_at=?,error_code='interrupted',"
                 "error_message='The process stopped before publication.' WHERE status='running'",
@@ -318,7 +354,14 @@ class Catalog:
             connection.close()
         return {"snapshot_id": ref.id, "verified": True, "routes": verified}
 
-    def publish(self, run_id: str, snapshot_dir: Path, manifest: dict[str, Any]) -> None:
+    def publish(
+        self,
+        run_id: str,
+        snapshot_dir: Path,
+        manifest: dict[str, Any],
+        *,
+        model: ModelBundle | None = None,
+    ) -> None:
         _safe_id(run_id)
         snapshot_id = _safe_id(manifest.get("snapshot_id"))
         path = self._snapshot_path(snapshot_id)
@@ -328,6 +371,8 @@ class Catalog:
         if canonical_json(stored_manifest) != canonical_json(manifest):
             raise StorageError("Publication manifest differs from disk.", code="corrupt_snapshot")
         self._verify_files(SnapshotRef(snapshot_id, path, stored_manifest))
+        if model is not None:
+            self._validate_model_publication(model, SnapshotRef(snapshot_id, path, stored_manifest))
         statistics = {
             "snapshot_id": snapshot_id,
             "http": manifest.get("http", {}),
@@ -363,6 +408,14 @@ class Catalog:
             self._db.execute(
                 "UPDATE publication SET current_snapshot_id=? WHERE singleton=1", (snapshot_id,)
             )
+            if model is not None:
+                self._insert_model(model)
+            else:
+                # Legacy/raw-only callers must invalidate the model pointer,
+                # never make an old model appear current for a new raw snapshot.
+                self._db.execute(
+                    "UPDATE model_publication SET current_model_id=NULL WHERE singleton=1"
+                )
             self._db.execute(
                 "UPDATE runs SET status='succeeded',finished_at=?,snapshot_id=?,statistics_json=? "
                 "WHERE run_id=?",
@@ -420,3 +473,162 @@ class Catalog:
         if ref is None:
             raise StorageError("No published snapshot was found.", code="no_snapshot")
         return self._verify_files(ref)
+
+    def snapshot(self, snapshot_id: str) -> SnapshotRef:
+        row = self._db.execute(
+            "SELECT * FROM snapshots WHERE snapshot_id=?", (_safe_id(snapshot_id),)
+        ).fetchone()
+        if row is None:
+            raise StorageError("No published snapshot was found.", code="no_snapshot")
+        return self._ref(row)
+
+    def _model_ref(self, row: sqlite3.Row) -> ModelBundle:
+        from .modeling import ModelBundle
+
+        model_id = _safe_id(row["model_id"])
+        path = self.root / "models" / model_id
+        if (
+            row["relative_path"] != f"models/{model_id}"
+            or path.is_symlink()
+            or not path.is_dir()
+            or path.resolve() != path
+        ):
+            raise StorageError("Model directory is missing or unsafe.", code="corrupt_model")
+        manifest, checksum = self._manifest_file(path)
+        if (
+            checksum != row["manifest_sha256"]
+            or canonical_json(manifest) != row["manifest_json"]
+            or manifest.get("model_id") != model_id
+            or manifest.get("source_snapshot_id") != row["source_snapshot_id"]
+        ):
+            raise StorageError("Model manifest integrity check failed.", code="corrupt_model")
+        return ModelBundle(model_id, path, manifest)
+
+    def current_model(self) -> ModelBundle | None:
+        # Both publication pointers are resolved in one read transaction.
+        row = self._db.execute(
+            "SELECT m.*,p.current_snapshot_id AS active_source "
+            "FROM model_publication mp JOIN model_snapshots m ON m.model_id=mp.current_model_id "
+            "CROSS JOIN publication p WHERE mp.singleton=1 AND p.singleton=1"
+        ).fetchone()
+        if row is None:
+            return None
+        if row["source_snapshot_id"] != row["active_source"]:
+            raise StorageError("No matching model for the current source.", code="stale_model")
+        return self._model_ref(row)
+
+    def model(self, model_id: str) -> ModelBundle:
+        row = self._db.execute(
+            "SELECT * FROM model_snapshots WHERE model_id=?", (_safe_id(model_id),)
+        ).fetchone()
+        if row is None:
+            raise StorageError("No published model was found.", code="no_model")
+        return self._model_ref(row)
+
+    def start_model_build(self, model_id: str, source_snapshot_id: str) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT INTO model_builds(model_id,source_snapshot_id,status,started_at) "
+                "VALUES(?,?,'running',?)",
+                (_safe_id(model_id), _safe_id(source_snapshot_id), _utc_now()),
+            )
+
+    def fail_model_build(self, model_id: str, message: str, *, interrupted: bool = False) -> None:
+        with self._db:
+            self._db.execute(
+                "UPDATE model_builds SET status=?,finished_at=?,error_code=?,error_message=? "
+                "WHERE model_id=? AND status='running'",
+                (
+                    "interrupted" if interrupted else "failed",
+                    _utc_now(),
+                    "interrupted" if interrupted else "invalid_model",
+                    message[:2000],
+                    _safe_id(model_id),
+                ),
+            )
+
+    def model_history(self, limit: int = 10) -> list[dict[str, Any]]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
+            raise StorageError("History limit must be 1..1000.", code="invalid_arguments")
+        return [
+            dict(row)
+            for row in self._db.execute(
+                "SELECT * FROM model_builds ORDER BY started_at DESC,model_id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        ]
+
+    def _validate_model_publication(self, model: ModelBundle, source: SnapshotRef) -> None:
+        from .model_store import verify_model
+
+        expected = self.root / "models" / _safe_id(model.id)
+        if model.path.absolute() != expected or expected.resolve() != expected:
+            raise StorageError("Model publication path is invalid.", code="corrupt_model")
+        if model.manifest.get("source_snapshot_id") != source.id:
+            raise StorageError("Model is bound to another source.", code="stale_model")
+        sources = model.manifest.get("source_files", {})
+        if set(sources) != {spec.name for spec in ROUTES}:
+            raise StorageError("Model source bindings are incomplete.", code="corrupt_model")
+        for spec in ROUTES:
+            raw_info = source.manifest["routes"][spec.name]
+            if (
+                sources[spec.name].get("sha256") != raw_info["sha256"]
+                or sources[spec.name].get("rows") != raw_info["rows"]
+            ):
+                raise StorageError("Model source fingerprints differ.", code="corrupt_model")
+        verify_model(model)
+
+    def _insert_model(self, model: ModelBundle) -> None:
+        active = self._db.execute(
+            "SELECT status,source_snapshot_id FROM model_builds WHERE model_id=?", (model.id,)
+        ).fetchone()
+        if (
+            active is None
+            or active["status"] != "running"
+            or active["source_snapshot_id"] != model.manifest["source_snapshot_id"]
+        ):
+            raise StorageError(
+                "Model publication requires a matching active build.", code="invalid_publication"
+            )
+        manifest, checksum = self._manifest_file(model.path)
+        if canonical_json(manifest) != canonical_json(model.manifest):
+            raise StorageError("Model manifest differs from disk.", code="corrupt_model")
+        self._db.execute(
+            "INSERT INTO model_snapshots VALUES(?,?,?,?,?,?)",
+            (
+                model.id,
+                manifest["source_snapshot_id"],
+                f"models/{model.id}",
+                canonical_json(manifest),
+                checksum,
+                manifest["created_at"],
+            ),
+        )
+        self._db.execute(
+            "UPDATE model_publication SET current_model_id=? WHERE singleton=1", (model.id,)
+        )
+        self._db.execute(
+            "UPDATE model_builds SET status='succeeded',finished_at=? WHERE model_id=? AND status='running'",
+            (_utc_now(), model.id),
+        )
+
+    def publish_model(self, model: ModelBundle) -> None:
+        source = self.snapshot(model.manifest["source_snapshot_id"])
+        self._validate_model_publication(model, source)
+        try:
+            self._db.execute("BEGIN IMMEDIATE")
+            current = self._db.execute(
+                "SELECT current_snapshot_id FROM publication WHERE singleton=1"
+            ).fetchone()[0]
+            if current != source.id:
+                raise StorageError("The source is no longer current.", code="stale_model")
+            self._insert_model(model)
+            self._db.commit()
+        except StorageError:
+            self._db.rollback()
+            raise
+        except sqlite3.Error:
+            self._db.rollback()
+            raise StorageError(
+                "Model publication transaction failed.", code="publication_failed"
+            ) from None

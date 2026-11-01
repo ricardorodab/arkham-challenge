@@ -393,6 +393,7 @@ def ingest(config: IngestConfig, client: EIAClient) -> dict[str, Any]:
         timer = time.monotonic()
         cancelled = threading.Event()
         route_results: dict[str, Any] = {}
+        candidate_model = None
         LOG.info("run_started", extra={"run_id": run_id, "mode": config.mode})
         try:
             metadata = {spec.name: client.fetch_metadata(spec.route) for spec in ROUTES}
@@ -454,14 +455,28 @@ def ingest(config: IngestConfig, client: EIAClient) -> dict[str, Any]:
             snapshot = root / "snapshots" / run_id
             os.replace(stage, snapshot)
             _sync_directory(snapshot.parent)
-            catalog.publish(run_id, snapshot, manifest)
+            # Build from closed immutable sources; publish both generations in
+            # one catalog transaction only after all transformations validate.
+            from .model_store import prepare_model
+
+            candidate_model = prepare_model(catalog, SnapshotRef(run_id, snapshot, manifest))
+            catalog.publish(run_id, snapshot, manifest, model=candidate_model)
             LOG.info(
                 "run_succeeded",
-                extra={"run_id": run_id, "duration_seconds": manifest["duration_seconds"]},
+                extra={"run_id": run_id, "duration_seconds": round(time.monotonic() - timer, 3)},
             )
             return manifest
         except BaseException as error:
             cancelled.set()
+            if candidate_model is not None:
+                try:
+                    catalog.fail_model_build(
+                        candidate_model.id,
+                        "Combined publication failed.",
+                        interrupted=isinstance(error, KeyboardInterrupt),
+                    )
+                except Exception:
+                    LOG.error("model_status_write_failed", extra={"run_id": run_id})
             if isinstance(error, KeyboardInterrupt):
                 code, message = "interrupted", "Interrupted by the operator."
             elif isinstance(error, (EIAClientError, DataValidationError, StorageError)):

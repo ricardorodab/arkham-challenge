@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from importlib.resources import files
 from typing import Any
@@ -30,7 +31,7 @@ class DatasetSpec:
             "id": self.id,
             "schema": [list(item) for item in self.columns],
             "primary_key": list(self.primary_key),
-            "foreign_keys": list(self.foreign_keys),
+            "foreign_keys": deepcopy(list(self.foreign_keys)),
             "classification": self.classification,
             "description": self.description,
             "allowed_personas": ["Viewer", "Analyst", "Admin"]
@@ -294,7 +295,7 @@ def contract_profile(version: int) -> dict[str, Any]:
         return {
             "model_version": MODEL_VERSION,
             "datasets": {key: value.catalog_definition() for key, value in DATASETS.items()},
-            "metrics": METRICS,
+            "metrics": deepcopy(METRICS),
         }
     if version == 1:
         return json.loads(

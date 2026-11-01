@@ -122,12 +122,12 @@ def test_publication_fault_keeps_previous_snapshot_and_failed_quality(
     else:
         original_publish = Catalog.publish
 
-        def fail_publication_transaction(catalog, run_id, snapshot_dir, manifest):
+        def fail_publication_transaction(catalog, run_id, snapshot_dir, manifest, *, model=None):
             catalog._db.execute("""
                 CREATE TRIGGER simulated_publication_failure BEFORE UPDATE ON publication
                 BEGIN SELECT RAISE(ABORT,'Simulated transaction failure.'); END;
             """)
-            return original_publish(catalog, run_id, snapshot_dir, manifest)
+            return original_publish(catalog, run_id, snapshot_dir, manifest, model=model)
 
         monkeypatch.setattr(Catalog, "publish", fail_publication_transaction)
     with pytest.raises(StorageError) as error:
