@@ -1,0 +1,12 @@
+{
+  "response": {
+    "total": "2850",
+    "dateFormat": "YYYY-MM-DD",
+    "frequency": "daily",
+    "data": [
+      {"period": "2026-09-01", "capacity": "97620.5", "outage": "2714.245", "percentOutage": "2.78", "capacity-units": "megawatts", "outage-units": "megawatts", "percentOutage-units": "percent"}
+    ]
+  },
+  "request": {"command": "/v2/nuclear-outages/us-nuclear-outages/data/", "params": {"api_key": "[REDACTED]", "offset": "0", "length": "5000"}},
+  "apiVersion": "2.1.12"
+}

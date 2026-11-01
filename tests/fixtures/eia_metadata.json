@@ -1,0 +1,17 @@
+{
+  "response": {
+    "id": "facility-nuclear-outages",
+    "name": "Facility Nuclear Outages",
+    "frequency": [{"id": "daily", "description": "One data point for each day", "format": "YYYY-MM-DD"}],
+    "facets": [{"id": "facility", "description": "Facility"}],
+    "data": {
+      "capacity": {"alias": "Capacity", "units": "megawatts"},
+      "outage": {"alias": "Outage", "units": "megawatts"},
+      "percentOutage": {"alias": "Percent Outage", "units": "percent"}
+    },
+    "startPeriod": "2007-01-01",
+    "endPeriod": "2026-09-30"
+  },
+  "request": {"command": "/v2/nuclear-outages/facility-nuclear-outages/", "params": {"api_key": "[REDACTED]"}},
+  "apiVersion": "2.1.12"
+}
