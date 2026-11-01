@@ -1,4 +1,4 @@
-name: Connector checks
+name: Data and backend checks
 
 on:
   push:
@@ -24,6 +24,11 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: requirements-dev.lock
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.13.0'
+          cache: npm
+      - run: npm ci --ignore-scripts
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install --no-deps -e .
       - run: python -m ruff check .

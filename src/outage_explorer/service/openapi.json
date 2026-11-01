@@ -1,0 +1,2176 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Outage Explorer API",
+    "version": "1.0.0",
+    "description": "Same-origin analytical API over immutable model publications. Sessions and product personas are server-owned: Viewer may read national data, Analyst may also read detail data, and Admin additionally queues refreshes and inspects readiness. Unknown/unauthorized dataset IDs have the same default-deny response. Request JSON is strict (no duplicate keys/unknown fields/non-finite constants); query parameters reject duplicates and unknown names. All responses use no-store browser cache policy. Private engine diagnostics, original/generated SQL, source credentials and physical paths are never returned or logged. Rows use column-described exact scalar encoding; see DecimalString and BigIntegerString. Local HTTP mode is loopback-only; HTTPS deployment uses Secure session/CSRF cookies. Cookies are SameSite=Lax; session cookies are HttpOnly. Cross-origin mutations require valid same-origin CSRF checks. The source API key belongs only to the refresh worker environment."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Same-origin service; retain browser-managed cookies."
+    }
+  ],
+  "security": [
+    {
+      "SessionCookie": []
+    }
+  ],
+  "x-limits": {
+    "request_body_bytes": 32768,
+    "sql_utf8_bytes": 16384,
+    "response_bytes": 2097152,
+    "query_retained_rows": 1000,
+    "query_timeout_seconds": 8,
+    "cursor_ttl_seconds": 900,
+    "query_cache_ttl_seconds": 60,
+    "active_queries_per_user": 1,
+    "global_execution_slots": 2,
+    "global_queue_slots": 8
+  },
+  "paths": {
+    "/api/v1/auth/csrf": {
+      "get": {
+        "operationId": "bootstrapCsrf",
+        "summary": "Obtain a same-origin CSRF cookie and token",
+        "description": "Unauthenticated bootstrap. Retain the csrftoken cookie and send the returned token in X-CSRFToken on every POST, including login. A token alone is insufficient without its matching cookie.",
+        "x-allowed-personas": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CSRFResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "Set-Cookie": {
+                "description": "Sets the csrftoken cookie (SameSite=Lax; Secure when HTTPS mode is configured).",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "operationId": "login",
+        "summary": "Authenticate with server-owned credentials",
+        "description": "Unauthenticated but CSRF-protected login. Establishes a server session and rotates the CSRF token. Retain sessionid and csrftoken cookies; replace the header token with the returned value. Persona is loaded from the account, never from request role headers or body fields.",
+        "x-allowed-personas": [
+          "viewer",
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "Set-Cookie": {
+                "description": "Establishes the HttpOnly sessionid cookie and rotates csrftoken. SameSite=Lax; Secure in HTTPS mode.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "429": {
+            "$ref": "#/components/responses/429"
+          },
+          "415": {
+            "$ref": "#/components/responses/415"
+          }
+        },
+        "security": [
+          {
+            "CSRFCookie": [],
+            "CSRFHeader": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "One UTF-8 JSON object, at most 32 KiB. Duplicate keys, non-finite constants and unknown fields are rejected.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              },
+              "example": {
+                "username": "example-user",
+                "password": "example-password-not-a-credential"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "summary": "Revoke this browser session",
+        "description": "Requires a valid current session and CSRF token. Sends an empty JSON object; flushes the session. Old session/cursor/cache bindings cannot be used by a subsequent login.",
+        "x-allowed-personas": [
+          "viewer",
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "415": {
+            "$ref": "#/components/responses/415"
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CSRFCookie": [],
+            "CSRFHeader": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "One UTF-8 JSON object, at most 32 KiB. Duplicate keys, non-finite constants and unknown fields are rejected.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LogoutRequest"
+              },
+              "example": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/session": {
+      "get": {
+        "operationId": "getSession",
+        "summary": "Read the current server-derived identity",
+        "description": "Returns username and product persona. Account activity, password/session hash and persona are checked from current server state.",
+        "x-allowed-personas": [
+          "viewer",
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          }
+        }
+      }
+    },
+    "/api/v1/catalog": {
+      "get": {
+        "operationId": "getCatalog",
+        "summary": "Read the caller-filtered analytical catalog",
+        "description": "Viewer receives only the two national datasets and authorized metric references. Analyst/Admin receive the detail catalog too. Filtering occurs before row counts, schemas, relationships or names are disclosed. Physical paths and file names are never included. Historical model contracts retain their original metadata and warnings.",
+        "x-allowed-personas": [
+          "viewer",
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          }
+        },
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "query",
+            "required": false,
+            "description": "Optional immutable analytical model. Omit for the current publication.",
+            "schema": {
+              "$ref": "#/components/schemas/ModelId"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/data/{dataset_id}": {
+      "get": {
+        "operationId": "previewDataset",
+        "summary": "Preview a permitted logical dataset",
+        "description": "Read-only keyset pagination in primary-key order. The signed cursor expires after 15 minutes and binds the immutable model, dataset, user/session/persona, limit and filters. Repeat every filter and limit unchanged when providing the cursor. Pages remain pinned when a newer model is published; no missing observations are filled. The per-page limit is at most 1000 and the complete response must fit 2 MiB.",
+        "x-allowed-personas": [
+          "viewer",
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "429": {
+            "$ref": "#/components/responses/429"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          },
+          "504": {
+            "$ref": "#/components/responses/504"
+          }
+        },
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "description": "Choose a permitted ID from the filtered catalog.",
+            "schema": {
+              "$ref": "#/components/schemas/DatasetId"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive calendar-date lower bound; supported only when the dataset has period.",
+            "schema": {
+              "$ref": "#/components/schemas/DateString"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive upper bound, on or after start.",
+            "schema": {
+              "$ref": "#/components/schemas/DateString"
+            }
+          },
+          {
+            "name": "facility_id",
+            "in": "query",
+            "required": false,
+            "description": "Exact text identity; supported only when the dataset has this field. Never evaluated as SQL.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Per-page row limit; unchanged on cursor requests.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000,
+              "default": 100
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor from next_cursor.",
+            "schema": {
+              "$ref": "#/components/schemas/Cursor"
+            }
+          },
+          {
+            "name": "model_id",
+            "in": "query",
+            "required": false,
+            "description": "Optional immutable version; must agree with the cursor when both are provided.",
+            "schema": {
+              "$ref": "#/components/schemas/ModelId"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/query": {
+      "post": {
+        "operationId": "executeQuery",
+        "summary": "Execute the bounded single-dataset SELECT subset",
+        "description": "Execute one SELECT over the chosen logical dataset. Supported: projections and stars, quoted/case-insensitive identifiers, aliases, literals, arithmetic/comparisons/boolean predicates, WHERE, DATE literals and safe scalar CAST, ORDER BY, GROUP BY/HAVING, COUNT/SUM/AVG/MIN/MAX (including single-expression aggregate DISTINCT), ROUND/COALESCE/ABS and LIKE/ILIKE. Unsupported: writes, joins, CTEs, subqueries, unions, windows, top-level DISTINCT, table functions, external paths/URLs, schema/catalog qualification, sampling/pivots and unknown functions/nodes. SQL OFFSET is unsupported; API cursors own pagination. The server authorizes every named table before opening any model, validates columns, regenerates the accepted AST and adds deterministic primary/group key ordering and a cap+1 sentinel. It never executes or logs the original SQL. max_rows caps the entire retained result (1000 maximum); page_size pages within that result. Repeat identical dataset/SQL/cap/page_size with next_cursor; the cursor binds actor and immutable model for 15 minutes. Query cache TTL is 60 seconds and binds owner, persona, session, SQL, model and current publication. Permission changes are rechecked before execution and result/cache publication. On cache expiry the pinned query is re-executed; refresh changes the generation and invalidates cached reuse. A cap-truncated result is explicitly marked truncated; next_cursor only traverses retained rows. Maximum query execution is 8 seconds and complete response size is 2 MiB.",
+        "x-allowed-personas": [
+          "viewer",
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "429": {
+            "$ref": "#/components/responses/429"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          },
+          "504": {
+            "$ref": "#/components/responses/504"
+          },
+          "415": {
+            "$ref": "#/components/responses/415"
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CSRFCookie": [],
+            "CSRFHeader": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "One UTF-8 JSON object, at most 32 KiB. Duplicate keys, non-finite constants and unknown fields are rejected.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              },
+              "example": {
+                "dataset_id": "fleet_daily",
+                "sql": "SELECT period, offline_share FROM fleet_daily ORDER BY period",
+                "max_rows": 1000,
+                "page_size": 100
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/refresh": {
+      "get": {
+        "operationId": "listRefreshJobs",
+        "summary": "List refresh jobs owned by this Admin",
+        "description": "Returns only the authenticated Admin owner's jobs. It does not expose other users' job IDs or status.",
+        "x-allowed-personas": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefreshListResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum number of owned jobs.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 10
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "enqueueRefresh",
+        "summary": "Enqueue an asynchronous source/model refresh",
+        "description": "Admin only. Enqueues database-backed work and returns immediately; a separately invoked worker owns source credentials and builds/publishes source plus model atomically. No EIA key is accepted by this HTTP API. Exactly one refresh may be queued/running globally. Optional Idempotency-Key is scoped to the Admin owner: same key and mode returns the existing job with 200, a different mode returns 409. A new job returns 202 and Location; poll the owner-only status URL. Failure preserves the previous publication; queued work is rechecked for an active Admin before execution.",
+        "x-allowed-personas": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Existing job replayed with the same owner, idempotency key and mode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefreshJob"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "Location": {
+                "description": "Owner-only URL for polling this job.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "415": {
+            "$ref": "#/components/responses/415"
+          },
+          "202": {
+            "description": "New asynchronous refresh job queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefreshJob"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "Location": {
+                "description": "Owner-only URL for polling this job.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CSRFCookie": [],
+            "CSRFHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "Optional owner-scoped key for retrying the same mode.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "maxLength": 128
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "One UTF-8 JSON object, at most 32 KiB. Duplicate keys, non-finite constants and unknown fields are rejected.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              },
+              "example": {
+                "mode": "recent"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/refresh/{job_id}": {
+      "get": {
+        "operationId": "getRefreshJob",
+        "summary": "Read a refresh job owned by this Admin",
+        "description": "Admin only and owner only. Another Admin receives the same 404 as for an unknown job. Queued/running jobs are not a successful refresh; only succeeded identifies a completed publication.",
+        "x-allowed-personas": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefreshJob"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          }
+        },
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "description": "Owned job identifier from enqueue/list.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/health/live": {
+      "get": {
+        "operationId": "getLiveness",
+        "summary": "Check that the HTTP service responds",
+        "description": "Public, constant status only. Performs no model, catalog, query, source-network or credential access and discloses no data/version metadata.",
+        "x-allowed-personas": [],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/health/ready": {
+      "get": {
+        "operationId": "getReadiness",
+        "summary": "Inspect model/runtime readiness as Admin",
+        "description": "Admin-only operational metadata. Checks for a published model and the pinned isolated runtime; does not execute an EIA request or user query. A failed dependency returns 503.",
+        "x-allowed-personas": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          }
+        }
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "operationId": "getOpenAPI",
+        "summary": "Read this authenticated API contract",
+        "description": "All valid personas may read this static contract. Dataset identifiers remain generic so this documentation cannot disclose forbidden catalog names, counts, paths or schemas.",
+        "x-allowed-personas": [
+          "viewer",
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAPIDocument"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "SessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "sessionid",
+        "description": "Server-issued HttpOnly browser session. No bearer or user-selected persona header is accepted."
+      },
+      "CSRFCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "csrftoken",
+        "description": "Browser-managed cookie established by GET /api/v1/auth/csrf and rotated on login."
+      },
+      "CSRFHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-CSRFToken",
+        "description": "Matching bootstrap/login CSRF token, mandatory on every POST including login. This is anti-CSRF state, not a source API credential."
+      }
+    },
+    "headers": {
+      "RequestId": {
+        "description": "Safe request correlation ID when request middleware is reached.",
+        "schema": {
+          "type": "string",
+          "maxLength": 32
+        }
+      },
+      "NoStore": {
+        "description": "Browser/intermediary cache is disabled independently of the private server query cache.",
+        "schema": {
+          "const": "no-store"
+        }
+      }
+    },
+    "schemas": {
+      "DatasetId": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{0,63}$",
+        "maxLength": 64,
+        "description": "A logical dataset identifier returned by the caller-filtered catalog. This document deliberately does not enumerate private dataset names. Unknown and unauthorized identifiers both receive dataset_forbidden.",
+        "examples": [
+          "fleet_daily"
+        ]
+      },
+      "ModelId": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{32}$",
+        "description": "Immutable analytical version identifier. The source_snapshot_id is a separate provenance identifier.",
+        "examples": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "SnapshotId": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{32}$",
+        "examples": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      },
+      "Persona": {
+        "type": "string",
+        "enum": [
+          "viewer",
+          "analyst",
+          "admin"
+        ],
+        "description": "Server-stored product persona, refreshed from account state for each capability; request bodies and headers cannot select a persona."
+      },
+      "CSRFToken": {
+        "type": "string",
+        "minLength": 32,
+        "maxLength": 64,
+        "pattern": "^[A-Za-z0-9]+$",
+        "description": "Token from the bootstrap or login response. Browser clients retain the csrftoken cookie and send this token in X-CSRFToken. Login rotates the token."
+      },
+      "Cursor": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "description": "Opaque signed cursor, valid for 900 seconds. Never decode, edit, share between accounts/sessions/personas, or combine with changed SQL, filters, limits or model IDs."
+      },
+      "DecimalString": {
+        "type": "string",
+        "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$",
+        "description": "Exact DECIMAL value as a base-10 JSON string. Trailing zeroes preserve scale; do not first convert to a binary floating-point number.",
+        "examples": [
+          "100.250000000",
+          "0.100000000000"
+        ]
+      },
+      "BigIntegerString": {
+        "type": "string",
+        "pattern": "^-?[0-9]+$",
+        "description": "BIGINT/UBIGINT and other Arrow bigint values are JSON strings, including COUNT results, to preserve integers beyond JavaScript safe precision.",
+        "examples": [
+          "9007199254740993"
+        ]
+      },
+      "DateString": {
+        "type": "string",
+        "format": "date",
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+        "examples": [
+          "2026-09-01"
+        ]
+      },
+      "RowCell": {
+        "type": [
+          "string",
+          "number",
+          "boolean",
+          "null"
+        ],
+        "description": "Interpret each value using the corresponding columns entry at the same index. DECIMAL and bigint values are exact strings, DATE is YYYY-MM-DD, TIMESTAMP is ISO 8601, finite FLOAT/DOUBLE and smaller integers are JSON numbers, BOOLEAN is a boolean, and missing values are null. Non-finite, nested, list and binary results are rejected.",
+        "examples": [
+          "100.250000000",
+          "9007199254740993",
+          "2026-09-01",
+          10.5,
+          true,
+          null
+        ]
+      },
+      "Column": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "description": "Logical SQL/Arrow type, such as DATE, VARCHAR, BOOLEAN, INTEGER, BIGINT, DOUBLE or DECIMAL(24,9)."
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "additionalProperties": false
+      },
+      "Rows": {
+        "type": "array",
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/RowCell"
+          }
+        },
+        "maxItems": 1000,
+        "description": "Positional row arrays; each row has one cell per columns entry, in the same order. No object-key coercion or decimal rounding is performed."
+      },
+      "ProblemDetails": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "pattern": "^urn:outage-explorer:error:[a-z_]+$"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599
+          },
+          "detail": {
+            "type": "string",
+            "description": "Static public explanation; never includes SQL, source values, physical paths, credentials or engine diagnostics."
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[a-z_]+$"
+          },
+          "request_id": {
+            "type": "string",
+            "maxLength": 32,
+            "description": "Correlation identifier, also sent as X-Request-ID when request middleware runs. An early middleware rejection can have an empty identifier."
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "code",
+          "request_id"
+        ],
+        "additionalProperties": false,
+        "examples": [
+          {
+            "type": "urn:outage-explorer:error:dataset_forbidden",
+            "title": "dataset forbidden",
+            "status": 403,
+            "detail": "Dataset access is not permitted.",
+            "code": "dataset_forbidden",
+            "request_id": "cccccccccccccccccccccccccccccccc"
+          }
+        ]
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "persona": {
+            "$ref": "#/components/schemas/Persona"
+          }
+        },
+        "required": [
+          "username",
+          "persona"
+        ],
+        "additionalProperties": false
+      },
+      "CSRFResponse": {
+        "type": "object",
+        "properties": {
+          "csrf_token": {
+            "$ref": "#/components/schemas/CSRFToken"
+          }
+        },
+        "required": [
+          "csrf_token"
+        ],
+        "additionalProperties": false
+      },
+      "SessionResponse": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          }
+        },
+        "required": [
+          "user"
+        ],
+        "additionalProperties": false
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "csrf_token": {
+            "$ref": "#/components/schemas/CSRFToken"
+          }
+        },
+        "required": [
+          "user",
+          "csrf_token"
+        ],
+        "additionalProperties": false
+      },
+      "LoginRequest": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "format": "password",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ],
+        "additionalProperties": false
+      },
+      "LogoutRequest": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "LogoutResponse": {
+        "type": "object",
+        "properties": {
+          "signed_out": {
+            "const": true
+          }
+        },
+        "required": [
+          "signed_out"
+        ],
+        "additionalProperties": false
+      },
+      "QueryRequest": {
+        "type": "object",
+        "properties": {
+          "dataset_id": {
+            "$ref": "#/components/schemas/DatasetId"
+          },
+          "sql": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384,
+            "x-max-utf8-bytes": 16384,
+            "description": "One supported single-dataset SELECT, at most 16 KiB UTF-8; regenerated SQL must fit the same execution bound. See the operation description for the accepted subset."
+          },
+          "max_rows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 1000,
+            "description": "Total retained query result cap, not a per-page cap."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100,
+            "description": "Must be <= max_rows. If max_rows is below 100, also explicitly supply a page_size no greater than that cap."
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Cursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "dataset_id",
+          "sql"
+        ],
+        "additionalProperties": false
+      },
+      "PreviewResponse": {
+        "type": "object",
+        "properties": {
+          "dataset_id": {
+            "$ref": "#/components/schemas/DatasetId"
+          },
+          "model_id": {
+            "$ref": "#/components/schemas/ModelId"
+          },
+          "source_snapshot_id": {
+            "$ref": "#/components/schemas/SnapshotId"
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Column"
+            }
+          },
+          "rows": {
+            "$ref": "#/components/schemas/Rows"
+          },
+          "returned_rows": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Cursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "filters": {
+            "type": "object",
+            "properties": {
+              "start": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DateString"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "end": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DateString"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "facility_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "start",
+              "end",
+              "facility_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "dataset_id",
+          "model_id",
+          "source_snapshot_id",
+          "columns",
+          "rows",
+          "returned_rows",
+          "next_cursor",
+          "filters"
+        ],
+        "additionalProperties": false
+      },
+      "QueryResponse": {
+        "type": "object",
+        "properties": {
+          "dataset_id": {
+            "$ref": "#/components/schemas/DatasetId"
+          },
+          "model_id": {
+            "$ref": "#/components/schemas/ModelId"
+          },
+          "source_snapshot_id": {
+            "$ref": "#/components/schemas/SnapshotId"
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Column"
+            }
+          },
+          "rows": {
+            "$ref": "#/components/schemas/Rows"
+          },
+          "returned_rows": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Cursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result_rows": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000,
+            "description": "Number of retained rows across all pages."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when an additional sentinel row proves that the server result cap omitted more rows."
+          },
+          "cache_hit": {
+            "type": "boolean"
+          },
+          "cache_ttl_seconds": {
+            "const": 60
+          },
+          "max_rows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "dataset_id",
+          "model_id",
+          "source_snapshot_id",
+          "columns",
+          "rows",
+          "returned_rows",
+          "next_cursor",
+          "result_rows",
+          "truncated",
+          "cache_hit",
+          "cache_ttl_seconds",
+          "max_rows"
+        ],
+        "additionalProperties": false
+      },
+      "ForeignKey": {
+        "type": "object",
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "dataset": {
+            "$ref": "#/components/schemas/DatasetId"
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "columns",
+          "dataset",
+          "references"
+        ],
+        "additionalProperties": false
+      },
+      "DatasetDescriptor": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/DatasetId"
+          },
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "primary_key": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "foreign_keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ForeignKey"
+            }
+          },
+          "classification": {
+            "type": "string",
+            "enum": [
+              "national",
+              "detail"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "allowed_personas": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "Viewer",
+                "Analyst",
+                "Admin"
+              ]
+            }
+          },
+          "units": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "rows": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "min_period": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DateString"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_period": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DateString"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "schema",
+          "primary_key",
+          "foreign_keys",
+          "classification",
+          "description",
+          "allowed_personas",
+          "units",
+          "rows",
+          "min_period",
+          "max_period"
+        ],
+        "additionalProperties": false
+      },
+      "MetricDefinition": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "dataset": {
+            "$ref": "#/components/schemas/DatasetId"
+          },
+          "column": {
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "formula": {
+            "type": "string"
+          },
+          "source_dataset": {
+            "$ref": "#/components/schemas/DatasetId"
+          },
+          "source_grain": {
+            "type": "string"
+          },
+          "denominator_policy": {
+            "type": "string"
+          },
+          "rounding": {
+            "type": "string"
+          },
+          "outlier_policy": {
+            "type": "string"
+          },
+          "percentage_column": {
+            "type": "string"
+          },
+          "definition": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "dataset",
+          "column",
+          "unit",
+          "formula",
+          "source_dataset",
+          "source_grain",
+          "denominator_policy",
+          "rounding",
+          "outlier_policy",
+          "percentage_column",
+          "definition"
+        ],
+        "additionalProperties": false
+      },
+      "CatalogResponse": {
+        "type": "object",
+        "properties": {
+          "model_id": {
+            "$ref": "#/components/schemas/ModelId"
+          },
+          "source_snapshot_id": {
+            "$ref": "#/components/schemas/SnapshotId"
+          },
+          "model_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "datasets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DatasetDescriptor"
+            }
+          },
+          "metrics": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/MetricDefinition"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "model_id",
+          "source_snapshot_id",
+          "model_version",
+          "datasets",
+          "metrics",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "RefreshRequest": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "full",
+              "recent"
+            ],
+            "default": "recent"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "RefreshResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "snapshot_id": {
+                "$ref": "#/components/schemas/SnapshotId"
+              },
+              "model_id": {
+                "$ref": "#/components/schemas/ModelId"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "recent"
+                ]
+              }
+            },
+            "required": [
+              "snapshot_id",
+              "model_id",
+              "mode"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "RefreshJob": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "full",
+              "recent"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "interrupted"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 240
+          },
+          "result": {
+            "$ref": "#/components/schemas/RefreshResult"
+          },
+          "status_url": {
+            "type": "string",
+            "pattern": "^/api/v1/refresh/[0-9a-f-]{36}$"
+          }
+        },
+        "required": [
+          "id",
+          "mode",
+          "status",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "error_code",
+          "message",
+          "result",
+          "status_url"
+        ],
+        "additionalProperties": false
+      },
+      "RefreshListResponse": {
+        "type": "object",
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RefreshJob"
+            },
+            "maxItems": 50
+          }
+        },
+        "required": [
+          "jobs"
+        ],
+        "additionalProperties": false
+      },
+      "LiveResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "const": "ok"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "RuntimeStatus": {
+        "type": "object",
+        "properties": {
+          "available": {
+            "const": true
+          },
+          "node": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "engine": {
+            "type": "string"
+          },
+          "isolation": {
+            "const": "wasm-buffer-v1"
+          },
+          "process_memory_limit_mib": {
+            "const": 512
+          },
+          "wasm_memory_limit_mib": {
+            "const": 256
+          }
+        },
+        "required": [
+          "available",
+          "node",
+          "package",
+          "engine",
+          "isolation",
+          "process_memory_limit_mib",
+          "wasm_memory_limit_mib"
+        ],
+        "additionalProperties": false
+      },
+      "ReadyResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "const": "ready"
+          },
+          "model_id": {
+            "$ref": "#/components/schemas/ModelId"
+          },
+          "query_runtime": {
+            "$ref": "#/components/schemas/RuntimeStatus"
+          }
+        },
+        "required": [
+          "status",
+          "model_id",
+          "query_runtime"
+        ],
+        "additionalProperties": false
+      },
+      "OpenAPIDocument": {
+        "type": "object",
+        "required": [
+          "openapi",
+          "info",
+          "paths",
+          "components"
+        ],
+        "properties": {
+          "openapi": {
+            "const": "3.1.0"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "responses": {
+      "400": {
+        "description": "Malformed JSON/parameters, duplicate or unsupported fields, invalid date/range/model ID/cursor, or an invalid refresh request. Signed cursors expire after 15 minutes and must match the original request and actor.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      },
+      "401": {
+        "description": "No valid session, revoked account/session, or invalid login credentials. Login responses do not distinguish an unknown user, inactive account or wrong password.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      },
+      "403": {
+        "description": "CSRF or origin validation failed, the persona is missing/changed, dataset access is forbidden, or this capability requires an Admin. The selected dataset and all SQL references are authorized before model/file/cache access.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      },
+      "404": {
+        "description": "Endpoint or refresh job is unavailable. A job owned by another Admin receives the same job_not_found response as an unknown job.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      },
+      "405": {
+        "description": "HTTP method is unsupported. Read methods never enqueue work or execute mutations.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "Allow": {
+            "description": "Comma-separated supported methods.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      },
+      "409": {
+        "description": "refresh_busy: another refresh is queued/running; or idempotency_conflict: this owner previously used the key with a different mode. Busy responses advise retry after 5 seconds.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "Retry-After": {
+            "description": "Optional retry delay in seconds; present for admission/busy responses.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      },
+      "413": {
+        "description": "The JSON request exceeds 32 KiB, or the serialized result/response exceeds 2 MiB. Oversized output is rejected rather than partially returned.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      },
+      "415": {
+        "description": "Only application/json request bodies are supported.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      },
+      "422": {
+        "description": "SQL fails the bounded single-dataset subset or column/resource validation, or the isolated engine cannot produce a supported finite scalar result. No submitted/generated SQL or engine diagnostics are returned.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      },
+      "429": {
+        "description": "Shared admission limit exceeded: one active query per account, two execution slots and eight waiting slots, or login rate limits. Retry-After gives seconds until retry.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "Retry-After": {
+            "description": "Optional retry delay in seconds; present for admission/busy responses.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      },
+      "500": {
+        "description": "Unexpected failure. Public detail and logs omit submitted SQL, credentials, data values and engine paths.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      },
+      "503": {
+        "description": "No model is published, the selected immutable version/file fails integrity, or the isolated runtime is unavailable. Existing publication remains usable when refresh fails.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      },
+      "504": {
+        "description": "Query execution exceeded its 8-second wall-clock deadline and the isolated process was stopped.",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetails"
+            }
+          }
+        }
+      }
+    }
+  }
+}
