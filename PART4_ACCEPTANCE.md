@@ -67,6 +67,8 @@ The final local UI was exercised with the generated real Viewer, Analyst and Adm
 
 ## Reproduce
 
+The final release audit found none of the five actual supplied/generated credential values in any audited Git object (including unreachable objects), tracked files, persisted data JSON, work-root logs/reports, service/catalog SQLite bytes or the 65 Parquet files and 270 decompressed VARCHAR columns. The credential files are ignored and untracked. Exact scope counts and the clean-tree/current-service checks are in `work/part4-secret-audit.json` and `work/part4-final-completion-audit.json`; these are execution-scoped results, not a promise about later edits.
+
 Follow the README setup, then open `http://127.0.0.1:8000/login/`. Generated `viewer`, `analyst`, `admin` passwords live only in the private ignored local configuration. Existing local data is ready; a fresh source checkout needs EIA ingestion for real data. Browser tests construct synthetic data without a key.
 
 ```powershell
