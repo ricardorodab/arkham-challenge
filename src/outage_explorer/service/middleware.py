@@ -7,11 +7,17 @@ import logging
 import time
 import uuid
 
+from django.http import Http404
 from django.utils.deprecation import MiddlewareMixin
 
 from .errors import APIError, problem
 
 LOG = logging.getLogger("outage_explorer.http")
+HTML_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+    "img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'; "
+    "form-action 'self'; frame-ancestors 'none'"
+)
 
 
 class RequestMiddleware(MiddlewareMixin):
@@ -21,9 +27,14 @@ class RequestMiddleware(MiddlewareMixin):
 
     def process_response(self, request, response):
         response["X-Request-ID"] = getattr(request, "request_id", "")
-        response["Cache-Control"] = "no-store"
+        if not getattr(response, "_outage_public_asset", False):
+            response["Cache-Control"] = "no-store"
         response["X-Content-Type-Options"] = "nosniff"
-        response["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+        response["Content-Security-Policy"] = (
+            HTML_CSP
+            if response.get("Content-Type", "").startswith("text/html")
+            else "default-src 'none'; frame-ancestors 'none'"
+        )
         match = getattr(request, "resolver_match", None)
         LOG.info(
             json.dumps(
@@ -48,6 +59,8 @@ class RequestMiddleware(MiddlewareMixin):
     def process_exception(self, request, exception):
         if isinstance(exception, APIError):
             return problem(request, exception)
+        if isinstance(exception, Http404):
+            return None
         LOG.error(
             json.dumps(
                 {

@@ -1190,12 +1190,27 @@
         "properties": {
           "user": {
             "$ref": "#/components/schemas/User"
+          },
+          "session_scope": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Opaque browser-state scope bound to the current persisted session, authentication hash and persona. It is not a session credential or raw session key."
           }
         },
         "required": [
-          "user"
+          "user",
+          "session_scope"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "examples": [
+          {
+            "user": {
+              "username": "example-user",
+              "persona": "viewer"
+            },
+            "session_scope": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
       },
       "LoginResponse": {
         "type": "object",

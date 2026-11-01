@@ -19,7 +19,7 @@ from . import api_services
 from .authentication import limit_login
 from .errors import APIError, problem
 from .models import RefreshJob
-from .policy import identity, recheck, require_admin
+from .policy import frontend_session_scope, identity, recheck, require_admin
 from .refresh import RefreshServiceError, enqueue_refresh
 
 
@@ -128,7 +128,12 @@ def logout(request, actor):
 @endpoint("GET")
 def session(request, actor):
     parameters(request, set())
-    return response({"user": {"username": request.user.username, "persona": actor.role}})
+    return response(
+        {
+            "user": {"username": request.user.username, "persona": actor.role},
+            "session_scope": frontend_session_scope(actor),
+        }
+    )
 
 
 @endpoint("GET")

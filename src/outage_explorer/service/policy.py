@@ -21,6 +21,11 @@ class Actor:
     binding: str
 
 
+def frontend_session_scope(actor: Actor) -> str:
+    """Opaque browser-state scope; never expose a raw session key or auth hash."""
+    return salted_hmac("outage-frontend-session", actor.binding, algorithm="sha256").hexdigest()
+
+
 def identity(request) -> Actor:
     if not request.user.is_authenticated:
         raise APIError(401, "authentication_required", "Sign in to use this capability.")

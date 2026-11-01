@@ -192,6 +192,25 @@ def test_public_liveness_wire_shape_is_metadata_free_and_matches_the_spec(
 
 
 @pytest.mark.django_db
+def test_session_wire_scope_is_opaque_and_matches_the_required_schema(
+    specification, authenticated_client, monkeypatch
+):
+    client, _ = authenticated_client("viewer")
+    monkeypatch.setattr(
+        api_services, "_bundle", lambda *_: pytest.fail("Session identity must not resolve data")
+    )
+    response = client.get("/api/v1/auth/session")
+    assert response.status_code == 200
+    payload = response.json()
+    schema = specification["components"]["schemas"]["SessionResponse"]
+    assert set(payload) == set(schema["required"]) == {"user", "session_scope"}
+    pattern = schema["properties"]["session_scope"]["pattern"]
+    assert re.fullmatch(pattern, payload["session_scope"])
+    assert client.session.session_key not in response.content.decode()
+    assert all(re.fullmatch(pattern, example["session_scope"]) for example in schema["examples"])
+
+
+@pytest.mark.django_db
 def test_query_example_and_scalar_wire_contract_match_the_actual_api(
     specification, authenticated_client, monkeypatch
 ):

@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.staticfiles",
     "outage_explorer.service.apps.ServiceConfig",
+    "outage_explorer.frontend.apps.FrontendConfig",
 ]
 MIDDLEWARE = [
     "outage_explorer.service.middleware.RequestMiddleware",
@@ -94,7 +95,7 @@ SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"
 X_FRAME_OPTIONS = "DENY"
 DATA_UPLOAD_MAX_MEMORY_SIZE = 64 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 0
-STATIC_URL = "/static/"
+STATIC_URL = "/assets/"
 STATIC_ROOT = OUTAGE_STATE_DIR / "static"
 
 LOGGING = {
