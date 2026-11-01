@@ -1,6 +1,6 @@
-# Part 1 engineering decisions
+# Engineering decisions — Parts 1 and 2
 
-This document describes the connector implemented for Part 1. Decisions about the future web app, arbitrary user SQL, authorization, and Azure hosting remain future work; they are not implemented by the connector.
+This document describes the implemented connector and analytical model. Decisions about the future web app, arbitrary user SQL, authenticated authorization, and Azure hosting remain future work.
 
 ## 1. Natural keys follow the actual source grains
 
@@ -64,7 +64,7 @@ A missing metadata-advertised source boundary prevents publication as potentiall
 
 **Rejected:** coercing missing measurements to zero, discarding generator orphans, or clipping values to expected bounds.
 
-**Reason:** structural failures undermine identity and interpretation. An unusual measurement may be legitimate, and deleting it would destroy evidence. Part 2 will explain observed cross-grain differences; Part 1 must not manufacture agreement.
+**Reason:** structural failures undermine identity and interpretation. An unusual measurement may be legitimate, and deleting it would destroy evidence. Part 2 explains observed cross-grain differences in `FINDINGS.md`; transformations must not manufacture agreement.
 
 ## 8. Handle additive schema changes without silent data loss
 
@@ -115,3 +115,49 @@ Genuine sanitized metadata and first-page responses for all three routes, plus a
 **Rejected:** labeling a pre-commit quality file as a successful publication.
 
 **Reason:** a process can die between writing quality evidence and committing state. Two subprocess-death tests cover a crash before the commit and a crash after the commit; the database pointer and history must retain the correct state in both cases.
+
+## 14. Model source grains separately and preserve missing parents
+
+**Choice:** separate national, facility and generator facts, with date and observed-identity dimensions. A generator key includes its facility. Observation-time names remain in the facts; the facility dimension carries the latest observed descriptive name. Reconciliation uses full outer coverage rather than inner joins.
+
+**Reason:** the three routes are independently published observations. A generator can exist while its facility-day observation is absent. Its FK points to the identity dimension, not to a facility fact, so that absence survives as evidence. No missing row becomes zero, and no generator is discarded to satisfy a relationship. The dimensional name is not a claim of complete temporal ownership/name history.
+
+## 15. Derive US-08 from national operands with explicit decimal semantics
+
+**Choice:** use national outage divided by national capacity for the same day. Python `Decimal` uses precision 28 and `ROUND_HALF_UP`; share is stored at 12 decimal places, percentage at nine. Calculate each from the unrounded ratio. Nonpositive/null denominator or null outage yields a null result and quality flag. Preserve all source values, including implausible ratios.
+
+**Rejected:** averaging child percentages, dividing through binary floating point for the canonical metric, silently substituting child totals, or clipping to 0–100%.
+
+**Reason:** changing numerator, denominator or rounding order changes the metric. DuckDB decimal division returns floating point, so canonical ratio calculation occurs in Python. SQL reports label weighted published percentages as diagnostics. Absolute percentages use percent; a difference between percentages uses percentage points. See the catalog's versioned metric definition and the exact arithmetic rounding tests.
+
+## 16. Reconcile exact MW before interpreting percentage differences
+
+**Choice:** retain parent values, child sums, child/null counts, signed and absolute gaps, and coverage status. Null child measures make the relevant sum undefined rather than allowing SQL `SUM` to conceal them. Classify gaps using 0.01 MW and 0.005 percentage-point tolerances, while retaining the actual differences.
+
+**Reason:** a weighted average of independently rounded percentages need not equal a rounded national ratio. The real 30-day example has zero MW gaps; inventing a numerical discrepancy would misrepresent the data. River Bend demonstrates that all grains can agree while sharing a coverage omission. Reconciliation and entity-coverage checks answer different questions.
+
+## 17. Use one sorted file per dataset at this measured volume
+
+**Choice:** ZSTD Parquet sorted by natural key, with date first for daily facts and reconciliation. One file per dataset per model; row groups target 122,880 rows. The raw three-route snapshot is about 46.4 MB compressed. No year/month directory partitions yet.
+
+**Reason:** expected reads filter by date and may scan the whole history. Many tiny date partitions would add file-opening and metadata overhead without a demonstrated benefit. At larger volume, benchmark date pruning, memory, latency and file sizes before choosing annual/monthly partitions; retain useful file sizes, avoid facility-level partition explosion, and compact small outputs. `docs/DATA_MODEL.md` describes the trade-offs and migration triggers. This is a deliberate partitioning strategy, not an unmeasured scalability claim.
+
+## 18. Publish derived and raw generations together and retain versioned contracts
+
+**Choice:** build and verify all model files before one SQLite transaction advances both pointers and completes both jobs. A standalone offline rebuild advances the model only if its raw source is still current. Each model records source hashes/counts, schema/metric versions, file and logical hashes, and quality rules. Retain immutable historical artifacts.
+
+**Reason:** serving a new source through an old model would create contradictory results. Three actual-process crash positions now cover raw-file rename, model-file rename, and post-commit recovery. Unreferenced files may remain after a failure; they are never promoted by directory discovery. There is no automatic retention or off-machine backup in this part.
+
+The first local model version 1 used incorrect catalog unit labels for absolute percentages. Its numerical data was correct. Rather than rewriting published evidence, the original contract was frozen in `contracts/model-v1.json`; version 2 corrects labels. Historical v1 reads use that frozen profile and expose a warning. All ten logical data hashes matched between versions; the metric formula remains version 1.
+
+## 19. Expose backend-ready metadata without claiming a user-SQL boundary
+
+**Choice:** logical dataset IDs, explicit contracts/metric definitions and a context-managed DuckDB adapter for trusted backend code. Resolve one model per operation; reject disallowed datasets before reading their Parquet; verify selected file hashes before registering views. Only national/fleet metadata is available to the Viewer policy. Reports run fixed packaged SELECT assets with bound dates.
+
+**Reason:** later Django handlers can consume stable modeled data without learning physical paths or reimplementing metrics. A caller able to execute arbitrary SQL on a local DuckDB connection can bypass a view-only convention; therefore the adapter is not exposed to untrusted user SQL. Authentication, every-table query authorization, isolation and resource enforcement belong to Part 3 and the larger plan.
+
+## 20. Automate anomaly detection without silently repairing history
+
+**Choice:** deterministic review events for nonpositive capacity, zero-capacity/nonzero percentage, observed-span entity gaps, consecutive capacity changes and reconciliation issues. Check rules during every model build; structural violations fail publication, semantic warnings are preserved.
+
+**Reason:** the three documented historical anomalies now have concrete stored events and reproducible SQL. Coverage events identify missing observations between observed dates; they do not infer a plant's entire operating lifetime. A capacity change of at least 100 MW and 10% is a review threshold, not proof of an EIA mistake. Thresholds, units and event identity are part of the versioned model contract.

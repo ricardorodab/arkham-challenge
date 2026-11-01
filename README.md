@@ -1,8 +1,8 @@
-# Outage Explorer — Part 1: EIA data connector
+# Outage Explorer — EIA connector and verified analytical model
 
-A local, rerunnable connector for the three daily EIA nuclear-outage datasets. It discovers source metadata, downloads every page, validates rows, and publishes the three Parquet datasets together as an immutable snapshot.
+A local, rerunnable connector and analytical model for the three daily EIA nuclear-outage datasets. It discovers source metadata, downloads every page, validates rows, and publishes source data and ten modeled Parquet datasets together as immutable snapshots.
 
-This repository currently implements **Part 1** of the technical challenge. Django, the web application, user authorization, arbitrary SQL, and Azure deployment belong to later parts and are not prerequisites for running this connector.
+This repository implements **Parts 1 and 2** of the technical challenge. Django, the web application, authenticated user authorization, arbitrary user SQL, and Azure deployment belong to later parts. See `PART2_ACCEPTANCE.md` for the Part 2 requirement matrix and actual acceptance evidence.
 
 ## Why these tools
 
@@ -10,7 +10,7 @@ This repository currently implements **Part 1** of the technical challenge. Djan
 - **DuckDB** reads and writes those files locally. It avoids requiring a database server or a separate Parquet library for this part.
 - **SQLite** records local run history, watermarks, and the current snapshot in one transaction. It is operational state, not a second copy of the analytical data. The future deployed service will use PostgreSQL for this responsibility.
 
-The connector uses Python's standard HTTP client. It does not need Django, SQLGlot, Azure credentials, or a running external database.
+The connector uses Python's standard HTTP client. It does not need Django, SQLGlot, Azure credentials, or a running external database. Part 2 executes fixed application-owned SQL; SQLGlot is reserved for the future user-query service, where syntax validation will also require process isolation.
 
 ## Install and run
 
@@ -63,6 +63,33 @@ To inspect local state and verify published files:
 
 `verify --snapshot-id ID` checks a particular retained snapshot. Inspect `--help` for the command's complete options.
 
+## Build and inspect the analytical model
+
+New ingestions automatically build and validate the model before publishing source and model pointers in the same transaction. If you already have a Part 1 snapshot, or change transformation code, build a new model without network access or an API key:
+
+```powershell
+.\.venv\Scripts\python.exe -m outage_explorer model build --data-dir data
+.\.venv\Scripts\python.exe -m outage_explorer model status --data-dir data
+.\.venv\Scripts\python.exe -m outage_explorer model verify --data-dir data
+.\.venv\Scripts\python.exe -m outage_explorer model history --data-dir data --limit 10
+.\.venv\Scripts\python.exe -m outage_explorer model catalog --data-dir data --persona viewer
+.\.venv\Scripts\python.exe -m outage_explorer model catalog --data-dir data --persona analyst
+```
+
+The model contains date/facility/generator dimensions; one fact table for each source grain; `fleet_daily` for US-08; two reconciliation datasets; and deterministic quality events. The complete 113-column contract, 12 foreign keys and ER diagram are in [docs/DATA_MODEL.md](docs/DATA_MODEL.md). Dimension identity comes from the union of observed detail routes, so missing facility-day parents do not discard generators.
+
+US-08 is `national outage MW / national capacity MW` for the same date. The model preserves both source operands and the independently published EIA percentage. It computes the share and percentage using Python `Decimal`, with documented rounding, and returns null plus a quality flag when the denominator is null or nonpositive. It does not average generator percentages or replace the national observation with a child sum.
+
+Reproduce the reconciliation and historical anomaly probes:
+
+```powershell
+.\.venv\Scripts\python.exe -m outage_explorer model report --data-dir data --start 2026-09-01 --end 2026-09-30 --output work/part2-report.json
+```
+
+The report runs 18 named, packaged SELECT queries, with bound date parameters and query hashes. Windowed reconciliation requires at least 30 calendar days; the historical anomaly probes use their explicit dates. Dates are ISO strings and exact decimal values are JSON strings. Write reports outside the immutable `data` directory. [FINDINGS.md](FINDINGS.md) pins the retained model used for its evidence and contains the command to reproduce that exact version after later refreshes.
+
+For a backend using trusted application-owned SQL, `analytical_catalog(root, persona, model_id=...)` returns logical metadata and metric definitions. `open_model_connection(root, dataset_ids, persona=..., model_id=...)` validates dataset IDs and the persona policy before opening selected Parquet files, pins one model, verifies their file hashes, and registers only those views. Viewer metadata is limited to national/fleet datasets; detail is Analyst/Admin. The CLI persona argument is an operator test input, not authentication. The returned DuckDB connection is trusted code access, not an arbitrary-SQL sandbox or the Part 3 security boundary.
+
 The default ingestion mode is `recent`. With no previously published snapshot, it performs the initial backfill. An explicit `--start` requires `--mode full`; `--end` may constrain either mode. Non-ingestion commands do not require the API key. Before the first publication, `status` reports `current_snapshot: null`, while `verify` returns a storage error because there is no snapshot to verify.
 
 After ingestion, remove the key from the current shell if it is no longer needed:
@@ -111,7 +138,8 @@ Identical duplicate observations can be collapsed; conflicting rows with one nat
 2. Record the run and its intended per-route windows.
 3. Extract and validate all three routes into a unique staging area.
 4. Write and reopen Parquet files; record row counts, keys, quality counters, coverage, and file hashes in a manifest.
-5. Publish immutable files and commit the snapshot, current pointer, watermarks, and successful run status in a single SQLite transaction.
+5. Build, reopen and validate the ten modeled datasets against that immutable source candidate.
+6. Commit source/model snapshots, both current pointers, watermarks, and successful run/build statuses in a single SQLite transaction.
 
 No source file in the active snapshot is overwritten. If a route fails or validation fails, the previous snapshot remains current. A process crash can leave an unreferenced staging/snapshot directory; that directory is not automatically treated as published data. A subsequent writer marks abandoned running work as interrupted before starting another run.
 
@@ -127,6 +155,9 @@ data/
     facility.parquet
     generator.parquet
     manifest.json
+  models/<model_id>/
+    <dataset_id>.parquet             # ten datasets, independently checksummed
+    manifest.json                   # model/metric version and exact source binding
   runs/<run_id>/
     quality.json
     failure.json                    # only when a failure artifact can be written
@@ -136,7 +167,7 @@ data/
 
 Typed Parquet columns include `_source_row` (sanitized original JSON), `_row_hash`, and `_quality_flags`. These are provenance and validation fields, not derived analytical measures. Verification checks file hashes, schema, row count, natural-key uniqueness, and logical row hashes.
 
-The manifest and `history` retain mode, parent snapshot, extraction/fetch windows, watermark, counts, added/changed/deleted observations, HTTP statistics, schema, extra field names, and per-route quality summaries. CLI results go to stdout as JSON; structured logs and errors go to stderr. Logs are not automatically saved as files.
+The manifest and `history` retain mode, parent snapshot, extraction/fetch windows, watermark, counts, added/changed/deleted observations, HTTP statistics, schema, extra field names, and per-route quality summaries. The raw manifest's `duration_seconds` measures source extraction through raw-file preparation, before the model build; model-build history records its own start/finish. The `run_succeeded` log measures the complete invocation through joint publication. CLI results go to stdout as JSON; structured logs and errors go to stderr. Logs are not automatically saved as files.
 
 `quality.json` is written with `status: validated` before the publication transaction. That means the files passed validation, **not** that publication committed: use `catalog.sqlite3` through `status`/`history` for authoritative success. A failed or interrupted run receives a failed/interrupted quality record where possible, with completed route summaries and incomplete route names.
 
@@ -195,7 +226,7 @@ Offline tests must cover pagination and failure responses, validation, secret ca
 
 Part 1 acceptance evidence consists of a successful three-route live run, published Parquet and manifest, a repeated run without duplicate natural keys, a successful integrity verification, durable run/DQ history, and passing failure tests.
 
-### Observed live acceptance results
+### Historical Part 1 acceptance results
 
 The full-history run `879b99d4cda84084943ba7f448199ea3` published and verified all three routes. These are observed results from this extraction, not a guarantee that EIA never revises them:
 
@@ -217,5 +248,8 @@ See `PART1_ACCEPTANCE.md` for exact fingerprints and completed fresh-checkout ve
 - `DECISIONS.md`: choices, rejected alternatives, and consequences for this part.
 - `NOTES.md`: AI attribution, corrections, and verification record.
 - `PART1_ACCEPTANCE.md`: requirement-by-requirement implementation and acceptance evidence.
+- `PART2_ACCEPTANCE.md`: model, live refresh, reconciliation and Part 2 verification evidence.
+- `FINDINGS.md`: three real anomalies, concrete observations, explanations and reproducible queries.
+- `docs/DATA_MODEL.md` and `docs/ER.mmd`: typed schema, keys, relationships, metric and scaling policy.
 
 Official references: [EIA API documentation](https://www.eia.gov/opendata/documentation.php), [EIA limits and update behavior](https://www.eia.gov/opendata/faqs.php), [DuckDB Parquet support](https://duckdb.org/docs/stable/data/parquet/overview).

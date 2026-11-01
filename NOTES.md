@@ -1,10 +1,10 @@
-# Engineering notes — Part 1
+# Engineering notes — Parts 1 and 2
 
 ## Attribution and scope
 
-The connector, tests, and supporting documents were authored with AI assistance in this Codex chat. The user supplied the challenge and API credential, selected the overall product direction, and requested a high-quality Part 1 implementation. No code should be attributed to manual user authorship without evidence.
+The connector, analytical model, tests, and supporting documents were authored with AI assistance in this Codex chat, including delegated implementation and independent review. The user supplied the challenge and API credential, selected the overall product direction, and requested the implementation. No code should be attributed to manual user authorship without evidence.
 
-This delivery is the data connector only; it does not claim to implement the Django application, SQL sandbox, role authorization, Azure deployment, or Part 2 findings.
+This delivery includes Parts 1 and 2. The Django application, authenticated role authorization, arbitrary-SQL sandbox, and Azure deployment remain future work. The local catalog's persona filter prepares the backend contract; the CLI does not authenticate operators.
 
 ## A concrete AI design correction
 
@@ -40,7 +40,7 @@ Commands and actual results should be read together: an offline test suite does 
 
 - EIA updates while offset pagination is in progress and provides no general last-updated field. A local publication is coherent; it is not an atomic source snapshot.
 - A 30-day overlap cannot detect every older revision. Full extraction remains necessary.
-- Semantic outliers are preserved; Part 1 does not claim to explain three real anomalies or reconcile the source grains.
+- Semantic outliers are preserved; Part 2 explains three real cases, but review events do not prove a specific upstream root cause.
 - Snapshots and local operational history are not off-machine backup or an availability guarantee.
 - Source/API behavior must be documented from actual evidence, and synthetic fixtures must not be described as recorded source responses.
 
@@ -56,3 +56,18 @@ The requirement matrix is in `PART1_ACCEPTANCE.md`. Recorded live evidence:
 - The skipped case is Windows symbolic-link privilege availability; it is not silently treated as a successful symlink-boundary check. The configured Linux CI job provides a platform where that check can run, but remote CI execution has not been asserted.
 
 The two crash tests terminate a real subprocess immediately before publication and immediately after commit. Recovery preserves the prior snapshot in the first case and the newly committed snapshot in the second, while releasing the OS writer lock.
+
+## Part 2 corrections and verification
+
+The AI generated the model builder, integration, reports and tests. Independent agent review then compared raw observations with every modeled fact and independently reaggregated reconciliation values. Real rows and primary EIA/NRC references were used to investigate findings; a plausible source explanation was not promoted to a proven root cause.
+
+Concrete errors caught during this implementation:
+
+1. **DuckDB result lifetime:** using the relation API to register a Parquet view while a previous query result was pending raised a DuckDB 2.0 resource-use error. The implementation now creates views through explicit SQL with safely escaped, server-owned paths and closes connections deterministically. No user-provided path or SQL is interpolated. Real full-history model construction, adapter tests and the packaged report verified this correction.
+2. **Unit metadata after publication:** catalog metadata incorrectly used “percentage points” for absolute percentages. Numerical Parquet values were correct. Review caught the semantic mismatch; version 2 fixes labels, while a packaged frozen v1 contract preserves the first immutable model and emits a legacy warning. Comparing all ten logical hashes established that this metadata correction did not change observations or numerical results. Contract-tampering and historical-profile tests verify the distinction.
+3. **A report test assumed a fixed old query count:** adding the eighteenth query that proves the three real stored DQ events initially left assertions expecting seventeen. The full suite caught this. Both asset and CLI assertions were updated to require the new evidence query and its behavior on synthetic data. This test maintenance error did not alter the real findings.
+4. **Elapsed-time reporting after adding model construction:** the success log reused the raw manifest's pre-model extraction duration. Review of the real refresh timestamps caught the misleading total. The success event now times through joint publication. Historical raw manifests remain unchanged; their duration measures raw preparation, and model history records separate build timestamps.
+
+Part 2 verification includes exact Decimal edge cases, duplicate/invalid-key rejection, null and missing-child coverage, generator orphans, all PK/FKs, semantic metadata and file tampering, wrong/stale source binding, Viewer policy rejection before file reads, standalone and joint publication rollback, three actual-process crash boundaries, offline CLI/report behavior, packaged SQL availability, and independent comparisons against the complete real source. Acceptance commands, observed results and limitations are recorded in `PART2_ACCEPTANCE.md`.
+
+The integration live refresh published raw snapshot `1e6f80a89cb4455d949d541a6fe68e2a` with model `9811a42ac9a34b4581d00a9bbd5d5d9b`. It observed zero added/changed/deleted rows and preserved all ten analytical logical hashes. `FINDINGS.md` deliberately retains its earlier model pin so subsequent refreshes cannot silently change the evidence.

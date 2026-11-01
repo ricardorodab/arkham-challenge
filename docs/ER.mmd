@@ -1,0 +1,50 @@
+erDiagram
+    direction LR
+    dim_date {
+        DATE period PK
+    }
+    dim_facility {
+        VARCHAR facility_id PK
+    }
+    dim_generator {
+        VARCHAR facility_id PK, FK
+        VARCHAR generator_id PK
+    }
+    national_daily {
+        DATE period PK, FK
+    }
+    facility_daily {
+        DATE period PK, FK
+        VARCHAR facility_id PK, FK
+    }
+    generator_daily {
+        DATE period PK, FK
+        VARCHAR facility_id PK, FK
+        VARCHAR generator_id PK, FK
+    }
+    fleet_daily {
+        DATE period PK, FK
+    }
+    facility_reconciliation_daily {
+        DATE period PK, FK
+        VARCHAR facility_id PK, FK
+    }
+    national_reconciliation_daily {
+        DATE period PK, FK
+    }
+    data_quality_events {
+        VARCHAR event_id PK
+        DATE period FK
+    }
+    dim_facility ||--o{ dim_generator : "facility_id"
+    dim_date ||--o| national_daily : "period"
+    dim_date ||--o{ facility_daily : "period"
+    dim_facility ||--o{ facility_daily : "facility_id"
+    dim_date ||--o{ generator_daily : "period"
+    dim_generator ||--o{ generator_daily : "facility_id, generator_id"
+    dim_date ||--o| fleet_daily : "period"
+    national_daily ||--o| fleet_daily : "period"
+    dim_date ||--o{ facility_reconciliation_daily : "period"
+    dim_facility ||--o{ facility_reconciliation_daily : "facility_id"
+    dim_date ||--o| national_reconciliation_daily : "period"
+    dim_date ||..o{ data_quality_events : "period"
