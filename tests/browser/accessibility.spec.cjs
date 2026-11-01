@@ -49,8 +49,8 @@ test('overview, explorer and SQL remain accessible and contain body overflow at3
     await page.screenshot({ path: testInfo.outputPath(`${view}-390.png`), fullPage: true });
     await page.setViewportSize({ width: 1440, height: 1000 });
   }
-  await page.setViewportSize({ width: 320, height: 844 });
   await navigate(page, 'overview');
+  await page.setViewportSize({ width: 320, height: 844 });
   await expect(page.locator('#metric-offline-share')).toContainText(/20/);
   await expectNoHorizontalBodyOverflow(page);
   const narrowMetrics = await page.evaluate(() => {
