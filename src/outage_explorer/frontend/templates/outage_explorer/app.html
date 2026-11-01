@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#172f3b">
+  <meta name="description" content="Explore published U.S. nuclear outage observations in a secure, versioned workspace.">
+  <title>Outage Explorer · Workspace</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body data-page="workspace">
+  <a class="skip-link" href="#main-content">Skip to workspace</a>
+  <div id="app-root" class="app-shell" data-session-scope="{{ session_scope }}">
+    <aside class="sidebar" aria-label="Workspace navigation">
+      <a class="brand" href="#overview" aria-label="Outage Explorer overview">
+        <svg class="brand-symbol" viewBox="0 0 40 40" aria-hidden="true" focusable="false"><circle cx="20" cy="20" r="4" fill="currentColor"/><ellipse cx="20" cy="20" rx="17" ry="7" fill="none" stroke="currentColor" stroke-width="1.6" transform="rotate(-45 20 20)"/><ellipse cx="20" cy="20" rx="17" ry="7" fill="none" stroke="currentColor" stroke-width="1.6" transform="rotate(45 20 20)"/></svg>
+        <span class="brand-name">Outage <span>Explorer</span></span>
+      </a>
+      <p class="sidebar-kicker">Nuclear data workspace</p>
+      <nav id="primary-nav" class="primary-nav" aria-label="Primary">
+        <a href="#overview" data-view="overview" class="nav-link is-active" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Fleet overview</span><span class="nav-index">01</span></a>
+        <a href="#explore" data-view="explore" class="nav-link"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11M15 9v11"/></svg><span>Explore data</span><span class="nav-index">02</span></a>
+        <a href="#sql" data-view="sql" class="nav-link"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-5 6 5 6m8-12 5 6-5 6M13 3l-2 18"/></svg><span>SQL workspace</span><span class="nav-index">03</span></a>
+        {% if is_admin %}
+        <span class="nav-divider">Administration</span>
+        <a href="#refresh" data-view="refresh" class="nav-link"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M5.3 8a7 7 0 0 1 11.5-3L20 8M4 16l3.2 3A7 7 0 0 0 18.7 16"/></svg><span>Data refresh</span><span class="nav-index">04</span></a>
+        {% endif %}
+      </nav>
+      <div class="sidebar-note"><span class="small-orbit" aria-hidden="true"></span><p>Daily observations.<br>One published view.</p></div>
+      <div class="sidebar-account">
+        <span class="avatar" aria-hidden="true">{{ username|slice:":1"|upper }}</span>
+        <div class="account-copy"><span class="account-name">{{ username }}</span><span class="account-persona">{{ persona|title }} workspace</span></div>
+        <button id="logout-button" class="icon-button sign-out" type="button" aria-label="Sign out"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4H5v16h5m5-12 4 4-4 4m-7-4h11"/></svg></button>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="workspace-header">
+        <div class="page-heading">
+          <button id="nav-toggle" class="icon-button nav-toggle" type="button" aria-label="Toggle navigation" aria-controls="primary-nav" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+          <div><p class="eyebrow">Workspace <span aria-hidden="true">/</span> U.S. nuclear outages</p><h1 id="page-title">Fleet overview</h1></div>
+        </div>
+        <div class="header-meta"><span id="scope-label" class="scope-badge">{% if is_viewer %}National data{% else %}All analytical data{% endif %}</span><dl class="publication-meta"><div><dt>Published model</dt><dd id="status-version">Loading…</dd></div><div><dt>Data through</dt><dd id="status-through">—</dd></div></dl></div>
+      </header>
+
+      <main id="main-content" class="main-content" tabindex="-1">
+        <noscript><div class="notice notice-error" role="alert">JavaScript is required to use this workspace. Enable JavaScript and reload; your password and queries are never submitted through a URL.</div></noscript>
+        <div id="global-notice" class="notice" role="alert" hidden></div>
+        <div id="snapshot-notice" class="notice notice-update" role="status" hidden><div><strong>A newer publication is available.</strong><p>This view remains pinned so your results stay consistent.</p></div><button id="apply-snapshot" class="button button-small" type="button">Use latest publication <span aria-hidden="true">↗</span></button></div>
+
+        <section id="view-overview" class="workspace-view" aria-labelledby="overview-heading">
+          <div class="section-intro"><div><p class="eyebrow">National perspective</p><h2 id="overview-heading">The fleet at a glance.</h2><p class="section-description">Follow the share of reported U.S. nuclear capacity offline each day.</p></div><span class="section-number" aria-hidden="true">01 / OVERVIEW</span></div>
+          <form id="overview-form" class="filter-bar overview-filters" method="post" action="/">
+            {% csrf_token %}
+            <div class="range-group" role="group" aria-label="Quick date range"><button class="range-button is-active" data-range="30" type="button" aria-pressed="true">30 days</button><button class="range-button" data-range="90" type="button" aria-pressed="false">90 days</button><button class="range-button" data-range="365" type="button" aria-pressed="false">1 year</button></div>
+            <div class="date-range"><label class="field"><span>From</span><input id="overview-start" type="date" required></label><span class="range-separator" aria-hidden="true">—</span><label class="field"><span>Through</span><input id="overview-end" type="date" required></label></div>
+            <button id="overview-apply" class="button button-secondary" type="submit">Apply period <span aria-hidden="true">↗</span></button>
+          </form>
+          <div id="overview-loading" class="loading-state" role="status" hidden><span class="spinner" aria-hidden="true"></span>Loading fleet observations…</div>
+          <div id="overview-error" class="notice notice-error" role="alert" hidden></div>
+          <div id="overview-empty" class="empty-state" hidden><span class="empty-symbol" aria-hidden="true">∅</span><h3>No observations in this period</h3><p>Choose a different date range to explore the published fleet data.</p></div>
+          <div id="overview-content" hidden>
+            <div class="metric-grid">
+              <article class="metric-card metric-primary"><p class="metric-label"><span class="metric-dot" aria-hidden="true"></span>Fleet capacity offline</p><p id="metric-offline-share" class="metric-value">—</p><p class="metric-footnote">Share of reported capacity</p></article>
+              <article class="metric-card"><p class="metric-label">Reported outage</p><p id="metric-outage" class="metric-value">—</p><p class="metric-footnote">Megawatts offline</p></article>
+              <article class="metric-card"><p class="metric-label">Reported fleet capacity</p><p id="metric-capacity" class="metric-value">—</p><p class="metric-footnote">Megawatts of fleet capacity</p></article>
+              <article class="metric-card metric-date-card"><p class="metric-label">Observation date</p><p id="metric-date" class="metric-value metric-date">—</p><p class="metric-footnote">Latest observation in this period</p></article>
+            </div>
+            <article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">Capacity, over time</p><h3 id="chart-title">Daily offline share</h3></div><span class="chart-key"><span aria-hidden="true"></span>Offline capacity</span></div><p id="chart-description" class="chart-description">Percent of reported fleet capacity. Missing observations are not treated as zero; the values are also available in the table below.</p><div id="fleet-chart" class="fleet-chart" role="img" aria-labelledby="chart-title" aria-describedby="chart-description"></div><div class="chart-footer"><span>Source: U.S. Energy Information Administration</span><span>Daily observations <span class="subtle-dot" aria-hidden="true">·</span> Reported capacity basis</span></div></article>
+            <details class="panel table-details"><summary><span>View the underlying observations</span><span class="details-hint">Data table <span aria-hidden="true">+</span></span></summary><div class="table-tools"><p>Exact values from this period</p><button id="overview-export" class="button button-secondary button-small" type="button">Export CSV <span aria-hidden="true">↓</span></button></div><div class="table-wrap" tabindex="0" role="region" aria-label="Fleet observations table, scroll horizontally or vertically"><table id="overview-table" class="data-table" aria-label="Fleet observations"></table></div></details>
+          </div>
+        </section>
+
+        <section id="view-explore" class="workspace-view" aria-labelledby="explore-heading" hidden>
+          <div class="section-intro"><div><p class="eyebrow">Published observations</p><h2 id="explore-heading">Get closer to the data.</h2><p class="section-description">Choose a dataset, refine the period, and inspect its exact values.</p></div><span class="section-number" aria-hidden="true">02 / EXPLORE</span></div>
+          <form id="explore-form" class="panel explorer-controls" method="post" action="/">
+            {% csrf_token %}
+            <div class="dataset-heading"><label class="field dataset-field"><span>Dataset</span><select id="dataset-select" required><option value="">Loading datasets…</option></select></label><div class="dataset-metadata"><span class="metadata-item"><span>Observations</span><strong id="dataset-row-count">—</strong></span><span class="metadata-item"><span>Grain</span><strong id="dataset-grain">—</strong></span></div></div>
+            <p id="dataset-description" class="dataset-description">Your available datasets reflect your workspace permissions.</p>
+            <div class="explore-filter-row"><div id="date-filters" class="date-range"><label class="field"><span>From</span><input id="explore-start" type="date"></label><span class="range-separator" aria-hidden="true">—</span><label class="field"><span>Through</span><input id="explore-end" type="date"></label></div><label id="facility-filter" class="field facility-field" hidden><span>Facility</span><select id="explore-facility"><option value="">All facilities</option></select></label><label class="field compact-field"><span>Rows per page</span><select id="explore-page-size"><option value="25" selected>25</option><option value="50">50</option><option value="100">100</option></select></label><div class="filter-actions"><button id="explore-reset" class="button button-quiet" type="button">Reset</button><button id="explore-apply" class="button" type="submit">Apply filters <span aria-hidden="true">↗</span></button></div></div>
+          </form>
+          <div id="explore-loading" class="loading-state" role="status" hidden><span class="spinner" aria-hidden="true"></span>Loading dataset…</div>
+          <div id="explore-error" class="notice notice-error" role="alert" hidden></div>
+          <div id="explore-empty" class="empty-state" hidden><span class="empty-symbol" aria-hidden="true">∅</span><h3>No matching observations</h3><p>Adjust the period or clear a filter to see more of this dataset.</p></div>
+          <div id="explore-content" class="panel results-panel" hidden><div class="results-heading"><div><h3>Dataset results</h3><p id="explore-result-meta" class="result-meta"></p></div><button id="explore-export" class="button button-secondary button-small" type="button">Export this page <span aria-hidden="true">↓</span></button></div><div id="explore-applied-filters" class="applied-filters" aria-label="Applied filters"></div><div class="table-wrap" tabindex="0" role="region" aria-label="Dataset results table, scroll horizontally or vertically"><table id="explore-table" class="data-table" aria-label="Dataset results"></table></div><div class="pagination"><p class="pagination-note">Pages share the same published model.</p><div class="pagination-actions"><button id="explore-prev" class="button button-secondary button-small" type="button" disabled><span aria-hidden="true">←</span> Previous</button><span id="explore-page-label" class="page-label" aria-live="polite">Page 1</span><button id="explore-next" class="button button-secondary button-small" type="button" disabled>Next <span aria-hidden="true">→</span></button></div></div></div>
+          <details class="panel schema-details"><summary><span>Understand this dataset</span><span class="details-hint">Schema &amp; units <span aria-hidden="true">+</span></span></summary><div id="schema-content" class="schema-content schema-grid"><p class="muted">Select a dataset to see its columns, units, and relationships.</p></div></details>
+        </section>
+
+        <section id="view-sql" class="workspace-view" aria-labelledby="sql-heading" hidden>
+          <div class="section-intro"><div><p class="eyebrow">Ask a precise question</p><h2 id="sql-heading">A workspace for your queries.</h2><p class="section-description">Write a read-only query against one of your available datasets.</p></div><span class="section-number" aria-hidden="true">03 / SQL</span></div>
+          <div class="sql-layout"><form id="sql-form" class="panel sql-editor-panel" method="post" action="/">
+            {% csrf_token %}
+            <div class="sql-controls"><label class="field"><span>Dataset</span><select id="sql-dataset" required><option value="">Loading datasets…</option></select></label><label class="field compact-field"><span>Result cap</span><select id="sql-max-rows"><option value="100">100 rows</option><option value="500">500 rows</option><option value="1000" selected>1,000 rows</option></select></label><label class="field compact-field"><span>Rows per page</span><select id="sql-page-size"><option value="25">25</option><option value="50">50</option><option value="100" selected>100</option></select></label></div>
+            <div class="editor-label"><label for="sql-editor">SQL query</label><span class="badge badge-green"><span aria-hidden="true">◉</span> Read only</span></div><textarea id="sql-editor" class="sql-editor" rows="10" spellcheck="false" autocapitalize="off" autocomplete="off" aria-describedby="sql-limits" required>SELECT period, offline_share, offline_pct
+FROM fleet_daily
+ORDER BY period DESC
+LIMIT 100</textarea>
+            <div class="editor-footer"><p id="sql-limits">Up to 1,000 rows <span aria-hidden="true">·</span> 8-second execution budget</p><div class="button-group"><button id="sql-example" class="button button-quiet button-small" type="button">Reset example</button><button id="sql-run" class="button" type="submit"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="m6 3 8 6-8 6Z" fill="currentColor" stroke="none"/></svg>Run query</button></div></div>
+          </form><aside class="panel sql-reference" aria-label="SQL reference"><p class="eyebrow">At your fingertips</p><h3>Build from the schema.</h3><div class="field completion-field"><label for="sql-complete">Find a column or dataset</label><span class="completion-control"><input id="sql-complete" type="text" list="sql-suggestions" autocomplete="off" placeholder="Start typing…"><button id="sql-insert" class="button button-secondary button-small" type="button">Insert</button></span></div><datalist id="sql-suggestions"></datalist><div id="sql-schema" class="sql-schema" tabindex="0" role="region" aria-label="Dataset columns, scroll for more"><p class="muted">Select a dataset to see its columns.</p></div><div class="sql-reference-note"><h4>One dataset per query.</h4><div class="syntax-tags" aria-label="Supported SQL examples"><code>SELECT</code><code>WHERE</code><code>GROUP BY</code><code>ORDER BY</code></div></div></aside></div>
+          <div class="history-bar"><label for="sql-history">Recent queries</label><select id="sql-history"><option value="">No recent queries</option></select><button id="sql-load-history" class="button button-secondary button-small" type="button">Load query <span aria-hidden="true">↗</span></button></div>
+          <div id="sql-loading" class="loading-state" role="status" hidden><span class="spinner" aria-hidden="true"></span>Running your query…</div>
+          <div id="sql-error" class="notice notice-error" role="alert" hidden></div>
+          <div id="sql-empty" class="empty-state" hidden><span class="empty-symbol" aria-hidden="true">∅</span><h3>Your query returned no rows</h3><p>Try a broader period or review the conditions in your query.</p></div>
+          <div id="sql-content" class="panel results-panel" hidden><div class="results-heading"><div><h3>Query results</h3><p id="sql-result-meta" class="result-meta"></p></div><button id="sql-export" class="button button-secondary button-small" type="button">Export this page <span aria-hidden="true">↓</span></button></div><div id="sql-truncated" class="notice notice-subtle" role="status" hidden>The result reached your row cap. Refine the query to focus on a smaller set of observations.</div><div class="table-wrap" tabindex="0" role="region" aria-label="Query results table, scroll horizontally or vertically"><table id="sql-table" class="data-table" aria-label="SQL query results"></table></div><div class="pagination"><p class="pagination-note">Exact values. Consistent publication.</p><div class="pagination-actions"><button id="sql-prev" class="button button-secondary button-small" type="button" disabled><span aria-hidden="true">←</span> Previous</button><span id="sql-page-label" class="page-label" aria-live="polite">Page 1</span><button id="sql-next" class="button button-secondary button-small" type="button" disabled>Next <span aria-hidden="true">→</span></button></div></div></div>
+        </section>
+
+        {% if is_admin %}
+        <section id="view-refresh" class="workspace-view" aria-labelledby="refresh-heading" hidden><div id="admin-panel">
+          <div class="section-intro"><div><p class="eyebrow">Publication controls</p><h2 id="refresh-heading">Bring the workspace up to date.</h2><p class="section-description">Queue a refresh and follow its progress without interrupting the published view.</p></div><span class="section-number" aria-hidden="true">04 / ADMIN</span></div>
+          <div class="refresh-layout"><form id="refresh-form" class="panel refresh-form" method="post" action="/">
+            {% csrf_token %}
+            <div class="panel-heading"><h3>Choose the refresh scope</h3><span class="badge badge-green">Admin</span></div><fieldset class="refresh-options"><legend class="sr-only">Refresh mode</legend><label class="refresh-option"><input type="radio" name="refresh-mode" value="recent" checked><span><strong>Recent observations</strong><span>Revisit the recent period and publish any updates.</span></span><span class="recommended-label">Recommended</span></label><label class="refresh-option"><input type="radio" name="refresh-mode" value="full"><span><strong>Full history</strong><span>Rebuild the available history. Allow more time for completion.</span></span></label></fieldset><p class="refresh-note">Your current publication stays available while the refresh runs. A new version becomes available after validation completes.</p><button id="refresh-start" class="button" type="submit">Queue refresh <span aria-hidden="true">↗</span></button>
+          </form><aside class="panel publication-principles"><span class="principle-icon" aria-hidden="true"><svg viewBox="0 0 40 40"><path d="m20 4 13 5v10c0 9-13 17-13 17S7 28 7 19V9Z"/><path d="m13 19 5 5 10-11"/></svg></span><h3>Published after validation.</h3><p>Refresh work runs in the background. An unsuccessful refresh keeps the previous data available.</p><p>Once the new publication is ready, choose when to use it in your workspace.</p></aside></div>
+          <div id="refresh-loading" class="loading-state" role="status" hidden><span class="spinner" aria-hidden="true"></span>Queuing refresh…</div>
+          <div id="refresh-error" class="notice notice-error" role="alert" hidden></div>
+          <section id="refresh-status" class="panel refresh-status" aria-label="Current refresh" hidden><div class="panel-heading"><div><p class="eyebrow">Refresh activity</p><h3 id="refresh-message">Waiting for status…</h3></div><span id="refresh-job-id" class="job-id"></span></div><progress id="refresh-progress" aria-label="Refresh progress">Refresh in progress</progress><div class="refresh-status-actions"><p class="muted">The published data remains available while this job runs.</p><div class="button-group"><button id="refresh-check" class="button button-secondary button-small" type="button">Check status</button><button id="refresh-use-latest" class="button button-small" type="button" hidden>Use latest publication <span aria-hidden="true">↗</span></button></div></div></section>
+          <section class="panel refresh-history" aria-labelledby="refresh-history-heading"><div class="panel-heading"><div><p class="eyebrow">Your activity</p><h3 id="refresh-history-heading">Recent refresh jobs</h3></div><span class="muted">Visible to you</span></div><div id="refresh-jobs" class="refresh-jobs"><p class="muted">Your refresh jobs will appear here.</p></div></section>
+        </div></section>
+        {% endif %}
+        <footer class="workspace-footer"><span>Outage Explorer</span><span>Published daily observations. <span aria-hidden="true">·</span> U.S. EIA</span></footer>
+      </main>
+    </div>
+  </div>
+  {{ frontend_session|json_script:'frontend-session' }}
+</body>
+</html>

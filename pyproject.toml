@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "outage-explorer"
-version = "0.3.0"
-description = "Versioned nuclear outage data and a secure Django analytical service"
+version = "0.4.0"
+description = "A secure, accessible nuclear outage exploration application"
 requires-python = ">=3.12"
 dependencies = ["duckdb==2.0.0", "Django==5.2.18", "sqlglot==30.27.0", "waitress==3.0.2"]
 
@@ -19,7 +19,7 @@ outage-explorer = "outage_explorer.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-outage_explorer = ["sql/*.sql", "contracts/*.json", "sandbox/*", "service/*.json"]
+outage_explorer = ["sql/*.sql", "contracts/*.json", "sandbox/*", "service/*.json", "frontend/templates/outage_explorer/*.html", "frontend/static/outage_explorer/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

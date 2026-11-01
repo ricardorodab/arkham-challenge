@@ -1,8 +1,22 @@
 {
   "name": "outage-explorer-query-sandbox",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Pinned server-only DuckDB WebAssembly query runtime",
-  "engines": { "node": ">=24.13.0 <25" },
-  "dependencies": { "@duckdb/duckdb-wasm": "1.33.1-dev57.0" }
+  "engines": {
+    "node": ">=24.13.0 <25"
+  },
+  "dependencies": {
+    "@duckdb/duckdb-wasm": "1.33.1-dev57.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "axe-core": "4.14.0",
+    "prettier": "3.6.2"
+  },
+  "type": "module",
+  "scripts": {
+    "test:browser": "playwright test",
+    "test:unit": "node --test tests/frontend/logic.test.mjs"
+  }
 }

@@ -11,6 +11,9 @@ Software Engineer - Technical Challenge.pdf
 /work/
 /.service/
 /node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
 /.npm/
 *.sqlite3
 *.sqlite3-*

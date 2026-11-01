@@ -1,0 +1,172 @@
+import { ApiError, StaleRequest, queryString, verifyPage } from './api.js';
+import {
+  byId,
+  setText,
+  visible,
+  state,
+  showError,
+  addDays,
+  dayCount,
+  numberLabel,
+  dateLabel,
+} from './dom.js';
+import { renderTable, exportPage } from './table.js';
+import { renderChart, chartPoints } from './chart.js';
+
+export class OverviewController {
+  constructor(context) {
+    this.context = context;
+    this.sequence = 0;
+    this.packet = null;
+    this.loaded = false;
+    this.preset = 30;
+    byId('overview-form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      this.preset = null;
+      this.load(true);
+    });
+    for (const button of document.querySelectorAll('[data-range]'))
+      button.addEventListener('click', () => {
+        this.preset = Number(button.dataset.range);
+        this.setRange();
+        this.load(true);
+      });
+    byId('overview-export').addEventListener('click', () =>
+      exportPage(this.packet, 'fleet_daily', this.catalog?.model_id),
+    );
+    byId('overview-export').disabled = true;
+    this.observer =
+      typeof ResizeObserver === 'function'
+        ? new ResizeObserver((entries) => {
+            const width = entries[0]?.contentRect.width;
+            if (width > 0 && Math.abs(width - (this.lastWidth || 0)) > 1) {
+              this.lastWidth = width;
+              if (this.packet && !byId('view-overview').hidden) this.draw();
+            }
+          })
+        : null;
+    this.observer?.observe(byId('fleet-chart'));
+  }
+  configure(catalog) {
+    this.catalog = catalog;
+    this.sequence++;
+    this.packet = null;
+    this.loaded = false;
+    this.dataset = catalog.datasets.find((dataset) => dataset.id === 'fleet_daily');
+    if (this.dataset && (this.preset || !byId('overview-start').value)) this.setRange();
+    visible('overview-content', false);
+    byId('overview-export').disabled = true;
+  }
+  setRange() {
+    if (!this.dataset?.max_period) return;
+    const end = this.dataset.max_period;
+    const start = addDays(end, -(this.preset || 30) + 1);
+    byId('overview-start').value =
+      start < this.dataset.min_period ? this.dataset.min_period : start;
+    byId('overview-end').value = end;
+    for (const button of document.querySelectorAll('[data-range]')) {
+      const active = Number(button.dataset.range) === this.preset;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+  }
+  async load(force = false) {
+    if (!this.catalog || (!force && this.loaded)) return;
+    const sequence = ++this.sequence,
+      model = this.catalog.model_id;
+    const isCurrent = () =>
+      this.context.alive() && sequence === this.sequence && this.catalog?.model_id === model;
+    const start = byId('overview-start').value,
+      end = byId('overview-end').value;
+    try {
+      if (!this.dataset)
+        throw new ApiError('The fleet metric is not available for this account.', { status: 403 });
+      const days = dayCount(start, end);
+      if (days > 366)
+        throw new Error(
+          'Choose a period of at most 366 days. Use Explore data to browse the full history.',
+        );
+    } catch (error) {
+      this.packet = null;
+      this.loaded = false;
+      state('overview', 'error', error);
+      byId('overview-export').disabled = true;
+      return;
+    }
+    this.packet = null;
+    state('overview', 'loading');
+    byId('overview-apply').disabled = true;
+    byId('overview-export').disabled = true;
+    try {
+      const packet = await this.context.queue.run(
+        () =>
+          this.context.client.request(
+            `/data/fleet_daily${queryString({ start, end, limit: 1000, model_id: model })}`,
+          ),
+        isCurrent,
+      );
+      if (!isCurrent()) return;
+      verifyPage(packet, 'fleet_daily', model);
+      if (packet.next_cursor)
+        throw new Error(
+          'This period has too many observations for the chart. Choose a shorter period.',
+        );
+      this.packet = packet;
+      this.range = { start, end };
+      this.loaded = true;
+      state('overview', packet.rows.length ? 'content' : 'empty');
+      if (!packet.rows.length) return;
+      const names = packet.columns.map((column) => column.name),
+        latest = packet.rows.at(-1);
+      const value = (name) => latest[names.indexOf(name)];
+      setText(
+        'metric-offline-share',
+        value('offline_pct') === null ? '—' : `${numberLabel(value('offline_pct'), 2)}%`,
+      );
+      byId('metric-offline-share').title =
+        value('offline_pct') === null
+          ? 'Undefined; no valid denominator.'
+          : `Exact calculated percentage: ${value('offline_pct')}%`;
+      setText('metric-outage', numberLabel(value('outage_mw'), 1));
+      setText('metric-capacity', numberLabel(value('capacity_mw'), 1));
+      setText('metric-date', dateLabel(value('period')));
+      const points = chartPoints(packet),
+        defined = points.filter(
+          (point) => point.value !== null && Number.isFinite(point.value),
+        ).length;
+      const missing = Math.max(0, dayCount(start, end) - packet.rows.length);
+      setText(
+        'chart-description',
+        `${defined} defined daily observations · ${dateLabel(start)} – ${dateLabel(end)}.${missing ? ` ${missing} calendar day${missing === 1 ? '' : 's'} without observations.` : ''} Gaps and undefined ratios are not zero. Exact values are available in the table below.`,
+      );
+      renderTable(
+        byId('overview-table'),
+        packet,
+        'Exact national offline-capacity observations for the selected period',
+      );
+      byId('overview-export').disabled = false;
+      this.draw();
+    } catch (error) {
+      if (!(error instanceof StaleRequest) && isCurrent()) {
+        this.loaded = false;
+        state('overview', 'error', error);
+        showError('overview-error', error, () => this.load(true));
+      }
+    } finally {
+      if (isCurrent()) byId('overview-apply').disabled = false;
+    }
+  }
+  draw() {
+    if (this.packet && this.range)
+      renderChart(byId('fleet-chart'), this.packet, this.range.start, this.range.end);
+  }
+  dispose() {
+    this.sequence++;
+    this.packet = null;
+    this.observer?.disconnect();
+    byId('overview-table').replaceChildren();
+    byId('fleet-chart').replaceChildren();
+    for (const id of ['metric-offline-share', 'metric-outage', 'metric-capacity', 'metric-date'])
+      setText(id, '—');
+  }
+}
