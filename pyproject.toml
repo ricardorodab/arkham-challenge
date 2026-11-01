@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "outage-explorer"
-version = "0.1.0"
-description = "Versioned, validated local EIA nuclear outage data connector"
+version = "0.2.0"
+description = "Versioned EIA nuclear outage connector and verified analytical model"
 requires-python = ">=3.12"
 dependencies = ["duckdb==2.0.0"]
 
@@ -17,6 +17,9 @@ outage-explorer = "outage_explorer.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+outage_explorer = ["sql/*.sql", "contracts/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

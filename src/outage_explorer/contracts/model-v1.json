@@ -1,0 +1,814 @@
+{
+  "datasets": {
+    "data_quality_events": {
+      "allowed_personas": [
+        "Analyst",
+        "Admin"
+      ],
+      "classification": "detail",
+      "description": "Reviewable source anomalies; flags do not establish physical causes.",
+      "foreign_keys": [
+        {
+          "columns": [
+            "period"
+          ],
+          "dataset": "dim_date",
+          "references": [
+            "period"
+          ]
+        }
+      ],
+      "id": "data_quality_events",
+      "primary_key": [
+        "event_id"
+      ],
+      "schema": [
+        [
+          "event_id",
+          "VARCHAR"
+        ],
+        [
+          "period",
+          "DATE"
+        ],
+        [
+          "grain",
+          "VARCHAR"
+        ],
+        [
+          "facility_id",
+          "VARCHAR"
+        ],
+        [
+          "generator_id",
+          "VARCHAR"
+        ],
+        [
+          "rule_id",
+          "VARCHAR"
+        ],
+        [
+          "severity",
+          "VARCHAR"
+        ],
+        [
+          "previous_period",
+          "DATE"
+        ],
+        [
+          "gap_days",
+          "INTEGER"
+        ],
+        [
+          "before_capacity_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "after_capacity_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "outage_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "reported_outage_pct",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "details",
+          "VARCHAR"
+        ]
+      ],
+      "units": {
+        "after_capacity_mw": "MW",
+        "before_capacity_mw": "MW",
+        "outage_mw": "MW",
+        "reported_outage_pct": "percentage points"
+      }
+    },
+    "dim_date": {
+      "allowed_personas": [
+        "Analyst",
+        "Admin"
+      ],
+      "classification": "detail",
+      "description": "Union of observed source dates.",
+      "foreign_keys": [],
+      "id": "dim_date",
+      "primary_key": [
+        "period"
+      ],
+      "schema": [
+        [
+          "period",
+          "DATE"
+        ],
+        [
+          "year",
+          "INTEGER"
+        ],
+        [
+          "month",
+          "INTEGER"
+        ],
+        [
+          "day",
+          "INTEGER"
+        ]
+      ],
+      "units": {}
+    },
+    "dim_facility": {
+      "allowed_personas": [
+        "Analyst",
+        "Admin"
+      ],
+      "classification": "detail",
+      "description": "Union of source identities; latest observed descriptive name.",
+      "foreign_keys": [],
+      "id": "dim_facility",
+      "primary_key": [
+        "facility_id"
+      ],
+      "schema": [
+        [
+          "facility_id",
+          "VARCHAR"
+        ],
+        [
+          "facility_name",
+          "VARCHAR"
+        ],
+        [
+          "first_observed",
+          "DATE"
+        ],
+        [
+          "last_observed",
+          "DATE"
+        ],
+        [
+          "seen_in_facility_route",
+          "BOOLEAN"
+        ],
+        [
+          "seen_in_generator_route",
+          "BOOLEAN"
+        ]
+      ],
+      "units": {}
+    },
+    "dim_generator": {
+      "allowed_personas": [
+        "Analyst",
+        "Admin"
+      ],
+      "classification": "detail",
+      "description": "Generator identity is scoped to its facility.",
+      "foreign_keys": [
+        {
+          "columns": [
+            "facility_id"
+          ],
+          "dataset": "dim_facility",
+          "references": [
+            "facility_id"
+          ]
+        }
+      ],
+      "id": "dim_generator",
+      "primary_key": [
+        "facility_id",
+        "generator_id"
+      ],
+      "schema": [
+        [
+          "facility_id",
+          "VARCHAR"
+        ],
+        [
+          "generator_id",
+          "VARCHAR"
+        ],
+        [
+          "first_observed",
+          "DATE"
+        ],
+        [
+          "last_observed",
+          "DATE"
+        ]
+      ],
+      "units": {}
+    },
+    "facility_daily": {
+      "allowed_personas": [
+        "Analyst",
+        "Admin"
+      ],
+      "classification": "detail",
+      "description": "Facility observations with observation-time names.",
+      "foreign_keys": [
+        {
+          "columns": [
+            "period"
+          ],
+          "dataset": "dim_date",
+          "references": [
+            "period"
+          ]
+        },
+        {
+          "columns": [
+            "facility_id"
+          ],
+          "dataset": "dim_facility",
+          "references": [
+            "facility_id"
+          ]
+        }
+      ],
+      "id": "facility_daily",
+      "primary_key": [
+        "period",
+        "facility_id"
+      ],
+      "schema": [
+        [
+          "period",
+          "DATE"
+        ],
+        [
+          "facility_id",
+          "VARCHAR"
+        ],
+        [
+          "facility_name",
+          "VARCHAR"
+        ],
+        [
+          "capacity_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "outage_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "reported_outage_pct",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "quality_flags",
+          "VARCHAR"
+        ],
+        [
+          "source_row_hash",
+          "VARCHAR"
+        ]
+      ],
+      "units": {
+        "capacity_mw": "MW",
+        "outage_mw": "MW",
+        "reported_outage_pct": "percentage points"
+      }
+    },
+    "facility_reconciliation_daily": {
+      "allowed_personas": [
+        "Analyst",
+        "Admin"
+      ],
+      "classification": "detail",
+      "description": "Observed generator sums versus published facility; absent/null is not zero.",
+      "foreign_keys": [
+        {
+          "columns": [
+            "period"
+          ],
+          "dataset": "dim_date",
+          "references": [
+            "period"
+          ]
+        },
+        {
+          "columns": [
+            "facility_id"
+          ],
+          "dataset": "dim_facility",
+          "references": [
+            "facility_id"
+          ]
+        }
+      ],
+      "id": "facility_reconciliation_daily",
+      "primary_key": [
+        "period",
+        "facility_id"
+      ],
+      "schema": [
+        [
+          "period",
+          "DATE"
+        ],
+        [
+          "facility_id",
+          "VARCHAR"
+        ],
+        [
+          "facility_name",
+          "VARCHAR"
+        ],
+        [
+          "facility_present",
+          "BOOLEAN"
+        ],
+        [
+          "generator_count",
+          "INTEGER"
+        ],
+        [
+          "generator_null_capacity_count",
+          "INTEGER"
+        ],
+        [
+          "generator_null_outage_count",
+          "INTEGER"
+        ],
+        [
+          "generator_null_pct_count",
+          "INTEGER"
+        ],
+        [
+          "facility_capacity_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "generator_capacity_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "facility_outage_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "generator_outage_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "capacity_gap_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "outage_gap_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "capacity_abs_gap_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "outage_abs_gap_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "facility_reported_pct",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "generator_weighted_reported_pct",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "reported_pct_gap_pp",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "coverage_status",
+          "VARCHAR"
+        ],
+        [
+          "mw_comparison_status",
+          "VARCHAR"
+        ],
+        [
+          "pct_comparison_status",
+          "VARCHAR"
+        ]
+      ],
+      "units": {
+        "capacity_abs_gap_mw": "MW",
+        "capacity_gap_mw": "MW",
+        "facility_capacity_mw": "MW",
+        "facility_outage_mw": "MW",
+        "facility_reported_pct": "percentage points",
+        "generator_capacity_mw": "MW",
+        "generator_outage_mw": "MW",
+        "generator_weighted_reported_pct": "percentage points",
+        "outage_abs_gap_mw": "MW",
+        "outage_gap_mw": "MW",
+        "reported_pct_gap_pp": "percentage points"
+      }
+    },
+    "fleet_daily": {
+      "allowed_personas": [
+        "Viewer",
+        "Analyst",
+        "Admin"
+      ],
+      "classification": "national",
+      "description": "US-08: share of published national fleet capacity offline each day.",
+      "foreign_keys": [
+        {
+          "columns": [
+            "period"
+          ],
+          "dataset": "dim_date",
+          "references": [
+            "period"
+          ]
+        },
+        {
+          "columns": [
+            "period"
+          ],
+          "dataset": "national_daily",
+          "references": [
+            "period"
+          ]
+        }
+      ],
+      "id": "fleet_daily",
+      "primary_key": [
+        "period"
+      ],
+      "schema": [
+        [
+          "period",
+          "DATE"
+        ],
+        [
+          "capacity_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "outage_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "reported_outage_pct",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "offline_share",
+          "DECIMAL(24,12)"
+        ],
+        [
+          "offline_pct",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "reported_vs_calculated_pct_gap",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "quality_flags",
+          "VARCHAR"
+        ]
+      ],
+      "units": {
+        "capacity_mw": "MW",
+        "offline_pct": "percentage points",
+        "offline_share": "fraction",
+        "outage_mw": "MW",
+        "reported_outage_pct": "percentage points"
+      }
+    },
+    "generator_daily": {
+      "allowed_personas": [
+        "Analyst",
+        "Admin"
+      ],
+      "classification": "detail",
+      "description": "Preserved generator observations, including missing facility-day parents.",
+      "foreign_keys": [
+        {
+          "columns": [
+            "period"
+          ],
+          "dataset": "dim_date",
+          "references": [
+            "period"
+          ]
+        },
+        {
+          "columns": [
+            "facility_id",
+            "generator_id"
+          ],
+          "dataset": "dim_generator",
+          "references": [
+            "facility_id",
+            "generator_id"
+          ]
+        }
+      ],
+      "id": "generator_daily",
+      "primary_key": [
+        "period",
+        "facility_id",
+        "generator_id"
+      ],
+      "schema": [
+        [
+          "period",
+          "DATE"
+        ],
+        [
+          "facility_id",
+          "VARCHAR"
+        ],
+        [
+          "generator_id",
+          "VARCHAR"
+        ],
+        [
+          "facility_name",
+          "VARCHAR"
+        ],
+        [
+          "capacity_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "outage_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "reported_outage_pct",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "quality_flags",
+          "VARCHAR"
+        ],
+        [
+          "source_row_hash",
+          "VARCHAR"
+        ]
+      ],
+      "units": {
+        "capacity_mw": "MW",
+        "outage_mw": "MW",
+        "reported_outage_pct": "percentage points"
+      }
+    },
+    "national_daily": {
+      "allowed_personas": [
+        "Viewer",
+        "Analyst",
+        "Admin"
+      ],
+      "classification": "national",
+      "description": "Published national observations, without cross-grain substitutions.",
+      "foreign_keys": [
+        {
+          "columns": [
+            "period"
+          ],
+          "dataset": "dim_date",
+          "references": [
+            "period"
+          ]
+        }
+      ],
+      "id": "national_daily",
+      "primary_key": [
+        "period"
+      ],
+      "schema": [
+        [
+          "period",
+          "DATE"
+        ],
+        [
+          "capacity_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "outage_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "reported_outage_pct",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "quality_flags",
+          "VARCHAR"
+        ],
+        [
+          "source_row_hash",
+          "VARCHAR"
+        ]
+      ],
+      "units": {
+        "capacity_mw": "MW",
+        "outage_mw": "MW",
+        "reported_outage_pct": "percentage points"
+      }
+    },
+    "national_reconciliation_daily": {
+      "allowed_personas": [
+        "Analyst",
+        "Admin"
+      ],
+      "classification": "detail",
+      "description": "Published national values versus separately aggregated facilities/generators.",
+      "foreign_keys": [
+        {
+          "columns": [
+            "period"
+          ],
+          "dataset": "dim_date",
+          "references": [
+            "period"
+          ]
+        }
+      ],
+      "id": "national_reconciliation_daily",
+      "primary_key": [
+        "period"
+      ],
+      "schema": [
+        [
+          "period",
+          "DATE"
+        ],
+        [
+          "national_present",
+          "BOOLEAN"
+        ],
+        [
+          "facility_count",
+          "INTEGER"
+        ],
+        [
+          "generator_count",
+          "INTEGER"
+        ],
+        [
+          "facility_null_capacity_count",
+          "INTEGER"
+        ],
+        [
+          "facility_null_outage_count",
+          "INTEGER"
+        ],
+        [
+          "facility_null_pct_count",
+          "INTEGER"
+        ],
+        [
+          "generator_null_capacity_count",
+          "INTEGER"
+        ],
+        [
+          "generator_null_outage_count",
+          "INTEGER"
+        ],
+        [
+          "generator_null_pct_count",
+          "INTEGER"
+        ],
+        [
+          "national_capacity_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "facility_capacity_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "generator_capacity_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "national_outage_mw",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "facility_outage_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "generator_outage_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "facility_capacity_gap_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "generator_capacity_gap_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "facility_outage_gap_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "generator_outage_gap_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "facility_capacity_abs_gap_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "generator_capacity_abs_gap_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "facility_outage_abs_gap_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "generator_outage_abs_gap_mw",
+          "DECIMAL(38,9)"
+        ],
+        [
+          "national_reported_pct",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "facility_weighted_reported_pct",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "generator_weighted_reported_pct",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "facility_reported_pct_gap_pp",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "generator_reported_pct_gap_pp",
+          "DECIMAL(24,9)"
+        ],
+        [
+          "coverage_status",
+          "VARCHAR"
+        ],
+        [
+          "mw_comparison_status",
+          "VARCHAR"
+        ],
+        [
+          "pct_comparison_status",
+          "VARCHAR"
+        ]
+      ],
+      "units": {
+        "facility_capacity_abs_gap_mw": "MW",
+        "facility_capacity_gap_mw": "MW",
+        "facility_capacity_mw": "MW",
+        "facility_outage_abs_gap_mw": "MW",
+        "facility_outage_gap_mw": "MW",
+        "facility_outage_mw": "MW",
+        "facility_reported_pct_gap_pp": "percentage points",
+        "facility_weighted_reported_pct": "percentage points",
+        "generator_capacity_abs_gap_mw": "MW",
+        "generator_capacity_gap_mw": "MW",
+        "generator_capacity_mw": "MW",
+        "generator_outage_abs_gap_mw": "MW",
+        "generator_outage_gap_mw": "MW",
+        "generator_outage_mw": "MW",
+        "generator_reported_pct_gap_pp": "percentage points",
+        "generator_weighted_reported_pct": "percentage points",
+        "national_capacity_mw": "MW",
+        "national_outage_mw": "MW",
+        "national_reported_pct": "percentage points"
+      }
+    }
+  },
+  "metrics": {
+    "fleet_offline_share": {
+      "column": "offline_share",
+      "dataset": "fleet_daily",
+      "definition": "100 * offline_share before output rounding",
+      "denominator_policy": "Null/non-positive capacity or null outage yields null plus a flag.",
+      "formula": "published national outage_mw / published national capacity_mw",
+      "outlier_policy": "No clipping: finite out-of-range source values remain visible with flags.",
+      "percentage_column": "offline_pct",
+      "rounding": "Python Decimal precision 28, ROUND_HALF_UP; share 12 and percentage 9 decimal places.",
+      "source_dataset": "national_daily",
+      "source_grain": "national per calendar day",
+      "unit": "fraction",
+      "version": 1
+    }
+  },
+  "model_version": 1,
+  "warning": "Development model v1 labeled absolute percentages as percentage points; numeric data is unchanged. Version 2 corrects catalog labels."
+}
