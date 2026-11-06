@@ -35,3 +35,12 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local preparation, historical evidence and private documentation snapshots.
+/docs/AI/
+
+# Personal study and action reminders remain local.
+/TODO.md
+
+# Retired private pilot-plan predecessor.
+/PLAN.md

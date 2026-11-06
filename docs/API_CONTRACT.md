@@ -1,8 +1,10 @@
-# API contract
+# Use the JSON API: requests, results and errors
 
-The same-origin JSON API is served under `/api/v1` without trailing slashes. The executable schema is [OpenAPI 3.1](../src/outage_explorer/service/openapi.json), also available after login at `GET /api/v1/openapi.json`. [SECURITY.md](SECURITY.md) explains the enforcement boundaries; [DATA_MODEL.md](DATA_MODEL.md) defines the datasets and metric.
+The API is the contract between the browser workspace and Django: a client asks for a permitted dataset or a bounded SQL result, and the server returns JSON. JSON is structured text; a session cookie identifies the signed-in user, while a CSRF token protects POST requests made with that cookie. Start with [local setup](LOCAL_OPERATIONS.md) for accounts and a running service, then follow the authentication sequence below.
 
-Use the [README](../README.md) for installation and the local operator commands. No endpoint accepts an EIA key, filesystem path, caller-selected persona, or arbitrary connection string. Browser authentication uses Django's `sessionid` cookie.
+Every path below is under `/api/v1` without a trailing slash. A same-origin client uses the same scheme, host and port as the application. The executable schema is [OpenAPI 3.1](../src/outage_explorer/service/openapi.json), also available after login at `GET /api/v1/openapi.json`. The [query security guide](QUERY_SECURITY.md) explains enforcement boundaries; the [data pipeline and model guide](DATA_PIPELINE_AND_MODEL.md) defines the datasets and metric.
+
+Use the [local operations guide](LOCAL_OPERATIONS.md) for installation and the local operator commands. No endpoint accepts an EIA key, filesystem path, caller-selected persona, or arbitrary connection string. Browser authentication uses Django's `sessionid` cookie.
 
 ## Capabilities
 
@@ -33,7 +35,7 @@ Paths in the table are relative to `/api/v1`. Viewer may access **`national_dail
 
 For `fetch`, use same-origin credentials. The CSRF response token is a Django token; do not assume it is textually identical to the cookie. Session cookies are HttpOnly and SameSite=Lax. Sessions expire after 1,800 seconds and at browser close. Changing a password, deleting the persisted session, disabling the user or changing the persona is checked against current server state. Refresh or query cursors are not authentication credentials.
 
-`GET /api/v1/auth/session` also returns top-level `session_scope`: an opaque 64-character lowercase hexadecimal HMAC shared with the protected HTML bootstrap. It binds browser state to the current persisted session/authentication/persona, so a new session for the same username and role is distinguishable. It stays stable when analytical data is refreshed. The browser uses it to retire old query-history scopes and revalidate restored pages. It is neither a credential nor a cursor: authentication still requires the valid session cookie, and sending this value does not grant access. The exact response is defined by OpenAPI's `SessionResponse`; see [FRONTEND.md](FRONTEND.md) for its client use.
+`GET /api/v1/auth/session` also returns top-level `session_scope`: an opaque 64-character lowercase hexadecimal HMAC shared with the protected HTML bootstrap. It binds browser state to the current persisted session/authentication/persona, so a new session for the same username and role is distinguishable. It stays stable when analytical data is refreshed. The browser uses it to retire old query-history scopes and revalidate restored pages. It is neither a credential nor a cursor: authentication still requires the valid session cookie, and sending this value does not grant access. The exact response is defined by OpenAPI's `SessionResponse`; see [browser workspace](BROWSER_WORKSPACE.md) for its client use.
 
 An incorrect username/password returns the same `401 invalid_credentials`. Shared login throttles allow 10 attempts per username and 30 per client address in a five-minute window; successful attempts count too. A limit returns `429` with `Retry-After`. Raw usernames and addresses are not stored in rate-limit bucket keys.
 
@@ -78,7 +80,7 @@ A preview returns `dataset_id`, both publication IDs, `columns`, `rows`, `return
 
 The default page size automatically decreases when the total result cap is below 100.
 
-This example uses the pinned model analyzed in [FINDINGS.md](../FINDINGS.md):
+This example uses the pinned model analyzed in [data findings](FINDINGS.md):
 
 ```json
 {
@@ -125,7 +127,7 @@ Both preview/query cursors expire after **15 minutes** and bind the session/auth
 
 The server query cache lasts **60 seconds**, retains up to **eight entries per user**, and is scoped to user, persona, session/authentication state, canonical SQL, selected model and current publication generation. Authorization is checked before cache use and before delivery. Another user's/session's cache is not shared, and changing permissions invalidates the authorization binding. A cache hit does not extend its original expiry.
 
-Queries and previews, **including cache hits**, use process-shared admission: **one pending/executing request per account, two execution slots, eight waiting slots, and a five-second maximum queue wait**. Saturation returns `429` and `Retry-After: 1`. Every request recompiles and reauthorizes before using its cache. Compilation and engine execution share an independent **eight-second execution budget**, including their startup/input preparation; the compiler receives at most two seconds of that budget. Queue waiting is excluded. Results have a 1,000-row client cap and 2 MiB output cap. See [SECURITY.md](SECURITY.md) for memory/CPU boundaries and platform qualifications.
+Queries and previews, **including cache hits**, use process-shared admission: **one pending/executing request per account, two execution slots, eight waiting slots, and a five-second maximum queue wait**. Saturation returns `429` and `Retry-After: 1`. Every request recompiles and reauthorizes before using its cache. Compilation and engine execution share an independent **eight-second execution budget**, including their startup/input preparation; the compiler receives at most two seconds of that budget. Queue waiting is excluded. Results have a 1,000-row client cap and 2 MiB output cap. See [query security and runtime boundaries](QUERY_SECURITY.md) for memory/CPU boundaries and platform qualifications.
 
 ## Asynchronous refresh
 
@@ -137,7 +139,7 @@ The same owner/key/mode returns the original job with `200`, including after com
 
 The operator must run the separate worker (`python -m outage_explorer.web.local worker`, optionally `--once`). There are no background refresh threads in HTTP processes. The worker rechecks the owner's active Admin persona before ingestion. States are `queued → running → succeeded|failed|interrupted`. Success records the matching `snapshot_id`, `model_id`, and mode, then attempts cache cleanup; generation keys also prevent stale cache reuse.
 
-Extraction/model validation failures preserve the previously published raw/model pair. A worker that dies after publication but before recording job completion can leave an `interrupted` job **even though publication occurred**. Review current/model history before retrying; job interruption is not proof of rollback. Restart recovery requires the independent worker OS lock, so a second live worker cannot mark an active job interrupted.
+Extraction or candidate-model validation failures before catalog publication preserve the previously published raw/model pair. Unfinished candidate files may remain; they are not automatically promoted or cleaned up. A worker that dies after publication but before recording job completion can leave an `interrupted` job **even though publication occurred**. Review current/model history before retrying; job interruption is not proof of rollback. Restart recovery requires the independent worker OS lock, so a second live worker cannot mark an active job interrupted.
 
 ## Errors and health
 
@@ -169,3 +171,5 @@ Errors use `application/problem+json`:
 | `500` | Safe unexpected-error response |
 
 Engine diagnostics, SQL text, credentials and filesystem paths are not returned in error details. Use `request_id` to correlate safe operational logs. Liveness only confirms the HTTP process responds. Admin readiness checks the selected current model reference and pinned runtime availability; it is not a live EIA call, a full workload benchmark, or a guarantee that every future query will fit its resource budget.
+
+Historical implementation reference: [Django CSRF protection](https://docs.djangoproject.com/en/5.2/howto/csrf/). This records the original guidance; no new external-source verification is claimed.

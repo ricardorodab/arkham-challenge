@@ -1,8 +1,10 @@
-# Engineering decisions — Parts 1–4
+# Why the system works this way: 31 engineering decisions
 
-This document describes the implemented connector, analytical model, Django API and browser application. Azure hosting remains a future pilot.
+Read the [project tour](PROJECT_TOUR.md) for the flow first, then use this record to defend individual choices. Each decision retains the implemented choice, a rejected alternative and its reason. Detailed contracts belong in the linked data, API, security and browser guides; this document explains why those contracts exist.
 
-The challenge's seven required decisions map to these sections: natural keys (§1); kept-current semantics (§5); missing/mismatching parents (§7, §14, §16); asynchronous refresh (§25); supported/rejected SQL (§22); complete reference discovery before authorization (§22); and additional product choices (§27–31). Each states the choice, an alternative and the reason.
+The seven required challenge decisions map to natural keys (§1), kept-current semantics (§5), missing/mismatching parents (§7, §14, §16), asynchronous refresh (§25), supported/rejected SQL (§22), discovery/authorization of every named table (§22), and the additional coherent-publication decision (§3–4, §18). The remaining decisions explain the reliability, security and product trade-offs behind them.
+
+Read by concern: **source/reliability (§1–13)** → **model/trust (§14–20)** → **identity/SQL/service (§21–26)** → **browser/product (§27–31)**. Azure/PostgreSQL and container hosting remain future work; no hosted deployment is claimed. Test evidence and the actual AI errors/corrections are in [verification](NOTES.md).
 
 ## 1. Natural keys follow the actual source grains
 
@@ -32,7 +34,7 @@ The full deployed product is planned to move this authority to PostgreSQL. Part 
 
 ## 4. Prefer coherent publication to partial availability
 
-**Choice:** any failed route or invalid required data prevents the complete run from becoming current.
+**Choice:** any route or required-data validation failure before catalog publication prevents the candidate run from becoming current.
 
 **Rejected:** publishing successful routes one at a time.
 
@@ -66,7 +68,7 @@ A missing metadata-advertised source boundary prevents publication as potentiall
 
 **Rejected:** coercing missing measurements to zero, discarding generator orphans, or clipping values to expected bounds.
 
-**Reason:** structural failures undermine identity and interpretation. An unusual measurement may be legitimate, and deleting it would destroy evidence. Part 2 explains observed cross-grain differences in `FINDINGS.md`; transformations must not manufacture agreement.
+**Reason:** structural failures undermine identity and interpretation. An unusual measurement may be legitimate, and deleting it would destroy evidence. Part 2 explains observed cross-grain differences in `docs/FINDINGS.md`; transformations must not manufacture agreement.
 
 ## 8. Handle additive schema changes without silent data loss
 
@@ -116,7 +118,7 @@ Genuine sanitized metadata and first-page responses for all three routes, plus a
 
 **Rejected:** labeling a pre-commit quality file as a successful publication.
 
-**Reason:** a process can die between writing quality evidence and committing state. Two subprocess-death tests cover a crash before the commit and a crash after the commit; the database pointer and history must retain the correct state in both cases.
+**Reason:** a process can die between writing quality evidence and committing state. Real subprocess-death cases before and after commit cover a crash before the commit and a crash after the commit; the database pointer and history must retain the correct state in both cases.
 
 ## 14. Model source grains separately and preserve missing parents
 
@@ -144,13 +146,13 @@ Genuine sanitized metadata and first-page responses for all three routes, plus a
 
 **Choice:** ZSTD Parquet sorted by natural key, with date first for daily facts and reconciliation. One file per dataset per model; row groups target 122,880 rows. The raw three-route snapshot is about 46.4 MB compressed. No year/month directory partitions yet.
 
-**Reason:** expected reads filter by date and may scan the whole history. Many tiny date partitions would add file-opening and metadata overhead without a demonstrated benefit. At larger volume, benchmark date pruning, memory, latency and file sizes before choosing annual/monthly partitions; retain useful file sizes, avoid facility-level partition explosion, and compact small outputs. `docs/DATA_MODEL.md` describes the trade-offs and migration triggers. This is a deliberate partitioning strategy, not an unmeasured scalability claim.
+**Reason:** expected reads filter by date and may scan the whole history. Many tiny date partitions would add file-opening and metadata overhead without a demonstrated benefit. At larger volume, benchmark date pruning, memory, latency and file sizes before choosing annual/monthly partitions; retain useful file sizes, avoid facility-level partition explosion, and compact small outputs. `docs/DATA_PIPELINE_AND_MODEL.md` describes the trade-offs and migration triggers. This is a deliberate partitioning strategy, not an unmeasured scalability claim.
 
 ## 18. Publish derived and raw generations together and retain versioned contracts
 
-**Choice:** build and verify all model files before one SQLite transaction advances both pointers and completes both jobs. A standalone offline rebuild advances the model only if its raw source is still current. Each model records source hashes/counts, schema/metric versions, file and logical hashes, and quality rules. Retain immutable historical artifacts.
+**Choice:** build and verify all model files before one SQLite transaction advances both pointers and completes the ingestion-run and model-build records in the data catalog. Application refresh-job completion is a separate transaction in the Django database. A standalone offline rebuild advances the model only if its raw source is still current. Each model records source hashes/counts, schema/metric versions, file and logical hashes, and quality rules. Retain immutable historical artifacts.
 
-**Reason:** serving a new source through an old model would create contradictory results. Three actual-process crash positions now cover raw-file rename, model-file rename, and post-commit recovery. Unreferenced files may remain after a failure; they are never promoted by directory discovery. There is no automatic retention or off-machine backup in this part.
+**Reason:** serving a new source through an old model would create contradictory results. Three actual-process crash positions now cover raw-file rename, model-file rename, and post-commit recovery. Unreferenced files may remain after a failure; they are never promoted by directory discovery. Automatic candidate cleanup, reference-aware retention and off-machine backup/restore are not implemented. The process-crash evidence is not a universal power-loss durability guarantee.
 
 The first local model version 1 used incorrect catalog unit labels for absolute percentages. Its numerical data was correct. Rather than rewriting published evidence, the original contract was frozen in `contracts/model-v1.json`; version 2 corrects labels. Historical v1 reads use that frozen profile and expose a warning. All ten logical data hashes matched between versions; the metric formula remains version 1.
 
@@ -190,7 +192,7 @@ Compilation itself runs in a disposable Python process with bounded input/output
 
 **Rejected:** treating DuckDB settings or SQLGlot as a sandbox, same-user native DuckDB with full host capabilities, or declaring an unavailable Docker/WSL environment tested.
 
-**Reason:** the actual Windows machine has neither Docker nor installed WSL. DuckDB's primary security guidance explicitly lists WASM as a sandbox option. The custom runtime was necessary because the npm package's normal Node runtime can access the host filesystem. Engine-level tests independently deny host CSV/Parquet, HTTP, COPY and ATTACH, without relying on AST rejection. [DuckDB security guidance](https://www.duckdb.org/docs/2.0/operations_manual/securing_duckdb/overview).
+**Reason:** the recorded Windows acceptance environment had neither Docker nor installed WSL. DuckDB's primary security guidance explicitly lists WASM as a sandbox option. The custom runtime was necessary because the npm package's normal Node runtime can access the host filesystem. Engine-level tests independently deny host CSV/Parquet, HTTP, COPY and ATTACH, without relying on AST rejection. [DuckDB security guidance](https://www.duckdb.org/docs/2.0/operations_manual/securing_duckdb/overview).
 
 Native DuckDB 2.0 remains trusted ingestion/modeling code; the pinned npm runtime embeds DuckDB 1.5.4. Interoperable Parquet and exact decimal/date behavior are tested. This costs another runtime and startup/whole-file-transfer overhead; a per-query 64 MiB input limit is explicit. POSIX allocation limits are implemented but not asserted live-verified here. The deployment platform must repeat acceptance before hosting.
 
