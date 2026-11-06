@@ -2,6 +2,8 @@
 
 All commands below run from the repository root in PowerShell. They are instructions for a future operator; this documentation rewrite did not execute them. Read [the project tour](PROJECT_TOUR.md) for the file/configuration explanation, [the API contract](API_CONTRACT.md) for request semantics, and [verification](NOTES.md) for dated outcomes rather than assuming these commands currently pass.
 
+For a packaged Linux-container workflow, use [Docker Compose operations](DOCKER.md), including first-run initialization, private credential access, persistent volumes and the optional refresh worker. The PowerShell commands below describe installation directly on the host.
+
 ## Choose the work you need
 
 | Goal | Needs EIA key/network? | Changes local state? |

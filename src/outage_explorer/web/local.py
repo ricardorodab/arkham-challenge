@@ -1,4 +1,4 @@
-"""Provide explicit local init, loopback serve and separate refresh-worker launchers.
+"""Provide explicit local init, HTTP serve and separate refresh-worker launchers.
 
 init creates/loads private generated credentials, configures Django, migrates the application
 database and calls seed_users. serve runs Waitress; worker calls the polling management
@@ -15,6 +15,7 @@ import os
 import secrets
 import subprocess
 import sys
+from ipaddress import ip_address
 from pathlib import Path
 
 
@@ -92,7 +93,8 @@ def main():
     actions = parser.add_subparsers(dest="action", required=True)
     init = actions.add_parser("init", help="Create private random credentials, migrate and seed")
     init.add_argument("--reset-passwords", action="store_true")
-    api = actions.add_parser("serve", help="Serve the API on loopback")
+    api = actions.add_parser("serve", help="Serve the API (loopback by default)")
+    api.add_argument("--host", type=ip_address, default="127.0.0.1")
     api.add_argument("--port", type=int, default=8000)
     worker = actions.add_parser("worker", help="Consume durable Admin refresh jobs")
     worker.add_argument("--once", action="store_true")
@@ -109,7 +111,7 @@ def main():
                 os.environ.pop(f"OUTAGE_{role.upper()}_PASSWORD", None)
             from .serve import main as serve
 
-            sys.argv = [sys.argv[0], "--port", str(args.port)]
+            sys.argv = [sys.argv[0], "--host", str(args.host), "--port", str(args.port)]
             serve()
             return
         import django

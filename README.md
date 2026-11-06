@@ -1,6 +1,6 @@
 # Outage Explorer
 
-Outage Explorer turns published U.S. nuclear-outage observations into a local, reproducible analytical workspace. A Python connector downloads the EIA's national, facility and generator data; a verified Parquet model supports an authenticated Django API and browser interface. Hosting remains future work.
+Outage Explorer turns published U.S. nuclear-outage observations into a local, reproducible analytical workspace. A Python connector downloads the EIA's national, facility and generator data; a verified Parquet model supports an authenticated Django API and browser interface. Public hosting remains future work.
 
 ## Documentation
 
@@ -15,12 +15,23 @@ Start with the project tour, then follow the data and request paths. These are t
 | [Query security](docs/QUERY_SECURITY.md) | Authorization, isolated compilation/execution, resource limits and trust boundaries |
 | [Browser workspace](docs/BROWSER_WORKSPACE.md) | User flows, product choices, version consistency, sessions, export and accessibility |
 | [Engineering decisions](docs/DECISIONS.md) | The seven required challenge choices and all 31 detailed design decisions |
+| [Docker workflow](docs/DOCKER.md) | Portable build/startup, private credentials, ingestion, optional worker and persistent volumes |
 | [Local operations](docs/LOCAL_OPERATIONS.md) | Installation, ingestion, model inspection, reports, checks and recovery |
 | [Engineering notes and verification](docs/NOTES.md) | Implementation stages, actual corrections, contribution disclosure, verification and remaining limits |
 
 Test-specific instructions stay with [browser acceptance](tests/browser/README.md), [synthetic fixtures](tests/fixtures/README.md) and [recorded source responses](tests/fixtures/recorded/README.md). Runtime [extension provenance](src/outage_explorer/sandbox/PROVENANCE.md) remains beside its packaged asset.
 
-## Run locally
+## Run with Docker
+
+With Docker running Linux containers and the Compose plugin, start from the repository root:
+
+```sh
+docker compose up --build -d app
+```
+
+Open [the login page](http://127.0.0.1:8000/login/). Initialization generates private random account passwords and persists application state; no EIA key is needed for startup. A fresh workspace has no analytical data. Follow [the Docker guide](docs/DOCKER.md) to view passwords privately, ingest a bounded dataset, run the optional refresh worker or move persisted volumes. Local data and credentials are excluded from the image.
+
+## Run without Docker
 
 Use Python **3.12–3.14** and Node **24.x, at least 24.13.0**, with npm. Install both package sets: Django runs in Python, while the server's isolated analytical engine runs in Node. No frontend build step is required.
 
@@ -54,7 +65,7 @@ Open [the local login page](http://127.0.0.1:8000/login/). Initialization create
 | Analyst | All ten analytical datasets, filters, previews and supported SQL |
 | Admin | Analyst capabilities plus refresh and their own job outcomes |
 
-[.env.example](.env.example) documents variable names. Neither it nor a renamed `.env` is loaded automatically. Local JSON supplies only the generated Django key and three seed passwords; other settings come from the process environment or code defaults. See [configuration precedence](docs/PROJECT_TOUR.md#configuration-what-is-read-and-in-what-order).
+[.env.example](.env.example) documents variable names. The Python application does not load it or a renamed `.env`; Docker Compose can read `.env` for its own variable interpolation, as described in [the Docker guide](docs/DOCKER.md#ports-paths-and-persisted-state). Local JSON supplies only the generated Django key and three seed passwords; other settings come from the process environment or code defaults. See [configuration precedence](docs/PROJECT_TOUR.md#configuration-what-is-read-and-in-what-order).
 
 Admin refresh queues a durable job. Run its worker separately, with `EIA_API_KEY` supplied in that worker's environment:
 
@@ -74,10 +85,10 @@ The browser keeps chart, preview and SQL on one model version and adopts a newer
 
 Recent extraction replaces a 30-day overlap and can miss older revisions; the analytical model is rebuilt fully. EIA's live pages are not a transactional upstream snapshot. SQL is a small single-dataset SELECT subset with 1,000 retained rows, 2 MiB output and an eight-second admitted budget.
 
-An interrupted candidate can remain on disk. There is no automatic orphan cleanup or promotion of unfinished files. Raw/model references commit together, but refresh-job completion is a separate application transaction, so an interrupted job may already have published data. Lock-protected recovery updates abandoned run/build/job labels; it is not proof against every disk/power failure or an off-machine backup. Hosted/POSIX acceptance, off-machine restore, automatic retention and larger-volume capacity remain unverified.
+An interrupted candidate can remain on disk. There is no automatic orphan cleanup or promotion of unfinished files. Raw/model references commit together, but refresh-job completion is a separate application transaction, so an interrupted job may already have published data. Lock-protected recovery updates abandoned run/build/job labels; it is not proof against every disk/power failure or an off-machine backup. Public hosting, off-machine restore, automatic retention and larger-volume capacity remain unverified.
 
 ## Verification status
 
-The latest recorded **full Python suite** is **654 passed, 1 failed, 1 skipped**. The unresolved 50 ms timeout test assumes a child launches although preparation can consume the deadline. Historical browser and packaging runs have their own versions and scope.
+[CI for `f0efd89`](https://github.com/ricardorodab/arkham-challenge/actions/runs/42206723059), before containerization, passed on Ubuntu and Windows with Python 3.12 and 3.14: each Ubuntu job reported **658 passed, 1 platform skip**; each Windows job reported **657 passed, 2 POSIX skips**. All four jobs passed **17 JavaScript units**, and Windows/Python 3.12 passed **18 browser tests**. The new [Docker checks](docs/DOCKER.md#health-and-verification) separately passed locally on Linux/amd64 with synthetic data; the new container CI job records its own result.
 
-The source-documentation pass at `8d6d02c` separately passed **255 focused Python tests and 17 JavaScript unit tests**, plus executable-equivalence, syntax, lint and formatting checks. It did not rerun full/browser acceptance. This documentation/privacy cleanup runs no application suite. [Engineering notes](docs/NOTES.md) distinguish those results and explain the verification methods.
+[Engineering notes](docs/NOTES.md) retain earlier scoped records, including the historical 654/1/1 full-suite result and the limited source-documentation checks. [Current Actions runs](https://github.com/ricardorodab/arkham-challenge/actions) and [Docker verification](docs/DOCKER.md#health-and-verification) distinguish later changes and their scope.

@@ -9,18 +9,21 @@ from __future__ import annotations
 
 import argparse
 import os
+from ipaddress import ip_address
 
 from waitress import serve
 
 
 def main():
-    """Validate the port and serve loopback with bounded HTTP/concurrency settings.
+    """Validate the bind address/port and serve with bounded HTTP/concurrency settings.
 
     Use twelve request threads and explicit body/header/connection/time limits; discard
     untrusted proxy headers and suppress tracebacks. This launcher does not provision HTTPS,
-    start a refresh worker or install the analytical runtime.
+    start a refresh worker or install the analytical runtime. Loopback remains the
+    default; containers explicitly select their internal 0.0.0.0 interface.
     """
     parser = argparse.ArgumentParser(description="Serve the local Outage Explorer API")
+    parser.add_argument("--host", type=ip_address, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
@@ -30,7 +33,7 @@ def main():
 
     serve(
         application,
-        host="127.0.0.1",
+        host=str(args.host),
         port=args.port,
         threads=12,
         max_request_body_size=65536,

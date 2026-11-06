@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from outage_explorer.web import local
 
 
@@ -75,7 +77,13 @@ print(json.dumps({u.username:u.password for u in users}))
         assert path.stat().st_mode & 0o077 == 0
 
 
-def test_local_serve_drops_api_and_seed_credentials(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "bind_arguments,expected_host",
+    [([], "127.0.0.1"), (["--host", "0.0.0.0"], "0.0.0.0")],
+)
+def test_local_serve_drops_api_and_seed_credentials(
+    monkeypatch, tmp_path, bind_arguments, expected_host
+):
     state = tmp_path / "service"
     local._configuration(state, create=True)
     monkeypatch.setenv("OUTAGE_STATE_DIR", str(state))
@@ -83,13 +91,14 @@ def test_local_serve_drops_api_and_seed_credentials(monkeypatch, tmp_path):
     monkeypatch.setenv("EIA_API_KEY", "synthetic-upstream-key-do-not-inherit")
     for role in ("viewer", "analyst", "admin"):
         monkeypatch.setenv(f"OUTAGE_{role.upper()}_PASSWORD", "synthetic-seed-only")
-    monkeypatch.setattr(sys, "argv", ["local", "serve", "--port", "8123"])
+    monkeypatch.setattr(sys, "argv", ["local", "serve", *bind_arguments, "--port", "8123"])
     from outage_explorer.web import serve
 
     observed = {}
 
     def inspect():
         observed.update(os.environ)
+        assert sys.argv[1:3] == ["--host", expected_host]
         assert sys.argv[-2:] == ["--port", "8123"]
 
     monkeypatch.setattr(serve, "main", inspect)
