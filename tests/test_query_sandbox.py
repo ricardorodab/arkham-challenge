@@ -51,8 +51,211 @@ def execute(parquet: Path, sql: str, **kwargs):
     )
 
 
-def test_real_parquet_preserves_date_decimal_sign_null_boolean_and_text(parquet):
-    result = execute(parquet, "SELECT * FROM sample")
+@pytest.fixture
+def linux_capture_diagnostics(monkeypatch):
+    """Observe only the first positive Linux query; never report raw child output."""
+    if sys.platform != "linux":
+        yield None
+        return
+    captures = []
+    original_capture = sandbox._capture
+    runtime = sandbox.runtime_status()
+    public_runtime = {
+        name: runtime[name]
+        for name in (
+            "available",
+            "node",
+            "package",
+            "engine",
+            "isolation",
+            "process_memory_limit_mib",
+            "data_allocation_limit_mib",
+            "wasm_memory_limit_mib",
+        )
+        if name in runtime
+    }
+    environment = sandbox._environment()
+    expected_environment = {}
+    for name, allowed in {
+        "TZ": {"UTC"},
+        "LANG": {"C.UTF-8"},
+        "NODE_NO_WARNINGS": {"1"},
+        "MALLOC_ARENA_MAX": {"1", "2"},
+    }.items():
+        value = environment.get(name)
+        expected_environment[name] = value if value is None or value in allowed else "<unexpected>"
+    glibc_tunables_present = "GLIBC_TUNABLES" in environment
+    environment = None
+    safe_flags = {
+        "-I",
+        "-S",
+        "-B",
+        "--engine",
+        "--permission",
+        "--disallow-code-generation-from-strings",
+        "--disable-proto=throw",
+        "--disable-wasm-trap-handler",
+        "--liftoff-only",
+        "--no-wasm-tier-up",
+    }
+    numeric_flags = (
+        "--max-old-space-size=",
+        "--wasm-num-compilation-tasks=",
+        "--wasm-max-mem-pages=",
+        "--wasm-max-committed-code-mb=",
+        "--wasm-max-code-space-size-mb=",
+        "--wasm-max-initial-code-space-reservation=",
+    )
+    clock_ticks = os.sysconf("SC_CLK_TCK")
+    fatal_markers = {
+        "code_range_reservation": (b"failed to reserve virtual memory for coderange",),
+        "wasm_code_reservation": (b"failed to allocate wasm code", b"wasm code space"),
+        "v8_heap_oom": (b"javascript heap out of memory", b"reached heap limit"),
+        "process_oom": (b"fatal process out of memory",),
+        "allocator_failure": (b"cannot allocate memory", b"std::bad_alloc", b"enomem"),
+    }
+
+    def capture(process, payload, timeout, limit):
+        summary = {
+            "exit_status": None,
+            "sampled_peak_vm_data_kib": 0,
+            "sampled_peak_vm_rss_kib": 0,
+            "peak_threads": 0,
+            "sampled_peak_cpu_seconds": 0,
+            "sample_count": 0,
+            "fatal_markers": [],
+            "runtime": public_runtime,
+            "expected_child_environment": expected_environment,
+            "glibc_tunables_in_expected_environment": glibc_tunables_present,
+            "logical_cpu_count": os.cpu_count(),
+            "flags": [],
+            "observed_limits": {},
+        }
+        for argument in process.args:
+            if argument in safe_flags or any(
+                argument.startswith(prefix) and argument[len(prefix) :].isdigit()
+                for prefix in numeric_flags
+            ):
+                summary["flags"].append(argument)
+            elif argument.startswith("--allow-fs-read="):
+                summary["flags"].append("--allow-fs-read=<asset>")
+        captures.append(summary)
+        captured_stderr = bytearray()
+        original_stderr = process.stderr
+        stop = threading.Event()
+
+        class ObservedStderr:
+            """Forward all bytes while retaining at most 16 KiB for static markers."""
+
+            def read(self, size=-1):
+                chunk = original_stderr.read(size)
+                remaining = 16384 - len(captured_stderr)
+                if remaining > 0:
+                    captured_stderr.extend(chunk[:remaining])
+                return chunk
+
+            def __getattr__(self, name):
+                return getattr(original_stderr, name)
+
+        def sample():
+            status = Path(f"/proc/{process.pid}/status")
+            limits = Path(f"/proc/{process.pid}/limits")
+            statistics = Path(f"/proc/{process.pid}/stat")
+            fields = {
+                "VmData:": "sampled_peak_vm_data_kib",
+                "VmRSS:": "sampled_peak_vm_rss_kib",
+                "Threads:": "peak_threads",
+            }
+            while not stop.is_set():
+                try:
+                    contents = status.read_text(encoding="ascii", errors="replace")
+                except OSError:
+                    return
+                for line in contents.splitlines():
+                    parts = line.split()
+                    if len(parts) > 1 and parts[0] in fields and parts[1].isdigit():
+                        key = fields[parts[0]]
+                        summary[key] = max(summary[key], int(parts[1]))
+                summary["sample_count"] += 1
+                try:
+                    for line in limits.read_text(encoding="ascii", errors="replace").splitlines():
+                        for label, key in {
+                            "Max data size": "data_bytes",
+                            "Max cpu time": "cpu_seconds",
+                            "Max core file size": "core_bytes",
+                            "Max file size": "file_bytes",
+                            "Max open files": "open_files",
+                        }.items():
+                            if line.startswith(label):
+                                values = line[len(label) :].split()
+                                if len(values) >= 2 and all(
+                                    value.isdigit() for value in values[:2]
+                                ):
+                                    summary["observed_limits"][key] = [
+                                        int(value) for value in values[:2]
+                                    ]
+                    values = (
+                        statistics.read_text(encoding="ascii", errors="replace")
+                        .rpartition(") ")[2]
+                        .split()
+                    )
+                    if len(values) > 12 and values[11].isdigit() and values[12].isdigit():
+                        cpu_seconds = (int(values[11]) + int(values[12])) / clock_ticks
+                        summary["sampled_peak_cpu_seconds"] = max(
+                            summary["sampled_peak_cpu_seconds"], cpu_seconds
+                        )
+                except OSError:
+                    pass
+                stop.wait(0.005)
+
+        sampler = threading.Thread(target=sample, daemon=True)
+        process.stderr = ObservedStderr()
+        try:
+            sampler.start()
+            return original_capture(process, payload, timeout, limit)
+        finally:
+            stop.set()
+            if sampler.ident is not None:
+                sampler.join(timeout=5)
+            process.stderr = original_stderr
+            summary["exit_status"] = process.poll()
+            try:
+                lowered = bytes(captured_stderr).lower()
+                summary["fatal_markers"] = sorted(
+                    name
+                    for name, patterns in fatal_markers.items()
+                    if any(pattern in lowered for pattern in patterns)
+                )
+            finally:
+                lowered = b""
+                captured_stderr.clear()
+            assert not sampler.is_alive(), "Linux resource diagnostic sampler did not stop."
+
+    monkeypatch.setattr(sandbox, "_capture", capture)
+    try:
+        yield captures
+    finally:
+        captures.clear()
+
+
+def test_real_parquet_preserves_date_decimal_sign_null_boolean_and_text(
+    parquet, linux_capture_diagnostics
+):
+    try:
+        result = execute(parquet, "SELECT * FROM sample")
+    except sandbox.SandboxError as error:
+        if linux_capture_diagnostics is None:
+            raise
+        details = (
+            linux_capture_diagnostics[-1]
+            if linux_capture_diagnostics
+            else {"capture_started": False}
+        )
+        pytest.fail(
+            "linux_engine_diagnostic="
+            + json.dumps({"error_code": error.code, **details}, sort_keys=True),
+            pytrace=False,
+        )
     assert result["rows"] == [
         [
             "2026-09-03",

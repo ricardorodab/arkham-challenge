@@ -452,6 +452,9 @@ def run_query(
             # Bound WASM reservations separately from committed code; engine mode
             # also budgets the pinned Linux x64 Node's JavaScript CodeRange.
             args.insert(1, "--wasm-max-code-space-size-mb=128")
+            # Avoid precommitting an oversized initial reservation for each module.
+            # Code may still grow within the unchanged per-space/committed caps.
+            args.insert(2, "--wasm-max-initial-code-space-reservation=32")
         args = [sys.executable, "-I", "-S", str(ASSETS / "posix_launcher.py"), "--engine", *args]
     remaining = timeout_seconds - (time.monotonic() - started)
     if remaining <= 0:

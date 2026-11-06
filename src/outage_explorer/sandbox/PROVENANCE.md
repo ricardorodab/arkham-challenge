@@ -40,8 +40,13 @@ equivalent of the Windows hard process-memory limit.
 
 WebAssembly linear memory has a separate hard 256 MiB ceiling, V8 old heap is
 limited to 96 MiB and WASM committed code to 128 MiB. Linux additionally sets
-`--wasm-max-code-space-size-mb=128` to bound WASM code-space reservations; this
-is distinct from the JavaScript code cage. One baseline compilation task and
+`--wasm-max-code-space-size-mb=128` for individual WASM code-space reservations
+and `--wasm-max-initial-code-space-reservation=32` for each initial reservation.
+V8's [initial-reservation clamp](https://github.com/nodejs/node/blob/v24.13.0/deps/v8/src/wasm/wasm-code-manager.cc#L2483-L2490)
+reduces up-front mapping; [additional code spaces](https://github.com/nodejs/node/blob/v24.13.0/deps/v8/src/wasm/wasm-code-manager.cc#L717-L758)
+can be allocated later within the separate hard limits. The 32 MiB setting is
+not a total committed-code or linear-memory ceiling; these WASM reservations
+are distinct from the JavaScript code cage. One baseline compilation task and
 disabled optimizing tier-up keep compilation within the Windows limit.
 The Python supervisor caps output and applies an eight-second wall deadline,
 kills and reaps the process, and drops inherited application environment values.
