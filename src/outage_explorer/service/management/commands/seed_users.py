@@ -1,4 +1,10 @@
-"""Create the three demo identities without shipping or resetting a password."""
+"""Seed product identities from supplied passwords without shipping credentials.
+
+web.local init supplies its already-generated passwords then calls this command. Django stores
+password hashes. Existing passwords are preserved unless the operator explicitly requests
+reset; existing privilege/persona inconsistencies require reconciliation rather than an
+implicit privilege or identity rewrite.
+"""
 
 import json
 import os
@@ -13,13 +19,23 @@ from outage_explorer.service.models import Persona
 
 
 class Command(BaseCommand):
+    """Create validated Viewer/Analyst/Admin demo accounts in one transaction."""
+
     help = "Create Viewer/Analyst/Admin accounts from environment-supplied passwords."
     requires_system_checks = []
 
     def add_arguments(self, parser):
+        """Expose an explicit reset switch; ordinary repeated initialization is idempotent."""
         parser.add_argument("--reset-passwords", action="store_true")
 
     def handle(self, *args, **options):
+        """Validate all required passwords/identities before committing account changes.
+
+        Read environment passwords only for new or explicitly reset users, apply Django
+        password policy, create hashes through create_user/set_password and assign the product
+        Persona without staff/superuser privilege. Reject setup conflicts without a partial
+        transaction. Return JSON action summaries, never passwords.
+        """
         user_model = get_user_model()
         prepared = []
         for role in Persona.Role.values:

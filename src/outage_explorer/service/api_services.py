@@ -1,4 +1,11 @@
-"""Authorize first, pin immutable data, then execute outside the Django process."""
+"""Implement authenticated catalog, preview and restricted-SQL application services.
+
+HTTP views validate transport shape, then delegate here with a server-derived Actor. Resolve
+immutable saved models, authorize every named dataset before analytical I/O, compile bounded
+SQL and execute selected bytes in the sandbox. Public API pagination is over saved model
+results; EIA download pagination is a separate connector concern. Recheck identity before
+caching or delivering data.
+"""
 
 from __future__ import annotations
 
@@ -23,10 +30,17 @@ from .errors import APIError
 from .models import QueryCacheEntry
 from .policy import Actor, authorize_dataset, recheck
 
+# Public domain separation for Django signing, not a secret or encryption key.
 CURSOR_SALT = "outage-api-v1-cursor"
 
 
 def integer(value: Any, name: str, minimum: int, maximum: int) -> int:
+    """Parse a canonical integer representation within inclusive minimum/maximum.
+
+    Reject booleans, fractional values, padded/whitespace forms and strings that do not
+    round-trip through int and str. Invalid input raises a 400 APIError; this avoids Python's
+    permissive bool-as-int and float truncation semantics.
+    """
     if isinstance(value, bool):
         raise APIError(400, "invalid_parameter", f"{name} must be an integer in its allowed range.")
     try:
@@ -39,6 +53,11 @@ def integer(value: Any, name: str, minimum: int, maximum: int) -> int:
 
 
 def text(value: Any, name: str, maximum: int = 128) -> str:
+    """Require nonempty UTF-8-encodable text within maximum characters.
+
+    Reject null bytes, invalid surrogate code points and nonstrings with a safe 400 APIError.
+    This validates request values without including their content in errors.
+    """
     if not isinstance(value, str) or not value or len(value) > maximum or "\x00" in value:
         raise APIError(400, "invalid_parameter", f"{name} is invalid.")
     try:
@@ -49,6 +68,11 @@ def text(value: Any, name: str, maximum: int = 128) -> str:
 
 
 def _date(value: str | None, name: str) -> str | None:
+    """Return None or an exact ISO calendar-date string; reject alternate date forms.
+
+    date.fromisoformat accepts more spellings than the API contract, so the round-trip
+    comparison requires YYYY-MM-DD. Invalid input raises invalid_date.
+    """
     if value is None:
         return None
     try:
@@ -61,10 +85,22 @@ def _date(value: str | None, name: str) -> str | None:
 
 
 def _cursor(payload: dict) -> str:
+    """Create a compressed, signed, timestamped pagination token from payload.
+
+    CURSOR_SALT is a public signing-purpose namespace; Django's configured secret provides
+    authenticity. Signing protects integrity, not confidentiality.
+    """
     return signing.dumps(payload, salt=CURSOR_SALT, compress=True)
 
 
 def _read_cursor(value: str | None, context: dict) -> dict | None:
+    """Return None or verify a token's signature, 15-minute age and bound context.
+
+    Every context field must match the decoded payload, including purpose and Actor binding.
+    Callers additionally validate page/model fields. Signature, expiry, decoded-shape
+    and context failures become invalid_cursor. Earlier text validation failures
+    retain invalid_parameter, including nonstring, empty or oversized token input.
+    """
     if value is None:
         return None
     try:
@@ -79,6 +115,12 @@ def _read_cursor(value: str | None, context: dict) -> dict | None:
 
 
 def _bundle(model_id: str | None):
+    """Resolve a requested saved model, or the current publication when ID is None.
+
+    Require a lowercase 32-hex identifier before model lookup. Convert unavailable or invalid
+    catalog/model state to safe API errors without exposing filesystem paths. The returned
+    bundle supplies the immutable manifest and model directory.
+    """
     if model_id is not None and (
         not isinstance(model_id, str) or re.fullmatch(r"[0-9a-f]{32}", model_id) is None
     ):
@@ -96,6 +138,14 @@ def _bundle(model_id: str | None):
 
 
 def _run(request, actor: Actor, bundle, dataset_id: str, validated):
+    """Execute validated SQL against exactly one selected model file in the sandbox.
+
+    Require the manifest filename, directory containment and nonsymlink path to agree.
+    Reenter/reuse admission, recheck identity and pass the expected checksum, remaining
+    deadline, row sentinel and output cap to run_query. Map sandbox failure categories to safe
+    API errors; the engine verifies/transfers bytes and enforces process limits rather than
+    receiving unrestricted native DuckDB access.
+    """
     info = bundle.manifest["datasets"][dataset_id]
     path = bundle.path / f"{dataset_id}.parquet"
     if (
@@ -139,6 +189,13 @@ def _run(request, actor: Actor, bundle, dataset_id: str, validated):
 
 
 def _validate(actor, sql, dataset_id, max_rows):
+    """Compile SQL in the bounded Python child and authorize every discovered table.
+
+    Use at most two seconds within the shared admitted budget. Authorize discovered names even
+    when the compiler reports an unsupported query shape, before any analytical I/O. Return
+    the regenerated query only on successful policy checking; compiler availability/timeout
+    and SQL-policy errors retain distinct API categories.
+    """
     try:
         compilation = compile_sql(
             sql, dataset_id, max_rows=max_rows, timeout_seconds=remaining_query_seconds(2)
@@ -159,10 +216,20 @@ def _validate(actor, sql, dataset_id, max_rows):
 
 
 def _literal(value: str) -> str:
+    """Quote one SQL text value by doubling embedded single quotes.
+
+    Use only for validated filter/key values in server-generated SQL, not identifiers or
+    arbitrary SQL fragments. It does not grant permissions or replace validation.
+    """
     return "'" + value.replace("'", "''") + "'"
 
 
 def catalog(request, actor: Actor, model_id: str | None):
+    """Return persona-filtered metadata for one pinned saved model.
+
+    The trusted model adapter removes unavailable datasets/relationships. Recheck the Actor
+    after metadata lookup so changed access is rejected before delivery.
+    """
     bundle = _bundle(model_id)
     try:
         result = analytical_catalog(settings.OUTAGE_DATA_DIR, actor.role, model_id=bundle.id)
@@ -173,6 +240,11 @@ def catalog(request, actor: Actor, model_id: str | None):
 
 
 def preview(request, actor: Actor, dataset_id: str, parameters: dict):
+    """Authorize a dataset and admit one filtered-preview operation.
+
+    The wrapper establishes account/host limits and rechecks identity before the internal
+    keyset-paging implementation can access analytical files.
+    """
     authorize_dataset(actor, dataset_id)
     with query_slot(actor.user_id):
         recheck(request, actor)
@@ -180,6 +252,15 @@ def preview(request, actor: Actor, dataset_id: str, parameters: dict):
 
 
 def _preview(request, actor: Actor, dataset_id: str, parameters: dict):
+    """Build and execute a typed, model-pinned primary-key preview page.
+
+    Validate inclusive dates, supported facility filters and page limit. Signed cursors bind
+    Actor, filters and limit, then retain the immutable model and last complete primary key.
+    Lexicographic predicates resume strictly after that key; one extra row detects
+    continuation. Preview may traverse more than 1,000 rows across pages, unlike a capped
+    user-SQL result. Return exact typed scalars and applied filters only after a final
+    identity recheck.
+    """
     authorize_dataset(actor, dataset_id)
     limit = integer(parameters.get("limit", 100), "limit", 1, 1000)
     start, end = _date(parameters.get("start"), "start"), _date(parameters.get("end"), "end")
@@ -231,6 +312,8 @@ def _preview(request, actor: Actor, dataset_id: str, parameters: dict):
             or any(not isinstance(v, str) for v in last)
         ):
             raise APIError(400, "invalid_cursor", "The cursor is invalid.")
+        # Expand tuple ordering portably across all primary-key components:
+        # equal prefixes followed by a strictly greater component avoid repeats.
         alternatives = []
         for index, key in enumerate(keys):
             equals = [
@@ -265,6 +348,11 @@ def _preview(request, actor: Actor, dataset_id: str, parameters: dict):
 
 
 def query(request, actor: Actor, body: dict):
+    """Authorize the selected dataset and admit one user-SQL request.
+
+    The internal path validates all parsed table references as well; authorizing the selection
+    alone cannot protect against a hidden forbidden reference.
+    """
     dataset_id = text(body.get("dataset_id"), "dataset_id")
     authorize_dataset(actor, dataset_id)
     with query_slot(actor.user_id):
@@ -273,6 +361,15 @@ def query(request, actor: Actor, body: dict):
 
 
 def _query(request, actor: Actor, body: dict):
+    """Return one page of a bounded deterministic SQL result, optionally from cache.
+
+    Bind tokens/cache keys to Actor session/role, dataset, regenerated SQL, row/page limits
+    and pinned model. Also bind cache reuse to the current publication even for an old model
+    pin. Retain at most cap rows plus a truncation indicator; signed offset cursors page only
+    that retained result. Entries expire after 60 seconds, hits do not renew expiry, and
+    writes prune to eight entries per user. Recheck identity before cache insertion and every
+    delivery, including cache hits.
+    """
     dataset_id = text(body.get("dataset_id"), "dataset_id")
     authorize_dataset(actor, dataset_id)
     sql = text(body.get("sql"), "sql", 16384)
@@ -295,6 +392,8 @@ def _query(request, actor: Actor, body: dict):
             raise APIError(400, "invalid_cursor", "The cursor does not match this model.")
         requested_model = cursor.get("model")
     bundle = _bundle(requested_model)
+    # Old model cursors remain reproducible, but any new current publication
+    # retires prior cache generations even if physical cache cleanup fails.
     publication = _bundle(None).id
     cache_key = hashlib.sha256(
         json.dumps(

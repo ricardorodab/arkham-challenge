@@ -1,4 +1,11 @@
-"""Explicit local operator setup; generated credentials stay outside source code."""
+"""Provide explicit local init, loopback serve and separate refresh-worker launchers.
+
+init creates/loads private generated credentials, configures Django, migrates the application
+database and calls seed_users. serve runs Waitress; worker calls the polling management
+command in its own invocation. The launcher loads exactly its four generated Django/password
+inputs, never .env, .env.example or an EIA key file. Other settings remain process-environment
+inputs or defaults in web.settings.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +19,14 @@ from pathlib import Path
 
 
 def _configuration(state: Path, *, create: bool):
+    """Return the private configuration path and its four validated generated inputs.
+
+    Create a missing file only when create is true, with an exclusive write, fsync and
+    restricted permissions for the newly generated file. Reject symlinks, extra keys or
+    empty/nonstring values; remove an incomplete newly created file if setup fails. Keys are
+    the Django signing secret and three independent seed passwords, not the application's
+    general settings registry.
+    """
     state.mkdir(parents=True, exist_ok=True)
     path = state / "local-config.json"
     if path.is_symlink():
@@ -65,6 +80,14 @@ def _configuration(state: Path, *, create: bool):
 
 
 def main():
+    """Parse one local action, supply generated configuration and delegate its work.
+
+    State defaults to cwd/.service unless OUTAGE_STATE_DIR is set. Override the process Django
+    key with generated configuration, without autoloading environment files. init migrates
+    then seeds, preserving passwords unless explicitly reset; serve removes upstream/seed
+    secrets before Waitress; worker keeps its EIA key but removes seed passwords before
+    run_refresh_worker. Emit safe setup failures and exit 2 without printing generated values.
+    """
     parser = argparse.ArgumentParser(description="Initialize and run the local Django API")
     actions = parser.add_subparsers(dest="action", required=True)
     init = actions.add_parser("init", help="Create private random credentials, migrate and seed")

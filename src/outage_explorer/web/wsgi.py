@@ -1,4 +1,8 @@
-"""WSGI entry point."""
+"""Build the Django WSGI callable used by the local Waitress launcher.
+
+Import initializes Django from environment settings and exposes the one project containing
+service and frontend apps. It does not launch the refresh worker.
+"""
 
 import os
 

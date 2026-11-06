@@ -1,4 +1,11 @@
-"""Small operational CLI; stdout is JSON, stderr is structured logging."""
+"""Route data/model/report operations and emit machine-readable operator output.
+
+Both python -m outage_explorer and the installed outage-explorer console script call main.
+Ingestion reaches EIA; status/history/verification and trusted native DuckDB model/report
+operations use local saved data. This CLI does not serve HTTP or select an authenticated
+product persona. stdout is JSON; stderr is sanitized structured logging and errors with
+deliberate exit codes.
+"""
 
 from __future__ import annotations
 
@@ -18,11 +25,19 @@ from .storage import Catalog, StorageError
 
 
 class JsonLogFormatter(logging.Formatter):
+    """Emit allowlisted operational fields while recursively redacting a supplied secret."""
+
     def __init__(self, secret: str = "") -> None:
+        """Retain the process credential only for sanitization, never as output context."""
         super().__init__()
         self._secrets = (secret,)
 
     def format(self, record: logging.LogRecord) -> str:
+        """Return a UTC JSON event with safe selected LogRecord fields.
+
+        Sanitize the event message and nested values against known secrets and sensitive
+        parameter names; do not serialize arbitrary record attributes or traceback data.
+        """
         fields = (
             "route",
             "offset",
@@ -51,6 +66,7 @@ class JsonLogFormatter(logging.Formatter):
 
 
 def _calendar_date(value: str):
+    """Adapt strict source-contract date parsing to an argparse validation error."""
     try:
         return parse_date(value)
     except ValueError as error:
@@ -58,6 +74,12 @@ def _calendar_date(value: str):
 
 
 def parser() -> argparse.ArgumentParser:
+    """Declare supported source and model commands without executing their operations.
+
+    Recent ingestion is the default; explicit start requires full mode in pipeline validation.
+    Model pins, report dates and metadata persona selection are operator inputs, not web
+    authentication or an arbitrary-SQL interface.
+    """
     result = argparse.ArgumentParser(description="Validated local EIA nuclear outage connector")
     commands = result.add_subparsers(dest="command", required=True)
     for name in ("ingest", "status", "history", "verify"):
@@ -102,6 +124,12 @@ def parser() -> argparse.ArgumentParser:
 
 
 def _model_command(args: argparse.Namespace) -> dict[str, Any]:
+    """Dispatch one parsed model action and return its JSON-serializable result.
+
+    Build mutates model publication; other actions inspect/verify or run fixed trusted reports
+    over a selected model. Report output must be outside the immutable data directory. Local
+    inspection needs no upstream API key; no user SQL is accepted.
+    """
     from .model_store import analytical_catalog, rebuild_model, resolve_model, verify_model
 
     root = args.data_dir.resolve()
@@ -149,6 +177,14 @@ def _model_command(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse argv, configure safe logs and execute one operation with stable exit codes.
+
+    Use EIA_API_KEY only from the process environment. Return 0 on success, 2 for
+    configuration, 3 for upstream failure, 4 for validation/storage/internal failure, 5 for
+    writer contention and 130 for interruption. Catch unexpected failures without printing raw
+    transport/filesystem details; output artifacts remain the responsibility of the delegated
+    pipeline/catalog/report operations.
+    """
     args = parser().parse_args(argv)
     key = os.environ.get("EIA_API_KEY", "").strip()
     handler = logging.StreamHandler(sys.stderr)

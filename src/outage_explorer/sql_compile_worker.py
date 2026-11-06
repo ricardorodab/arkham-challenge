@@ -1,4 +1,10 @@
-"""Trusted, bounded parser worker. Never opens a model or executes submitted SQL."""
+"""Implement the isolated compiler child's bounded JSON stdin/stdout protocol.
+
+This trusted Python worker parses policy input, discovers all named references,
+and regenerates allowed SQL. It never opens model data or executes SQL. The
+parent authorizes returned references before handling a shape error. Resource
+isolation is supplied by the parent/launcher; this is not a filesystem jail.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +17,13 @@ logging.disable(logging.CRITICAL)
 
 
 def main() -> None:
+    """Consume one bounded compile request and emit references plus query or code.
+
+    Discover references before supported-shape validation so forbidden nested names
+    remain visible to the parent authorizer. Reject malformed protocol without
+    returning SQL/parser diagnostics. Oversized output becomes a fixed error frame;
+    stdout is flushed once and parser logging remains disabled.
+    """
     from .sql_compiler import ERROR_MESSAGES, MAX_INPUT_BYTES, MAX_OUTPUT_BYTES
     from .sql_policy import SQLPolicyError, referenced_dataset_ids, validate_sql
 

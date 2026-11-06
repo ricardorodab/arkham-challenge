@@ -1,3 +1,9 @@
+-- Execution contract: register one caller-selected immutable model before use.
+-- Snapshot identifiers in the historical notes below describe retained evidence;
+-- they do not pin execution. Statements run in trusted native DuckDB, outside
+-- the user-SQL subset. Comment changes alter future full-text report hashes;
+-- historical receipts and previously recorded hashes remain unchanged.
+
 -- Part 2, source snapshot 981a8f4ed5214ef6be4ad3cc5b4eee01, model version 2.
 -- Run after the model catalog registers national_daily, facility_daily and
 -- generator_daily in DuckDB. Each SELECT is independently executable.
@@ -6,6 +12,18 @@
 -- equality and rounding compatibility. $start/$end define the audit window.
 
 -- name: daily_national_reconciliation
+-- Purpose/grain: one output row per requested calendar date, comparing published
+-- national MW with separately aggregated facility and generator observations.
+-- Inputs/dates: national_daily, facility_daily, generator_daily; inclusive bound
+-- $start/$end. The calendar CTE exposes dates absent from every source grain.
+-- Clauses: group children by date before left-joining them to the calendar/parent;
+-- this prevents row multiplication and retains absent-parent/aggregate evidence.
+-- Null/decimal policy: counts expose null measures; CASE makes an incomplete child
+-- measure sum null rather than silently accepting SUM's null omission. Missing
+-- aggregates/counts remain null. Gaps are exact child-minus-parent DECIMAL MW.
+-- Output/limits: ordered dates, presence/counts, operands and signed MW gaps. No
+-- SQL LIMIT; caller controls the audit interval. Agreement cannot prove complete
+-- entity membership when all grains omit the same reactor.
 -- R1: every calendar day, national versus both child grains (30 rows for Sep 2026).
 WITH calendar AS (
     SELECT CAST(day AS DATE) AS period
@@ -50,6 +68,18 @@ LEFT JOIN generators g ON g.period = c.period
 ORDER BY c.period;
 
 -- name: daily_facility_reconciliation
+-- Purpose/grain: one observed facility/date from either the facility route or its
+-- generator aggregate; compare independent source measurements without repair.
+-- Inputs/dates: facility_daily and generator_daily in inclusive bound $start/$end.
+-- Clauses: generators group by date/composite parent identity; FULL JOIN retains
+-- an observed child without its facility-day parent and a parent without children.
+-- Null/decimal policy: guarded sums preserve null capacity/outage/percentage input;
+-- absent generator counts stay null in this report. NULLIF avoids zero division.
+-- MW gaps and the facility percentage residual use exact DECIMAL arithmetic;
+-- weighted percentage division is display output, not the canonical fleet metric.
+-- Output/limits: parent presence, child/null counts, MW operands/gaps and percentage
+-- diagnostics ordered by date/facility. No calendar fill or SQL LIMIT; a shared
+-- entity omission is not detectable by comparing only the observed keys.
 -- R2: observed facility-day versus its generators (1,650 output rows).
 -- FULL JOIN retains a child whose facility-day parent is absent.
 WITH generators AS (
@@ -87,6 +117,17 @@ FULL JOIN generators g ON f.period = g.period AND f.facility_id = g.facility_id
 ORDER BY period, facility_id;
 
 -- name: full_history_mw_summary
+-- Purpose/grain: three summary rows, one for each child-to-parent comparison.
+-- Inputs/dates: generator_daily, facility_daily and national_daily across the
+-- entire registered model; $start/$end deliberately do not restrict this query.
+-- Clauses: group children at their parent grain, FULL JOIN each parent/aggregate,
+-- then UNION ALL the comparison families before grouping their diagnostic counts.
+-- Null/decimal policy: any null contributing measure makes that sum undefined;
+-- missing sides and null gaps are counted separately from nonzero exact MW gaps.
+-- Null comparisons do not count as inequality. MAX ignores nulls and may be null
+-- when no comparable values exist; no tolerance or zero substitution is applied.
+-- Output/limits: key/missing/uncomparable/nonzero counts and maximum absolute gaps.
+-- No SQL LIMIT; this is a full-history scan, not proof of expected fleet coverage.
 -- R3: full-history MW comparison and missing-parent counts, without a tolerance.
 WITH generator_facilities AS (
     SELECT period, facility_id, count(*) AS child_count,
@@ -134,6 +175,19 @@ SELECT comparison, count(*) AS compared_keys,
 FROM comparisons GROUP BY comparison ORDER BY comparison;
 
 -- name: exact_percentage_rounding_summary
+-- Purpose/grain: one summary per national/facility grain proving two-decimal
+-- rounding compatibility independently from floating-point display division.
+-- Inputs/dates: national_daily and facility_daily, inclusive bound $start/$end;
+-- generator arithmetic has a separate full-history findings query.
+-- Clauses: UNION ALL preserves both grain populations; scaled C/O/P integers feed
+-- filtered failure and incomparable counts before GROUP BY grain.
+-- Null/decimal policy: DECIMAL source values scale by 10^9 into HUGEINT. Integer
+-- HALF_UP classification applies to nonnegative outage with positive capacity;
+-- null/nonpositive capacity, negative outage or null percentage is incomparable.
+-- The exact ratio residual is separate from rounded compatibility. HUGEINT is a
+-- bounded integer envelope, not arbitrary-precision arithmetic.
+-- Output/limits: population, incomparable, rounding-failure and exact-difference
+-- counts. No SQL LIMIT; zero-denominator cross-products cannot validate a ratio.
 -- R4: exact source rounding proof for all 30 national + 1,650 facility rows.
 -- C, O, P are source capacity, outage and percentage multiplied by 10^9.
 -- round(100*O/C, 2) in percentage points, HALF_UP for nonnegative values,
@@ -162,6 +216,21 @@ SELECT grain, count(*) AS observations,
 FROM scaled GROUP BY grain ORDER BY grain;
 
 -- name: percentage_gap_example
+-- Purpose/grain: one retained historical date illustrating why weighted published
+-- percentages can differ while all source MW totals agree.
+-- Inputs/dates: national_daily, facility_daily and generator_daily on literal
+-- 2026-09-03; supplied report-window parameters do not alter this probe.
+-- Clauses: aggregate each child grain first, then inner-join all three by date.
+-- Null/decimal policy: scaled HUGEINT cross-products preserve exact residuals;
+-- divisions are presentation values and do not define canonical Decimal metrics.
+-- Ordinary SUM can omit null children; this concrete complete historical example
+-- is not a general null-coverage validator. A valid positive national denominator
+-- and all joined grain dates are assumptions of this evidence probe.
+-- Both displayed child percentages divide by national capacity n.c, relying on
+-- the observed child/national capacity agreement. If capacities differ, these
+-- expressions are not general child-capacity-weighted percentage calculations.
+-- Output/limits: national operands, weighted percentages, signed gaps and exact
+-- scaled residuals. No SQL LIMIT; a missing joined date yields no evidence row.
 -- R5: a concrete cross-grain percentage comparison with exact integer residuals.
 WITH f AS (
     SELECT period, sum(capacity_mw) AS capacity_mw,
@@ -190,6 +259,18 @@ SELECT n.period, n.capacity_mw, n.outage_mw, n.reported_outage_pct,
 FROM n JOIN f USING (period) JOIN g USING (period);
 
 -- name: mw_discrepancies
+-- Purpose/grain: only incomplete or exactly unequal observed comparison keys;
+-- facility/date for generators-to-facility, date for either national comparison.
+-- Inputs/dates: national_daily, facility_daily and generator_daily in inclusive
+-- bound $start/$end; this does not generate a complete calendar or entity roster.
+-- Clauses: aggregate children, FULL JOIN parents and children per comparison,
+-- UNION ALL families, then filter missing measures or exact inequality.
+-- Null/decimal policy: guarded DECIMAL sums retain incomplete measures as null;
+-- WHERE explicitly selects null sides instead of losing them to SQL unknown.
+-- Signed gaps are child minus parent with no tolerance or source adjustment.
+-- Output/limits: operands, comparison identity and exact gaps ordered by date,
+-- grain and facility. No SQL LIMIT. Empty output means no observed MW discrepancy,
+-- not complete physical membership; it is empty for retained September 2026.
 -- R6: actual nonzero/incomplete MW comparisons in the requested window.
 -- The result is empty for September 2026, rather than fabricated examples.
 WITH gf AS (

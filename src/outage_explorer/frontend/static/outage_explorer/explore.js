@@ -1,3 +1,11 @@
+/**
+ * @module explore
+ * Manage schema-driven preview filters and immutable keyset pages.
+ *
+ * Draft controls are distinct from the applied request and displayed packet.
+ * Generation/model guards discard obsolete work; export uses the actual packet
+ * rather than reinterpreting newly edited controls as a completed request.
+ */
 import { StaleRequest, queryString, verifyPage } from './api.js';
 import {
   byId,
@@ -15,7 +23,13 @@ import {
 } from './dom.js';
 import { renderTable, exportPage } from './table.js';
 
+/**
+ * Own preview draft/applied state, keyset cursor chain and displayed page packet.
+ */
 export class ExploreController {
+  /**
+   * Bind schema-driven filter controls and page/export actions to the shared workspace.
+   */
   constructor(context) {
     this.context = context;
     this.sequence = 0;
@@ -49,9 +63,15 @@ export class ExploreController {
         this.updatePager();
       });
   }
+  /**
+   * Resolve the selected logical dataset from this pinned authorized catalog.
+   */
   dataset() {
     return this.catalog?.datasets.find((dataset) => dataset.id === byId('dataset-select').value);
   }
+  /**
+   * Invalidate old model work and preserve compatible draft filter intent when adopting a catalog.
+   */
   configure(catalog) {
     const previous = this.catalog
       ? {
@@ -79,6 +99,9 @@ export class ExploreController {
       byId('explore-page-size').value = previous.limit;
     }
   }
+  /**
+   * Reset prior results and configure controls/metadata for the selected schema.
+   */
   selectDataset() {
     this.sequence++;
     this.packet = null;
@@ -103,6 +126,9 @@ export class ExploreController {
     this.updatePager();
     if (this.context.isView('explore')) this.loadFacilities();
   }
+  /**
+   * Choose the latest available 30-day window, clamped to source coverage, and mark it unapplied.
+   */
   defaultFilters() {
     const dataset = this.dataset();
     if (!dataset) return;
@@ -115,10 +141,20 @@ export class ExploreController {
     byId('explore-facility').value = '';
     this.dirty = true;
   }
+  /**
+   * Load the first preview only when needed and request optional facility choices.
+   */
   async activate() {
     if (!this.loaded && !this.working) this.apply();
     this.loadFacilities();
   }
+  /**
+   * Load the first authorized facility page for the pinned model without changing the selected ID.
+   *
+   * The current selector requests at most 1,000 entries and does not follow its
+   * continuation; a larger domain requires explicit lookup pagination. A model
+   * change during loading schedules a current retry rather than rendering stale choices.
+   */
   async loadFacilities() {
     if (
       !this.catalog?.datasets.some((dataset) => dataset.id === 'dim_facility') ||
@@ -179,6 +215,9 @@ export class ExploreController {
         this.loadFacilities();
     }
   }
+  /**
+   * Validate draft dates, capture one immutable request and reset its cursor chain.
+   */
   apply() {
     const dataset = this.dataset();
     if (!dataset) return;
@@ -192,6 +231,7 @@ export class ExploreController {
       state('explore', 'error', error);
       return;
     }
+    // Capture controls once; later edits must not relabel the packet produced by this request.
     this.applied = {
       dataset_id: dataset.id,
       start,
@@ -205,10 +245,18 @@ export class ExploreController {
     this.dirty = false;
     this.send(0);
   }
+  /**
+   * Fetch a retained keyset continuation and render only the captured generation/model.
+   *
+   * The copied applied request labels rows/export even if controls are edited while
+   * work waits. Stale work may finish on the server but never relabel the current view.
+   * @param {number} page Zero-based page index with an already known cursor.
+   */
   async send(page) {
     if (!this.applied || page < 0 || (page > 0 && !this.cursors[page])) return;
     const applied = { ...this.applied },
       sequence = ++this.sequence;
+    // Both queued execution and response delivery must still belong to this captured applied request.
     const current = () =>
       this.context.alive() &&
       sequence === this.sequence &&
@@ -262,6 +310,9 @@ export class ExploreController {
       }
     }
   }
+  /**
+   * Enable continuation only for the displayed applied request, and export only its packet.
+   */
   updatePager() {
     byId('explore-apply').disabled = this.working;
     byId('explore-prev').disabled = this.working || !this.packet || this.page === 0 || this.dirty;
@@ -274,6 +325,9 @@ export class ExploreController {
         `${this.packet.returned_rows} observations shown · Version ${this.packet.model_id.slice(0, 8)}${this.dirty ? ' · Filters changed; apply to update.' : ''}`,
       );
   }
+  /**
+   * Invalidate in-flight render work and remove retained preview/facility DOM state.
+   */
   dispose() {
     this.sequence++;
     this.packet = null;

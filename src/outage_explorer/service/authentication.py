@@ -1,4 +1,9 @@
-"""Bound login attempts in shared operational state; never persist usernames/IPs."""
+"""Admit login attempts using hashed account/address buckets in shared app state.
+
+Login admission runs before service.views.login calls Django password authentication. It counts attempts, including successful logins; the helper itself neither
+validates a password nor creates a session. Raw usernames and addresses are not persisted in
+the bucket keys.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +21,13 @@ from .models import RateLimitBucket
 
 
 def limit_login(request, username: str) -> None:
+    """Count an attempt or raise APIError when a shared login bucket is exhausted.
+
+    Under an OS admission lock and one database transaction, allow at most ten account
+    attempts and thirty address attempts in a five-minute window. Hash bucket scopes with
+    Django HMAC, reset expired windows and prune day-old buckets. Lock contention becomes
+    login_busy; password checking remains in the caller.
+    """
     now = timezone.now()
     ip = request.META.get("REMOTE_ADDR", "unknown")
     buckets = (("account:" + username, 10), ("address:" + ip, 30))

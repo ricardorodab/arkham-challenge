@@ -1,4 +1,8 @@
-"""ASGI entry point; refresh execution stays in a separate worker process."""
+"""Expose an alternate Django ASGI callable for an ASGI-capable host.
+
+The current local serve command uses Waitress/WSGI instead. ASGI initialization does not make
+ingestion asynchronous or start a refresh worker.
+"""
 
 import os
 

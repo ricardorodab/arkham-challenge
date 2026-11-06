@@ -15,6 +15,12 @@ const PYTHON = process.env.OUTAGE_TEST_PYTHON || path.join(
 if (!fs.existsSync(PYTHON)) {
   throw new Error('Set OUTAGE_TEST_PYTHON to the project Python with locked dependencies.');
 }
+/**
+ * Return an isolated child environment for one validated browser run ID.
+ * Strip inherited EIA/seed/Python inputs, then select fixture-only credentials
+ * and work paths. Future runs intentionally recreate work/; operator .service
+ * and analytical data paths are never reused by this launcher.
+ */
 function environment() {
   const env = { ...process.env };
   for (const name of ['EIA_API_KEY', 'PYTHONPATH', 'PYTHONHOME',

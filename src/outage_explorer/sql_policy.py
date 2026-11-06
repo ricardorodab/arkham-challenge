@@ -1,10 +1,14 @@
-"""Compile a bounded, single-dataset SELECT subset; this performs no data I/O.
+"""Compile a bounded, single-dataset SELECT language without analytical I/O.
 
-This is defense in depth, not the execution sandbox or the persona authorizer.
-Callers authorize every ``referenced_dataset_ids`` value before opening a model.
-Only the regenerated ``ValidatedQuery.sql`` may reach the isolated query worker.
-The outer limit fetches one sentinel row beyond ``row_limit``; callers trim it.
-An explicit SQL LIMIT retains its ordinary semantics inside that outer limit.
+This SQLGlot AST allowlist is neither the persona authorizer nor the execution
+sandbox. Callers authorize every ``referenced_dataset_ids`` result, including
+unknown names and names inside unsupported shapes, before opening model data.
+Only regenerated ``ValidatedQuery.sql`` may reach the separate WASM worker.
+
+Deterministic key ordering supports immutable-model pagination. The outer cap
+fetches one sentinel row beyond ``row_limit``; an explicit inner SQL LIMIT keeps
+its ordinary semantics. Bounds cover source text, tokens, tree shape and output
+SQL, not the execution cost of a permitted aggregate or sort.
 """
 
 from __future__ import annotations
@@ -29,19 +33,29 @@ MAX_OFFSET = 100_000
 
 
 class SQLPolicyError(ValueError):
+    """Represent a static SQL-language rejection with a service-facing error code."""
+
     def __init__(self, message: str, *, code: str = "invalid_sql") -> None:
+        """Attach the bounded policy code while retaining the safe public message."""
         super().__init__(message)
         self.code = code
 
 
 @dataclass(frozen=True)
 class ValidatedQuery:
+    """Hold regenerated SQL, discovered dataset names and the client result cap.
+
+    The generated statement may retrieve one additional private sentinel row. This
+    object records language validation, not caller authorization or engine safety.
+    """
+
     sql: str
     dataset_ids: tuple[str, ...]
     row_limit: int
 
 
 def _unsupported() -> SQLPolicyError:
+    """Construct the common static error for syntax outside the AST allowlist."""
     return SQLPolicyError(
         "SQL uses a feature outside the supported single-dataset SELECT subset.",
         code="unsupported_sql",
@@ -49,10 +63,18 @@ def _unsupported() -> SQLPolicyError:
 
 
 def _complex() -> SQLPolicyError:
+    """Construct the common static error for exceeded compiler complexity bounds."""
     return SQLPolicyError("SQL exceeds the supported complexity limits.", code="sql_too_complex")
 
 
 def _parse_bounded(sql: str) -> exp.Expression:
+    """Parse one DuckDB-dialect statement after text/token/nesting preflight.
+
+    Bound UTF-8 bytes, token/literal lengths and nesting before recursive parsing;
+    then bound AST nodes/depth with an explicit stack. Exclude command fallback to
+    avoid logging source SQL. A sole trailing semicolon/comment is accepted; extra
+    statements and malformed/over-complex input raise safe policy errors.
+    """
     if not isinstance(sql, str):
         raise SQLPolicyError("SQL must be a nonempty string.")
     try:
@@ -118,6 +140,11 @@ def _parse_bounded(sql: str) -> exp.Expression:
 def _references(tree: exp.Expression) -> tuple[str, ...]:
     # Include references in forbidden nested queries/CTEs before checking shape.
     # A table function has no named table identifier; it is rejected separately.
+    """Return sorted case-folded named tables from every parsed scope.
+
+    Traverse unsupported nested/CTE/join shapes too. Table functions have no named
+    identifier here and are rejected separately by shape/node validation.
+    """
     return tuple(
         sorted(
             {
@@ -130,10 +157,11 @@ def _references(tree: exp.Expression) -> tuple[str, ...]:
 
 
 def referenced_dataset_ids(sql: str) -> tuple[str, ...]:
-    """Return all named table references, including unsupported nested scopes.
+    """Discover all bounded named references without opening catalog or data.
 
-    Unknown names are returned too: they must never be silently authorized as
-    the selected table. This function never opens a catalog, database or file.
+    Unknown names and unsupported nested scopes are returned for caller denial;
+    this discovery result never authorizes them. Parse/complexity failures raise
+    ``SQLPolicyError`` before a complete reference result can be produced.
     """
     return _references(_parse_bounded(sql))
 
@@ -215,6 +243,11 @@ _SCALAR_TYPES = {
 
 
 def _integer(node: exp.Expression | None) -> int:
+    """Read a signed integer literal used by bounded SQL syntax parameters.
+
+    Only a literal with an optional unary minus is accepted; expressions and other
+    literal types raise the common unsupported-shape error.
+    """
     sign = 1
     if isinstance(node, exp.Neg):
         sign, node = -1, node.this
@@ -224,6 +257,11 @@ def _integer(node: exp.Expression | None) -> int:
 
 
 def _literal(node: exp.Literal) -> None:
+    """Validate one string or finite numeric literal against policy envelopes.
+
+    Strings are byte-bounded. Numeric spelling, significant digits and exponents
+    are bounded using Decimal without converting through binary floating point.
+    """
     if node.is_string:
         if len(node.this.encode("utf-8")) > MAX_LITERAL_BYTES:
             raise _complex()
@@ -244,6 +282,11 @@ def _literal(node: exp.Literal) -> None:
 
 
 def _data_type(node: exp.DataType) -> None:
+    """Permit only allowlisted non-nested scalar CAST targets and parameters.
+
+    Validate Decimal precision/scale, bounded character lengths and absence of
+    parameters on other scalar types. Unsupported shapes raise policy errors.
+    """
     name = getattr(node.this, "value", "")
     parameters = node.expressions
     if name not in _SCALAR_TYPES or node.args.get("nested"):
@@ -264,6 +307,12 @@ def _data_type(node: exp.DataType) -> None:
 
 
 def _validate_nodes(tree: exp.Select) -> None:
+    """Validate each AST node and argument, normalizing identifiers in place.
+
+    Reject unknown nodes and unsupported arguments even on otherwise allowed node
+    classes. Bound identifiers/literals/types, star placement, aggregate DISTINCT,
+    ROUND precision and COALESCE arity; scalar/aggregate permission is explicit.
+    """
     for node in tree.walk():
         allowed = _ARGS.get(type(node))
         if allowed is None:
@@ -304,6 +353,12 @@ def _validate_nodes(tree: exp.Select) -> None:
 
 
 def _validate_columns(tree: exp.Select, dataset_id: str, table: exp.Table) -> None:
+    """Bind columns to the selected contract and normalize their names in place.
+
+    Permit the source's table alias and projection aliases only in unqualified
+    GROUP/ORDER/HAVING contexts. Reject unknown columns and foreign qualifiers;
+    this is schema checking, not a product-persona authorization decision.
+    """
     columns = {name.casefold(): name for name, _ in DATASETS[dataset_id].columns}
     aliases = {
         projection.alias.casefold()
@@ -326,6 +381,12 @@ def _validate_columns(tree: exp.Select, dataset_id: str, table: exp.Table) -> No
 
 
 def _stable_order(tree: exp.Select, dataset_id: str, table: exp.Table) -> None:
+    """Append deterministic tie breakers to the SELECT AST in place.
+
+    Use group expressions for grouped results and full primary keys for ordinary
+    rows. Scalar aggregates need no extra key. Preserve existing ordering and avoid
+    adding equivalent keys, keeping page order stable on immutable model data.
+    """
     group = tree.args.get("group")
     if group:
         tie_breakers = [key.copy() for key in group.expressions]
@@ -351,12 +412,25 @@ def _stable_order(tree: exp.Select, dataset_id: str, table: exp.Table) -> None:
 def validate_sql(
     sql: str, dataset_id: str, *, max_rows: int = MAX_ROWS, offset: int = 0
 ) -> ValidatedQuery:
-    """Validate and regenerate one SELECT, returning at most cap + one rows.
+    """Validate and regenerate a single selected-dataset SELECT with a sentinel.
 
-    API ``offset`` applies to the ordered SQL result, including any explicit
-    SQL LIMIT. SQL OFFSET is rejected to keep the two pagination controls clear.
-    Ordinary SELECTs gain primary-key tie breakers; grouped queries gain group
-    keys. This keeps pagination reproducible against an immutable model.
+    Args:
+        sql: Bounded source text parsed in the DuckDB dialect.
+        dataset_id: Registered logical source; no filesystem path is accepted.
+        max_rows: Client result cap, independent of an explicit inner SQL LIMIT.
+        offset: Trusted compiler pagination offset; SQL OFFSET itself is rejected.
+
+    Returns:
+        A ``ValidatedQuery`` wrapping the ordered inner SELECT with ``max_rows + 1``
+        and the requested outer offset. The caller trims any sentinel.
+
+    Raises:
+        SQLPolicyError: Unknown/mismatched source, invalid pagination, unsupported
+            shape/column/type, complexity violation or oversized generated text.
+
+    Normalize identifiers, validate one direct table, preserve an inner LIMIT and
+    add key/group tie breakers before regeneration. This function does not check a
+    persona, read analytical data or bound the engine's work for aggregates/sorts.
     """
     if not isinstance(dataset_id, str) or dataset_id.casefold() not in DATASETS:
         raise SQLPolicyError("The selected dataset is unavailable.", code="unknown_dataset")

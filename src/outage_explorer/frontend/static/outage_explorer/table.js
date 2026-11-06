@@ -1,5 +1,19 @@
+/**
+ * @module table
+ * Render exact typed API pages and export only the displayed page.
+ *
+ * External values become text nodes. Numeric strings stay strings; CSV quotes
+ * every cell and guards spreadsheet-shaped text without claiming control over
+ * the receiving spreadsheet application's type inference.
+ */
 import { element, columnTitle, numericType, scalarLabel } from './dom.js';
 
+/**
+ * Replace a semantic table from a validated positional packet, using only text nodes.
+ *
+ * Exact scalar strings remain unchanged in cell titles; null is explicitly
+ * undefined/unreported, never zero. Headers retain SQL types and column scope.
+ */
 export function renderTable(table, data, caption) {
   table.replaceChildren();
   table.append(element('caption', 'sr-only', caption));
@@ -35,7 +49,13 @@ export function renderTable(table, data, caption) {
   table.append(body);
 }
 
-/** Quote all cells and neutralize spreadsheet formulas without coercing IDs. */
+/**
+ * Quote one CSV cell and guard formula-shaped or zero-padded text without numeric coercion.
+ *
+ * Typed numeric text is preserved. Receiving spreadsheet type inference remains
+ * outside this exporter's contract.
+ * @returns {string} Quoted CSV field with doubled embedded quotes.
+ */
 export function csvCell(value, type = 'VARCHAR') {
   let text = value === null || value === undefined ? '' : String(value);
   if (
@@ -45,6 +65,9 @@ export function csvCell(value, type = 'VARCHAR') {
     text = `'${text}`;
   return `"${text.replaceAll('"', '""')}"`;
 }
+/**
+ * Serialize exactly the supplied page with a UTF-8 BOM, guarded headers and CRLF records.
+ */
 export function csvText(data) {
   return (
     '\ufeff' +
@@ -57,6 +80,12 @@ export function csvText(data) {
     '\r\n'
   );
 }
+/**
+ * Download only the currently displayed packet with logical dataset/model context.
+ *
+ * No background request expands the export. Release the temporary object URL
+ * after the download event has had time to consume it.
+ */
 export function exportPage(data, datasetId, modelId) {
   if (!data?.rows?.length) return;
   const file = new Blob([csvText(data)], { type: 'text/csv;charset=utf-8' });

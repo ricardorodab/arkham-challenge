@@ -1,8 +1,13 @@
 """Supervise bounded SQL compilation without parsing submitted SQL in Django.
 
-Compilation discovers references before validating the supported shape. The
-caller must authorize every returned reference before raising a shape error or
-opening any analytical dataset. No in-process parser fallback is provided.
+The disposable Python child returns all named references before its supported-
+shape result. Callers must authorize those references before raising a shape
+error or opening analytical data. Only regenerated SQL can reach the separate
+Node/WASM execution child; there is no in-process parser fallback.
+
+The compiler receives scrubbed configuration and no analytical file bytes or
+paths. Its OS resource limits do not make trusted Python/parser dependencies a
+filesystem jail. Process/protocol failures remain static public errors.
 """
 
 from __future__ import annotations
@@ -35,17 +40,34 @@ ERROR_MESSAGES = {
 
 @dataclass(frozen=True)
 class Compilation:
+    """Carry discovered references independently of compilation success.
+
+    Exactly one of ``query`` or ``error`` describes the policy result. References
+    must be authorized even when ``error`` records unsupported SQL syntax.
+    """
+
     dataset_ids: tuple[str, ...]
     query: ValidatedQuery | None
     error: SQLPolicyError | None
 
 
 def _invalid(code: str = "invalid_sql") -> Compilation:
+    """Create a local policy rejection with no discovered references.
+
+    Used only for bounded preflight failures before the child parses input; public
+    messages are selected from the static compiler error table.
+    """
     return Compilation((), None, SQLPolicyError(ERROR_MESSAGES[code], code=code))
 
 
 def _message(response, *, max_rows: int) -> Compilation:
-    """Accept only the bounded protocol, with static public error messages."""
+    """Validate a child frame and reconstruct only the supported result objects.
+
+    Require sorted unique bounded references, exact protocol keys and the requested
+    row cap. Child error codes map to static messages; arbitrary diagnostics are
+    never accepted. Malformed frames raise ``sandbox_unavailable`` rather than
+    triggering a parent-process parser fallback.
+    """
     if not isinstance(response, dict) or set(response) != {"dataset_ids", "query", "error"}:
         raise SandboxError("sandbox_unavailable")
     references = response["dataset_ids"]
@@ -90,7 +112,18 @@ def _message(response, *, max_rows: int) -> Compilation:
 def compile_sql(
     sql: str, dataset_id: str, *, max_rows: int = MAX_ROWS, timeout_seconds: float = 2
 ) -> Compilation:
-    """Compile in a killable process; this function performs no analytical I/O."""
+    """Compile SQL in a killable child within the caller's remaining subdeadline.
+
+    Validate UTF-8/input/cap bounds before launching isolated Python. Return a
+    ``Compilation`` for policy errors, retaining discovered references for caller
+    authorization. Runtime, resource, timeout and protocol failures raise
+    ``SandboxError``. Startup and payload preparation consume the same at-most-two-
+    second budget, so a very short budget can expire before execution begins.
+
+    Windows bypasses the venv redirector to preserve the one-process Job limit;
+    POSIX execs through its resource launcher. All launched outcomes kill/reap the
+    child and release pipes/Job handles. No analytical files are read here.
+    """
     started = time.monotonic()
     if (
         type(timeout_seconds) not in (int, float)

@@ -1,3 +1,11 @@
+/**
+ * @module overview
+ * Load a bounded pinned fleet period and coordinate cards, chart and table.
+ *
+ * The server-provided stored metric is authoritative. Reject an incomplete page
+ * rather than charting a truncated period; retain exact values in the table and
+ * use approximate numeric formatting only for graphical/card presentation.
+ */
 import { ApiError, StaleRequest, queryString, verifyPage } from './api.js';
 import {
   byId,
@@ -13,7 +21,13 @@ import {
 import { renderTable, exportPage } from './table.js';
 import { renderChart, chartPoints } from './chart.js';
 
+/**
+ * Coordinate one pinned metric packet, its exact table and responsive SVG presentation.
+ */
 export class OverviewController {
+  /**
+   * Bind bounded range selection/export and observe chart size without refetching data.
+   */
   constructor(context) {
     this.context = context;
     this.sequence = 0;
@@ -47,6 +61,9 @@ export class OverviewController {
         : null;
     this.observer?.observe(byId('fleet-chart'));
   }
+  /**
+   * Invalidate earlier model requests and reset chart/export state for the new catalog.
+   */
   configure(catalog) {
     this.catalog = catalog;
     this.sequence++;
@@ -57,6 +74,9 @@ export class OverviewController {
     visible('overview-content', false);
     byId('overview-export').disabled = true;
   }
+  /**
+   * Derive a preset inclusive range from actual source bounds and synchronize pressed buttons.
+   */
   setRange() {
     if (!this.dataset?.max_period) return;
     const end = this.dataset.max_period;
@@ -70,10 +90,19 @@ export class OverviewController {
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
   }
+  /**
+   * Validate at most 366 calendar days and request a complete model-pinned metric page.
+   *
+   * Reject continuation rather than presenting a partial period. Only a current
+   * generation may set cards/table/chart; stored exact percentages remain separate
+   * from approximate card/coordinate formatting.
+   * @param {boolean} [force=false] Reload despite a previously loaded period.
+   */
   async load(force = false) {
     if (!this.catalog || (!force && this.loaded)) return;
     const sequence = ++this.sequence,
       model = this.catalog.model_id;
+    // The queue and renderer share this closure so old models/generations cannot update cards or chart.
     const isCurrent = () =>
       this.context.alive() && sequence === this.sequence && this.catalog?.model_id === model;
     const start = byId('overview-start').value,
@@ -118,6 +147,7 @@ export class OverviewController {
       if (!packet.rows.length) return;
       const names = packet.columns.map((column) => column.name),
         latest = packet.rows.at(-1);
+      // Read the latest row in the selected period; preserve its original exact scalar for titles/table.
       const value = (name) => latest[names.indexOf(name)];
       setText(
         'metric-offline-share',
@@ -156,10 +186,16 @@ export class OverviewController {
       if (isCurrent()) byId('overview-apply').disabled = false;
     }
   }
+  /**
+   * Redraw the existing packet for the current container size without an analytical request.
+   */
   draw() {
     if (this.packet && this.range)
       renderChart(byId('fleet-chart'), this.packet, this.range.start, this.range.end);
   }
+  /**
+   * Invalidate pending results, disconnect resize observation and clear metric/table/chart state.
+   */
   dispose() {
     this.sequence++;
     this.packet = null;

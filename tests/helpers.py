@@ -1,4 +1,9 @@
-"""Deterministic source simulator; these rows are synthetic, not EIA findings."""
+"""Provide deterministic synthetic EIA responses for offline pipeline/model tests.
+
+Rows and the secret canary are artificial. FakeClient mirrors the connector protocol,
+including counters and an empty terminal request, while allowing failure/deletion-confirmation
+scenarios without network access or real keys.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +17,11 @@ SECRET = "test-secret-canary-not-a-real-api-key"
 
 
 def source_rows():
+    """Return three days at all source grains with zero-padded textual entity IDs.
+
+    Values intentionally serve validation/publication tests rather than real-data findings or
+    a physically reconciled fleet; callers can mutate copies for cases.
+    """
     result = {spec.route: [] for spec in ROUTES}
     for delta in range(3):
         period = str(date(2026, 9, 1) + timedelta(days=delta))
@@ -35,7 +45,14 @@ def source_rows():
 
 
 class FakeClient:
+    """Simulate source metadata/pages, diagnostics and controlled extraction failures."""
+
     def __init__(self, rows=None):
+        """Copy supplied/default rows and initialize per-route counters/failure controls.
+
+        confirmation_mutation can change a later extraction to exercise deletion confirmation;
+        fail_route/fail_after_pages inject a typed upstream failure.
+        """
         self.rows = deepcopy(rows if rows is not None else source_rows())
         self.requests = self.retries = self.pages = 0
         self.declared_totals = {}
@@ -50,6 +67,7 @@ class FakeClient:
 
     @property
     def statistics(self):
+        """Return production-shaped request/retry/page/declared-total diagnostics."""
         return {
             "requests": self.requests,
             "retries": self.retries,
@@ -58,9 +76,11 @@ class FakeClient:
         }
 
     def sanitize(self, value):
+        """Redact the artificial secret canary through the real recursive sanitizer."""
         return sanitize(value, (SECRET,))
 
     def fetch_metadata(self, route):
+        """Advertise synthetic date bounds, units/facets and an echoed canary parameter."""
         self.requests += 1
         spec = next(spec for spec in ROUTES if spec.route == route)
         rows = self.rows[route]
@@ -74,6 +94,12 @@ class FakeClient:
         return RouteMetadata(route, start, end, fields, raw, ("daily",), spec.key_fields[1:])
 
     def iter_pages(self, route, start, end, page_size=5000):
+        """Yield copied windowed rows and count an additional empty terminal request.
+
+        Track each route extraction separately so confirmation can mutate independently. No
+        network is used; yielded payloads preserve the source shape for sanitation and
+        recording tests, and configured page failures interrupt the simulated route.
+        """
         self.calls.append((route, start, end))
         self._calls_by_route[route] = self._calls_by_route.get(route, 0) + 1
         rows = deepcopy(

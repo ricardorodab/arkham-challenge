@@ -1,8 +1,9 @@
-"""Bounded, secret-safe access to the three EIA nuclear outage routes.
+"""Fetch the fixed EIA nuclear-outage routes with bounded, secret-safe I/O.
 
-The URL is deliberately not configurable: this connector sends an API key and
-must never become a general-purpose URL fetcher.  Responses are sanitized before
-they leave this module because EIA echoes request parameters in JSON responses.
+The endpoint is deliberately not configurable because requests carry an API key.
+Responses are sanitized before leaving the client, including echoed request
+parameters. Pagination checks a live source rather than creating an upstream
+transaction; row/domain validation belongs to ``domain`` and ``pipeline``.
 """
 
 from __future__ import annotations
@@ -48,7 +49,12 @@ _LOG = logging.getLogger(__name__)
 
 
 def sanitize(value: Any, secrets: tuple[str, ...] = ()) -> Any:
-    """Recursively remove credential fields and known secrets from JSON values."""
+    """Return recursively scrubbed JSON-like data without mutating the input.
+
+    Redact credential-named fields, query-string secrets and supplied literal or
+    URL-encoded canaries, including mapping keys. Tuples become lists. Other scalar
+    values pass through; this is a credential scrubber, not general JSON validation.
+    """
     if isinstance(value, Mapping):
         return {
             _sanitize_text(str(key), secrets): REDACTED
@@ -64,6 +70,12 @@ def sanitize(value: Any, secrets: tuple[str, ...] = ()) -> Any:
 
 
 def _sanitize_text(value: str, secrets: tuple[str, ...]) -> str:
+    """Redact secret query parameters and explicit raw/encoded secret strings.
+
+    Empty canaries are ignored to avoid replacing every character boundary. Matching
+    credential parameter names is case-insensitive; literal secret replacement is
+    exact and does not infer unknown credentials.
+    """
     cleaned = _QUERY_SECRET.sub(lambda match: match.group(1) + REDACTED, value)
     for secret in secrets:
         if secret:
@@ -73,7 +85,12 @@ def _sanitize_text(value: str, secrets: tuple[str, ...]) -> str:
 
 
 class EIAClientError(Exception):
-    """A safe public error: messages never include URLs or response bodies."""
+    """Represent a public source failure with explicit retry metadata.
+
+    Messages supplied by this module exclude URLs and response bodies. ``code`` is
+    stable for callers; optional status, delay and UTC retry time describe recovery
+    without exposing the request or the credential.
+    """
 
     def __init__(
         self,
@@ -85,6 +102,12 @@ class EIAClientError(Exception):
         status_code: int | None = None,
         retry_after: float | None = None,
     ) -> None:
+        """Store the caller-safe message, machine code and optional retry hints.
+
+        This constructor does not sanitize arbitrary caller-provided text. ``retryable``
+        indicates whether another attempt may help, not that this client will exceed its
+        configured attempt or waiting limits.
+        """
         super().__init__(message)
         self.code = code
         self.retryable = retryable
@@ -95,6 +118,13 @@ class EIAClientError(Exception):
 
 @dataclass(frozen=True)
 class RouteMetadata:
+    """Hold validated route coverage and the sanitized metadata response.
+
+    Start/end are advertised observation dates, not extraction timestamps or a
+    completeness guarantee. Required frequency, measures, units and facets have been
+    checked by ``fetch_metadata``; ``raw`` remains available for provenance.
+    """
+
     route: str
     start_period: date
     end_period: date
@@ -106,6 +136,13 @@ class RouteMetadata:
 
 @dataclass(frozen=True)
 class Page:
+    """Carry one nonempty response page and its sanitized provenance.
+
+    ``offset`` is the requested row offset and ``declared_total`` is diagnostic only.
+    ``metadata`` excludes response data rows; the pipeline can combine it with
+    ``rows`` for optional sanitized recordings.
+    """
+
     rows: list[dict[str, Any]]
     declared_total: int | None
     offset: int
@@ -113,20 +150,23 @@ class Page:
 
 
 class _NoRedirect(HTTPRedirectHandler):
+    """Prevent urllib from forwarding a query-string API key on redirect."""
+
     def redirect_request(
         self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
     ) -> None:
+        """Refuse redirect construction so the original response becomes an error."""
         # A redirected request must not disclose the query-string API key.
         return None
 
 
 class EIAClient:
-    """A streaming, sequential EIA client with bounded retries and pagination.
+    """Coordinate bounded requests and ordered pagination across route workers.
 
-    ``max_retries`` counts additional attempts.  A long Retry-After is surfaced
-    as a typed error instead of occupying a worker indefinitely; retry_at tells
-    an operator when a later run is appropriate.  Transport and clocks are
-    injectable so failure tests need no network or real sleeping.
+    One instance shares a request-start limiter, 429 cooldown and statistics across
+    threads. Each route's pages remain sequential. Injectable transport, clocks,
+    sleep and jitter permit deterministic offline tests. Per-request limits do not
+    establish a strict whole-ingestion deadline or a source snapshot transaction.
     """
 
     def __init__(
@@ -145,6 +185,14 @@ class EIAClient:
         max_response_bytes: int = MAX_RESPONSE_BYTES,
         max_pages: int = 100_000,
     ) -> None:
+        """Validate request limits and retain the private key and injectable I/O.
+
+        ``max_retries`` counts attempts after the first. ``max_retry_after`` bounds waits,
+        ``min_request_interval`` spaces starts across workers, and response/page limits
+        bound each transport or pagination operation. Raise ``EIAClientError`` with code
+        ``configuration`` for an empty key or invalid limits. Construction makes no HTTP
+        request; the default opener refuses redirects.
+        """
         if not isinstance(api_key, str) or not api_key.strip():
             raise EIAClientError("configuration", "EIA_API_KEY is required.")
         if (
@@ -179,10 +227,17 @@ class EIAClient:
         self.declared_totals: dict[str, int | None] = {}
 
     def sanitize(self, value: Any) -> Any:
+        """Scrub a response using both known field names and this client's key."""
         return sanitize(value, (self._api_key,))
 
     @property
     def statistics(self) -> dict[str, Any]:
+        """Return a lock-protected copy of request/retry/page/declared-total counts.
+
+        Pages count nonempty pages, whereas requests include metadata, terminal empty
+        pages and retries. The returned mappings can be persisted without exposing the
+        client's private key.
+        """
         with self._counter_lock:
             return {
                 "requests": self.requests,
@@ -192,6 +247,12 @@ class EIAClient:
             }
 
     def fetch_metadata(self, route: str) -> RouteMetadata:
+        """Fetch and validate the daily metadata contract for an allowlisted route.
+
+        Return coverage dates, measures, sanitized raw JSON, frequencies and facets.
+        Raise ``EIAClientError`` for unsupported routes, transport failures or incompatible
+        metadata; no observation pages are fetched by this method.
+        """
         self._check_route(route)
         payload = self._request_json(route, data=False, params={})
         response = payload.get("response")
@@ -230,10 +291,14 @@ class EIAClient:
     def iter_pages(
         self, route: str, start: date, end: date, page_size: int = 5000
     ) -> Iterator[Page]:
-        """Yield non-empty pages; issue a final request to confirm end-of-data.
+        """Request nonempty pages sorted by complete natural key until an empty page.
 
-        ``response.total`` is provenance, not a loop bound: the facility route
-        has been observed returning totals inconsistent with its actual rows.
+        Request only the required measures within inclusive dates. Advance by rows
+        actually received and continue after short pages; ``response.total`` is recorded
+        but cannot terminate extraction. Repeated content/boundaries, invalid page shape
+        or the page cap raise ``EIAClientError``. Row values are validated later by the
+        pipeline. Exhausting this iterator makes a final empty-page request and updates
+        shared statistics; EIA may still change while pages are being read.
         """
         self._check_route(route)
         if (
@@ -317,17 +382,28 @@ class EIAClient:
 
     @staticmethod
     def _check_route(route: str) -> None:
+        """Reject any route outside the fixed nuclear-outage allowlist."""
         if route not in ROUTE_KEYS:
             raise EIAClientError("configuration", "Unknown nuclear-outage route.")
 
     @staticmethod
     def _parse_period(value: Any) -> date:
+        """Parse a metadata date with exact lexical and calendar validation.
+
+        Raise ``ValueError`` on invalid input so ``fetch_metadata`` can normalize it to a
+        safe ``invalid_metadata`` error.
+        """
         if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
             raise ValueError
         return date.fromisoformat(value)
 
     @staticmethod
     def _parse_total(value: Any) -> int | None:
+        """Return a nonnegative integer total, or None for unusable metadata.
+
+        Accept integer values and ASCII digit strings, explicitly excluding booleans.
+        The result is provenance rather than a completeness or termination condition.
+        """
         if isinstance(value, bool):
             return None
         if isinstance(value, int):
@@ -338,6 +414,12 @@ class EIAClient:
 
     @staticmethod
     def _boundaries(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> Any:
+        """Return comparable first/last natural-key tuples for a nonempty page.
+
+        Return None when a boundary has unsupported or missing scalar types. This guard
+        supplements full-page hashes; it does not validate rows or prove source ordering.
+        Callers must supply a nonempty ``rows`` list.
+        """
         values = tuple(tuple(row.get(key) for key in keys) for row in (rows[0], rows[-1]))
         if any(
             not isinstance(value, (str, int, float)) or isinstance(value, bool)
@@ -348,6 +430,13 @@ class EIAClient:
         return values
 
     def _request_json(self, route: str, *, data: bool, params: dict[str, Any]) -> dict[str, Any]:
+        """Issue one logical fixed-route request with bounded retry and shared pacing.
+
+        Expand list-valued query parameters, count each attempt and log only safe route
+        metadata. Retry eligible failures with backoff/jitter or Retry-After; 429 waits
+        extend the shared cooldown. Propagate ``EIAClientError`` when permanent, exhausted
+        or too delayed. ``route`` and ``params`` are internal validated request inputs.
+        """
         query = {"api_key": self._api_key, **params}
         url = BASE_URL + route + ("/data/" if data else "/") + "?" + urlencode(query, doseq=True)
         request = Request(
@@ -387,6 +476,12 @@ class EIAClient:
         raise AssertionError("unreachable")
 
     def _acquire_request_slot(self) -> None:
+        """Reserve a globally spaced request start and honor shared 429 cooldown.
+
+        Hold the rate lock while computing/sleeping so route threads cannot bypass the
+        gate; release it before network I/O. Excessive remaining cooldown raises a
+        retryable ``rate_limited`` error carrying the recorded retry time.
+        """
         # A single lock spaces starts across all route threads, including retries.
         # No HTTP request executes while this lock is held.
         with self._rate_lock:
@@ -412,6 +507,13 @@ class EIAClient:
             self._last_request_start = self._monotonic()
 
     def _one_request(self, request: Request) -> dict[str, Any]:
+        """Read one size-bounded JSON object and return its sanitized contents.
+
+        Close responses, normalize HTTP/network failures and recognize error payloads
+        returned with HTTP 200. Reject oversized bytes, invalid encoding/JSON, non-object
+        payloads and unsupported nesting as safe ``EIAClientError`` values. No retry or
+        request scheduling happens here; those are owned by ``_request_json``.
+        """
         try:
             with self._opener(request, timeout=self._timeout) as response:
                 status = getattr(response, "status", 200)
@@ -453,6 +555,11 @@ class EIAClient:
 
     @staticmethod
     def _embedded_status(payload: dict[str, Any]) -> int | None:
+        """Map recognized HTTP-like or named source errors to a status code.
+
+        Return None for unknown codes so the caller emits a generic safe source error
+        rather than relaying provider text.
+        """
         error = payload.get("error")
         value = error.get("code") if isinstance(error, dict) else payload.get("code")
         if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
@@ -470,6 +577,12 @@ class EIAClient:
         return None
 
     def _http_error(self, status: int, retry_after_header: str | None) -> EIAClientError:
+        """Construct a safe error and retry policy for an HTTP status.
+
+        401/403 are permanent credential failures; 429 and 5xx are retryable and retain
+        parsed Retry-After hints. Other statuses are permanent request failures. This
+        method returns an exception object without raising or sleeping.
+        """
         delay, retry_at = self._retry_after(retry_after_header)
         if status in {401, 403}:
             return EIAClientError(
@@ -498,6 +611,12 @@ class EIAClient:
         )
 
     def _retry_after(self, value: str | None) -> tuple[float | None, datetime | None]:
+        """Parse delta seconds or an HTTP date into delay and UTC retry time.
+
+        Clamp past dates to zero wait. Missing or malformed headers return (None, None),
+        allowing backoff fallback. Preserve an excessive numeric delay even if its date
+        cannot fit ``datetime`` so the caller can refuse the wait rather than retry early.
+        """
         if not value:
             return None, None
         current = self._now()

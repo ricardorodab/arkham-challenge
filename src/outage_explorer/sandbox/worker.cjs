@@ -1,7 +1,18 @@
 'use strict';
 
-// Trusted host shim. SQL and data never become JavaScript source. DuckDB runs
-// inside WebAssembly with BUFFER-only file imports, not NODE_RUNTIME.
+/**
+ * Trusted host bootstrap and bounded transport for one DuckDB-WASM execution.
+ *
+ * The Python caller authorizes the logical dataset, compiles SQL, verifies its
+ * Parquet bytes and supplies Node permission/resource controls. This shim does
+ * not authenticate callers or compile a SQL allowlist. SQL/data are never
+ * evaluated as JavaScript source.
+ *
+ * Trusted JavaScript reads the installed npm engine and one packaged, hashed
+ * Parquet extension. Those bootstrap reads are distinct from engine authority:
+ * submitted SQL sees BUFFER-only WASM imports, never the host NODE_RUNTIME.
+ * stdout carries one bounded JSON frame; raw engine diagnostics are suppressed.
+ */
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -13,10 +24,15 @@ const EXTENSION_URL = 'https://extensions.duckdb.org/v1.5.4/wasm_eh/parquet.duck
 // Engine diagnostics may contain submitted text or physical implementation
 // details. Only this shim's bounded structured response reaches the supervisor.
 console.log = console.warn = console.error = () => {};
+// Remove general network entry points before loading the trusted engine package.
+// The temporary extension bridge below does not perform an HTTP request.
 globalThis.fetch = () => { throw new Error('Network unavailable'); };
 globalThis.WebSocket = undefined;
 const NativeMemory = WebAssembly.Memory;
+// Constrain every engine memory construction independently of DuckDB's memory
+// setting and the parent OS process limit. Shared linear memory is not accepted.
 WebAssembly.Memory = class extends NativeMemory {
+  /** @param {WebAssembly.MemoryDescriptor} descriptor Engine memory request. */
   constructor(descriptor) {
     // A true linear-memory ceiling, independently of DuckDB's buffer manager.
     const maximum = Math.min(descriptor.maximum ?? 4096, 4096);
@@ -25,6 +41,11 @@ WebAssembly.Memory = class extends NativeMemory {
   }
 };
 
+/**
+ * Emit the sole JSON protocol response, replacing an oversized frame with a code.
+ * @param {object} value Typed result or static error frame; no raw diagnostics.
+ * @returns {void}
+ */
 function reply(value) {
   const encoded = Buffer.from(JSON.stringify(value));
   if (encoded.length > MAX_OUTPUT) {
@@ -34,6 +55,14 @@ function reply(value) {
   }
 }
 
+/**
+ * Decode Arrow decimal words as a signed two's-complement integer plus scale.
+ * BigInt reconstruction and string placement preserve all stored decimal digits;
+ * no intermediate Number conversion or additional rounding is introduced.
+ * @param {ArrayLike<number>} value Least-significant 32-bit word first.
+ * @param {number} scale Declared fractional digit count.
+ * @returns {string} Fixed-point text, including sign and declared trailing zeros.
+ */
 function decimal(value, scale) {
   let integer = 0n;
   for (let i = value.length - 1; i >= 0; i--) {
@@ -51,6 +80,13 @@ function decimal(value, scale) {
   return (negative ? '-' : '') + digits;
 }
 
+/**
+ * Map Arrow scalar metadata to the SQL type labels returned by the API.
+ * Unsupported metadata can retain its descriptive type string here; cell()
+ * independently rejects values outside the scalar result contract.
+ * @param {object} type Arrow field type supplied by the trusted runtime.
+ * @returns {string} Logical SQL type label, including decimal precision/scale.
+ */
 function columnType(type) {
   if (type.typeId === 2) {
     const integer = { 8: 'TINYINT', 16: 'SMALLINT', 32: 'INTEGER', 64: 'BIGINT' }[type.bitWidth];
@@ -65,6 +101,16 @@ function columnType(type) {
   return type.toString();
 }
 
+/**
+ * Encode one Arrow scalar for JSON without discarding decimal/integer precision.
+ * Null/undefined become null; decimals and BigInt become text; date/timestamp
+ * values become ISO text. Finite primitive numbers, booleans and strings remain
+ * scalars. Nested/list/binary values and non-finite numbers fail closed.
+ * @param {*} value Arrow vector cell.
+ * @param {object} type Arrow field type controlling exact decimal/date encoding.
+ * @returns {null|string|number|boolean} API scalar value.
+ * @throws {Error} A static non-finite/unsupported-result code.
+ */
 function cell(value, type) {
   if (value === null || value === undefined) return null;
   if (type.typeId === 7) return decimal(value, type.scale);
@@ -80,6 +126,23 @@ function cell(value, type) {
   throw new Error('unsupported_result_type');
 }
 
+/**
+ * Bootstrap the trusted runtime, lock its capabilities, and execute one query.
+ *
+ * The npm package supplies the engine JS/WASM; the separately packaged Parquet
+ * extension is checked here against its own pinned hash. A bootstrap-only bridge
+ * supplies that local extension before SQL execution. It grants no general HTTP
+ * or filesystem capability to the engine and closes immediately after LOAD.
+ *
+ * Only the supplied buffer is registered. Trusted setup creates the logical view,
+ * disables extension installation/external access/spill, and locks configuration.
+ * Stream Arrow batches into bounded typed rows; the supervisor supplies the hard
+ * wall/process limits. Output LIMIT bounds retained rows, not aggregate/sort cost.
+ * @param {object} header Validated logical dataset, SQL and output bounds.
+ * @param {Buffer} parquet One authorized, already-checksummed input file as bytes.
+ * @returns {Promise<object>} Columns, retained rows and runtime identifiers.
+ * @throws {Error} Static runtime/type/size failures; main sanitizes other errors.
+ */
 async function execute(header, parquet) {
   const duck = require(path.join(process.argv[2], '@duckdb/duckdb-wasm/dist/duckdb-node-blocking.cjs'));
   const extension = fs.readFileSync(path.join(__dirname, 'parquet-v1.5.4-wasm_eh.wasm'));
@@ -88,26 +151,32 @@ async function execute(header, parquet) {
   }
   // The engine's extension loader otherwise reaches Node's home cache or starts
   // a fetching worker. This loader has exactly one capability: supply the pinned
-  // package asset during bootstrap. It never performs an HTTP request.
+  // local extension asset during bootstrap. It never performs an HTTP request.
   let bootstrap = true;
   globalThis.XMLHttpRequest = class {
+    /** Accept only the synchronous GET for the exact pinned extension identifier. */
     open(method, url, asynchronous) {
       if (!bootstrap || method !== 'GET' || url !== EXTENSION_URL || asynchronous !== false) {
         throw new Error('Network unavailable');
       }
     }
+    /** Supply a copy of local extension bytes while bootstrap remains open. */
     send() {
       if (!bootstrap) throw new Error('Network unavailable');
       this.status = 200;
       this.response = extension.buffer.slice(extension.byteOffset, extension.byteOffset + extension.byteLength);
     }
   };
+  // These are WASM host imports. Denying them limits the SQL engine even though
+  // the trusted JavaScript bootstrap itself can read explicitly granted assets.
   const denied = (module) => duck.failWith(module, 'Host capability unavailable');
   const runtime = { ...duck.DEFAULT_RUNTIME, _udfFunctions: new Map() };
   for (const name of ['openFile', 'syncFile', 'truncateFile', 'readFile', 'writeFile',
     'removeDirectory', 'createDirectory', 'moveFile', 'removeFile', 'callScalarUDF']) {
     runtime[name] = denied;
   }
+  // Registration resolves only in-memory buffers; directory probes/globs do not
+  // expose a second route to Node's filesystem implementation.
   runtime.getDefaultDataProtocol = () => duck.DuckDBDataProtocol.BUFFER;
   runtime.glob = () => {};
   runtime.checkFile = runtime.checkDirectory = runtime.listDirectoryEntries = () => false;
@@ -136,6 +205,8 @@ async function execute(header, parquet) {
     connection.query("SET allowed_paths=['input.parquet']");
     connection.query('SET enable_external_access=false');
     connection.query('SET lock_configuration=true');
+    // Every capability/configuration restriction above precedes submitted SQL.
+    // Incremental batches cap retained transport data, not all engine plan work.
     const reader = await connection.send(header.sql, true);
     await reader.open();
     const fields = reader.schema.fields;
@@ -159,6 +230,13 @@ async function execute(header, parquet) {
   }
 }
 
+/**
+ * Read and validate one newline-delimited JSON header followed by Parquet bytes.
+ * The bounded input is parent-process transport, not a filesystem path protocol.
+ * Validate dataset spelling, SQL size, row/output bounds and binary length before
+ * execution; authorization and SQL grammar remain the Python caller's duties.
+ * @returns {Promise<void>} Writes one result frame through reply().
+ */
 async function main() {
   let chunks = [];
   let length = 0;
@@ -183,6 +261,8 @@ async function main() {
   reply(await execute(header, parquet));
 }
 
+// Preserve only known public codes. Runtime diagnostics and submitted SQL never
+// leave the child; memory-shaped failures collapse to the resource-limit code.
 main().catch(error => {
   const known = new Set(['invalid_request', 'sandbox_unavailable', 'result_too_large',
     'non_finite_result', 'unsupported_result_type', 'resource_limit']);

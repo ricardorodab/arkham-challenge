@@ -1,4 +1,9 @@
-"""Local WSGI entrypoint with explicit HTTP/body/concurrency limits."""
+"""Launch the local Django project through Waitress and its WSGI application.
+
+Frontend HTML/assets and JSON service routes share this server and origin. The ASGI
+application is an alternate integration entry point, not the server selected by web.local
+serve. Refresh execution remains a separate process.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +14,12 @@ from waitress import serve
 
 
 def main():
+    """Validate the port and serve loopback with bounded HTTP/concurrency settings.
+
+    Use twelve request threads and explicit body/header/connection/time limits; discard
+    untrusted proxy headers and suppress tracebacks. This launcher does not provision HTTPS,
+    start a refresh worker or install the analytical runtime.
+    """
     parser = argparse.ArgumentParser(description="Serve the local Outage Explorer API")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()

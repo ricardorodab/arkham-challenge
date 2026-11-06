@@ -1,4 +1,10 @@
-"""Private HTML shells and a fixed public asset set; no analytical data access."""
+"""Serve identity-only HTML shells and allowlisted packaged browser assets.
+
+These views and the authenticated service API are applications in one Django
+project. HTML rendering never loads analytical data. Persisted actor policy is
+rechecked after private rendering, while each later JSON request is separately
+authorized by the service. Only the explicit asset set is publicly cacheable.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +22,7 @@ from django.views.decorators.http import require_GET, require_http_methods
 from outage_explorer.service.errors import APIError
 from outage_explorer.service.policy import frontend_session_scope, identity, recheck
 
+# Logical filenames are capabilities: do not replace this map with a directory lookup.
 ASSETS = {
     "app.css": "text/css; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
@@ -33,6 +40,11 @@ ASSETS = {
 
 
 def _actor(request):
+    """Resolve the current persisted product actor, or return None on policy denial.
+
+    HTML routes redirect instead of exposing the APIError payload. This helper
+    delegates session, active-user and persona validation to service policy.
+    """
     try:
         return identity(request)
     except APIError:
@@ -40,13 +52,20 @@ def _actor(request):
 
 
 def _login_redirect():
-    # No user-supplied return URL is accepted or reflected.
+    """Redirect to the fixed named login route without accepting a return URL."""
     return HttpResponseRedirect(reverse("frontend:login"))
 
 
 @require_GET
 @ensure_csrf_cookie
 def home(request):
+    """Render the private workspace shell for a currently authorized product actor.
+
+    Context contains identity, persona capabilities and an opaque session scope,
+    never analytical rows or credentials. Recheck persisted identity after
+    rendering so a concurrent logout or role change cannot deliver this shell.
+    Missing users and policy failures redirect to the fixed login route.
+    """
     actor = _actor(request)
     if actor is None:
         return _login_redirect()
@@ -80,6 +99,11 @@ def home(request):
 @require_GET
 @ensure_csrf_cookie
 def login(request):
+    """Render the public GET-only login shell, or redirect an authorized actor home.
+
+    The browser performs CSRF-protected JSON authentication against the sibling
+    API. The HTML form action does not implement a non-JavaScript login path.
+    """
     if _actor(request) is not None:
         return HttpResponseRedirect(reverse("frontend:home"))
     return render(request, "outage_explorer/login.html")
@@ -87,6 +111,13 @@ def login(request):
 
 @require_http_methods(["GET", "HEAD"])
 def asset(request, filename):
+    """Return one allowlisted packaged asset with MIME type and SHA-256 ETag.
+
+    Unknown names and unavailable resources raise Http404 before arbitrary path
+    lookup. GET returns bytes, HEAD retains their length without a body, and a
+    matching If-None-Match produces 304. The public-asset marker lets shared
+    middleware distinguish these cacheable resources from private HTML/JSON.
+    """
     content_type = ASSETS.get(filename)
     if content_type is None:
         raise Http404

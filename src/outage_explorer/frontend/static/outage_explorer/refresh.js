@@ -1,8 +1,22 @@
+/**
+ * @module refresh
+ * Present durable Admin-owned refresh jobs through the service API.
+ *
+ * HTTP enqueue does not run ingestion. A separate backend worker consumes jobs.
+ * Mode-bound idempotency survives unknown POST outcomes; generation/job guards
+ * protect against stale history and polling replies. Progress is indeterminate.
+ */
 import { StaleRequest } from './api.js';
 import { byId, setText, visible, showError, element } from './dom.js';
 
 const ACTIVE = new Set(['queued', 'running']);
+/**
+ * Present Admin-owned job lifecycle independently of the active analytical model.
+ */
 export class RefreshController {
+  /**
+   * Bind queue, poll and explicit-adoption controls; API policy remains authoritative.
+   */
   constructor(context) {
     this.context = context;
     this.sequence = 0;
@@ -18,6 +32,9 @@ export class RefreshController {
     byId('refresh-use-latest').addEventListener('click', () => context.applyLatest());
     byId('refresh-message').setAttribute('aria-live', 'polite');
   }
+  /**
+   * Load owned recent history once, selecting an active job without replacing newer local work.
+   */
   async load() {
     if (this.loaded) return;
     this.loaded = true;
@@ -42,6 +59,12 @@ export class RefreshController {
     }
   }
 
+  /**
+   * Enqueue a mode-bound idempotent job and retain the key when the POST outcome is uncertain.
+   *
+   * Generation guards prevent delayed history from overwriting a newly accepted job.
+   * No browser callback performs ingestion; the separate backend worker owns that work.
+   */
   async start() {
     if (this.busy || ACTIVE.has(this.job?.status)) return;
     const sequence = ++this.sequence;
@@ -78,11 +101,20 @@ export class RefreshController {
     }
   }
 
+  /**
+   * Schedule only active jobs, polling every two seconds visible or eight seconds hidden.
+   */
   schedule() {
     clearTimeout(this.timer);
     if (ACTIVE.has(this.job?.status) && this.context.alive())
       this.timer = setTimeout(() => this.poll(), document.hidden ? 8000 : 2000);
   }
+  /**
+   * Refresh the captured job only if both its identity and controller generation remain current.
+   *
+   * Success checks freshness without adopting data. Interruption is a job outcome,
+   * not proof that the separate analytical publication transaction rolled back.
+   */
   async poll() {
     if (!this.job || this.polling || !this.context.alive()) return;
     const sequence = this.sequence,
@@ -111,10 +143,16 @@ export class RefreshController {
     }
   }
 
+  /**
+   * Render lifecycle state with indeterminate active progress and an explicit adoption action.
+   *
+   * A progress percentage is not inferred from elapsed time or unrelated row counts.
+   */
   render() {
     const job = this.job;
     if (!job) return;
     visible('refresh-use-latest', job.status === 'succeeded' && this.context.hasUpdate());
+    // Do not replace accessible status content when the observed job state has not changed.
     const signature = `${job.id}:${job.status}:${job.message}`;
     if (signature === this.renderedSignature) return;
     this.renderedSignature = signature;
@@ -140,6 +178,9 @@ export class RefreshController {
     byId('refresh-start').disabled = ACTIVE.has(job.status) || this.busy;
   }
 
+  /**
+   * Render owned job history while merging the fresher currently tracked job by ID.
+   */
   renderJobs(jobs) {
     const container = byId('refresh-jobs');
     container.replaceChildren();
@@ -148,6 +189,7 @@ export class RefreshController {
       return;
     }
     for (const item of jobs) {
+      // History may be older than the last poll/POST response for the currently tracked job.
       const job = item.id === this.job?.id ? this.job : item;
       const row = element('div', 'refresh-job');
       const detail = element('div', 'refresh-job-detail');
@@ -168,6 +210,9 @@ export class RefreshController {
       container.append(row);
     }
   }
+  /**
+   * Invalidate replies, stop polling and clear retained job/idempotency presentation state.
+   */
   dispose() {
     this.sequence++;
     clearTimeout(this.timer);

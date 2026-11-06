@@ -1,4 +1,8 @@
-"""Waitress on loopback with synthetic users/data; never the operator's state."""
+"""Run the browser suite's isolated synthetic Waitress service on loopback.
+
+This test-only entry point configures run-ID paths before Django import/setup. It never reads
+the operator's key/private accounts or opens their data directory.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,12 @@ from .fixture_support import configure, reset
 
 
 def main() -> None:
+    """Prepare fixture schema/state and serve the test application on port 8766.
+
+    configure runs before Django setup; migrate/reset operate only on selected synthetic
+    state. The Playwright launcher owns this process and its cleanup; refresh success uses a
+    separate fixture worker, not an HTTP background thread.
+    """
     configure()
     import django
 

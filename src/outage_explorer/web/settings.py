@@ -1,4 +1,11 @@
-"""Environment-owned Django settings; credentials are never read from the API."""
+"""Configure the single Django project from process environment and code defaults.
+
+No dotenv file is loaded. Direct setup requires a strong Django secret; web.local instead
+supplies its generated key and explicit state path. Import resolves paths and creates the
+state directory. web.sqlite3 stores users/sessions/jobs/cache, separate from
+data/catalog.sqlite3 and immutable Parquet. Local HTTP is intended for the loopback launcher;
+hosted HTTPS/proxy configuration needs separate review.
+"""
 
 from __future__ import annotations
 

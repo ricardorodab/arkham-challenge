@@ -1,3 +1,11 @@
+/**
+ * @module login
+ * Authenticate through the same-origin service API from the public shell.
+ *
+ * Submission waits for CSRF bootstrap. Credentials travel only in a JSON POST;
+ * login rotates the in-memory token and retires prior browser query history.
+ * HTML routes are shells in the same Django project, not a separate server.
+ */
 import { ApiClient } from './api.js';
 import { byId, showError, visible, setText } from './dom.js';
 import { clearPrivateHistory } from './sql.js';
@@ -14,6 +22,9 @@ const reasonMessage =
       : reason === 'signed-out'
         ? 'You have been signed out.'
         : '';
+/**
+ * Bootstrap the CSRF token before enabling login; leave failures explicitly retryable.
+ */
 async function prepare() {
   byId('login-submit').disabled = true;
   visible('login-error', false);
@@ -29,6 +40,7 @@ async function prepare() {
   }
 }
 
+/** Toggle password visibility without changing its value or submitting credentials. */
 byId('login-toggle-password').addEventListener('click', () => {
   const input = byId('password'),
     showing = input.type === 'password';
@@ -37,6 +49,7 @@ byId('login-toggle-password').addEventListener('click', () => {
   byId('login-toggle-password').setAttribute('aria-pressed', showing ? 'true' : 'false');
 });
 
+/** Authenticate through JSON POST, retire old history on success, and restore retryable form state. */
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!ready || byId('login-submit').disabled) return;

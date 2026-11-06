@@ -1,4 +1,9 @@
-"""Synthetic, coherent source observations and isolated operational state."""
+"""Build and reset the browser suite's synthetic data and operational state.
+
+configure confines paths to a validated run-ID beneath work/browser-state and
+work/browser-data before Django initializes. Helpers intentionally mutate only that fixture
+environment; never call reset against an operator configuration.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +18,12 @@ FIXTURE = json.loads((Path(__file__).parent / "fixture.json").read_text(encoding
 
 
 def configure() -> None:
+    """Validate the run ID and select synthetic settings before Django setup.
+
+    Remove the inherited EIA key and supply fixture-only signing/seed values. The separate
+    Node environment helper also strips inherited Python/seed settings. This configures paths
+    but does not launch a service, apply migrations or publish.
+    """
     run_id = os.environ.get("OUTAGE_BROWSER_RUN_ID", "")
     if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", run_id):
         raise RuntimeError("A browser-only isolated run identifier is required.")
@@ -31,6 +42,13 @@ def configure() -> None:
 
 
 def source_rows(*, revision: int = 0):
+    """Return coherent three-grain rows for metric, gap and hostile-text UI checks.
+
+    Dates come from the fixture's deliberately gapped period list. Daily percentages are 10, 0
+    and 20 plus ten times revision, so revision one changes the final value to 30. Zero-padded
+    IDs and formula/HTML-looking facility names exercise exact text rendering/export rather
+    than representing actual EIA observations.
+    """
     from outage_explorer.domain import ROUTES, UNITS
 
     rows = {spec.route: [] for spec in ROUTES}
@@ -61,6 +79,12 @@ def source_rows(*, revision: int = 0):
 
 
 def publish(*, revision: int = 0, fail: bool = False, mode: str = "full"):
+    """Build/publish fixture data through the real pipeline using a fake upstream.
+
+    An optional generator-route failure tests preservation of prior publication. Return the
+    matching source/model IDs; a separately invoked synthetic worker uses this executor to
+    exercise durable refresh without an upstream credential.
+    """
     from django.conf import settings
 
     from outage_explorer.pipeline import IngestConfig, ingest
@@ -76,6 +100,13 @@ def publish(*, revision: int = 0, fail: bool = False, mode: str = "full"):
 
 
 def reset() -> None:
+    """Restore fixture users, sessions/cache/login buckets and baseline publication.
+
+    The caller must first configure Django with run-ID-confined synthetic paths. Clear
+    private operational rows and interrupt active fixture jobs, then republish the baseline
+    only when the selected model differs from its stored fixture marker. This is destructive
+    test reset behavior, not an operator recovery command.
+    """
     from django.conf import settings
     from django.contrib.auth import get_user_model
     from django.contrib.sessions.models import Session

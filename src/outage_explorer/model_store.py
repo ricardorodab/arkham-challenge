@@ -1,7 +1,9 @@
-"""Model integrity, immutable publication and a scoped backend catalog adapter.
+"""Verify, prepare and expose pinned models to trusted application code.
 
-Connections here run application-owned analytical SQL. They are not a sandbox
-for user SQL; the public query service and authentication belong to Part 3.
+Model preparation closes and validates files before immutable rename; catalog
+publication remains a later transaction. Scoped metadata and native DuckDB views
+are trusted-code adapters, not hostile-SQL sandboxes or HTTP authentication. Each
+adapter caller supplies a validated persona and application-owned SQL.
 """
 
 from __future__ import annotations
@@ -28,13 +30,25 @@ LOG = logging.getLogger(__name__)
 
 
 def _sql_literal(value: str) -> str:
+    """Escape a server-resolved path as one DuckDB string literal.
+
+    This permits apostrophes in legitimate paths; it does not validate path ownership
+    or authorize a dataset. Those checks must precede SQL construction.
+    """
     return "'" + value.replace("'", "''") + "'"
 
 
 def register_views(
     con: duckdb.DuckDBPyConnection, bundle: ModelBundle, dataset_ids: Sequence[str]
 ) -> None:
-    """Register only caller-approved datasets, with server-resolved paths."""
+    """Register exact checksummed Parquet views for caller-approved dataset IDs.
+
+    Require known datasets, exact ``<dataset_id>.parquet`` names and nonsymlink files
+    contained by the bundle directory. Verify physical hashes before creating views;
+    raise ``StorageError`` on contract/path/integrity failures. The caller performs
+    persona authorization first. These native-engine views do not constrain arbitrary
+    SQL to a safe capability set.
+    """
     for dataset_id in dataset_ids:
         if dataset_id not in DATASETS:
             raise StorageError("Unknown analytical dataset.", code="unknown_dataset")
@@ -62,6 +76,19 @@ def register_views(
 
 
 def verify_model(bundle: ModelBundle) -> dict[str, Any]:
+    """Read and verify a model against its current or frozen historical contract.
+
+    Check manifest identity/set/semantic metadata, exact schemas, physical and ordered
+    logical hashes, counts, PKs/FKs and source row-count/hash-shape bindings. Recompute
+    the national fleet metric independently of the builder. Return per-dataset hashes
+    and the FK count; no references or bundle files are changed.
+
+    Raise ``StorageError`` for supported contract/integrity/read failures and always
+    close the analytical connection. This does not reread raw files to prove source
+    hash binding, rederive every reconciliation/quality algorithm, or establish
+    upstream truth. At publication, ``Catalog._validate_model_publication`` compares
+    these bindings with the catalog-resolved raw manifest.
+    """
     path = bundle.path
     manifest, _ = Catalog._manifest_file(path)
     try:
@@ -199,7 +226,17 @@ def verify_model(bundle: ModelBundle) -> dict[str, Any]:
 def prepare_model(
     catalog: Catalog, source: SnapshotRef, *, model_id: str | None = None
 ) -> ModelBundle:
-    """Caller holds writer lock. Build and close files before any publication."""
+    """Build and verify a model, then rename it to immutable storage without publishing.
+
+    The caller must hold the writer lock and provide a pinned source descriptor.
+    Record a running build, construct the complete candidate under .model-staging,
+    verify it and rename closed files into models. Return its immutable ``ModelBundle``
+    while leaving the build running for the publication transaction to complete.
+
+    Record failed/interrupted state best-effort and re-raise known failures; normalize
+    unexpected failures to ``ModelError``. Files can remain unreferenced after error.
+    No data-catalog publication or application refresh-job completion occurs here.
+    """
     model_id = model_id or uuid.uuid4().hex
     if re.fullmatch(r"[0-9a-f]{32}", model_id) is None:
         raise StorageError("Invalid model identifier.", code="invalid_identifier")
@@ -237,6 +274,13 @@ def prepare_model(
 
 
 def rebuild_model(root: Path) -> ModelBundle:
+    """Rebuild and publish from the current verified raw snapshot under the writer lock.
+
+    Recover abandoned work, require an existing source, prepare a full candidate and
+    publish only if that source is still current. Return the published bundle; attempt
+    to record a failed build if publication fails. This writes local files/catalog state but
+    makes no EIA requests and does not advance the raw snapshot.
+    """
     with writer_lock(root), Catalog(root) as catalog:
         catalog.recover_interrupted()
         source = catalog.current()
@@ -253,6 +297,12 @@ def rebuild_model(root: Path) -> ModelBundle:
 
 
 def resolve_model(root: Path, model_id: str | None = None) -> ModelBundle:
+    """Resolve a registered historical model or the coherent current model.
+
+    Open/close the catalog and return its manifest-bound descriptor; raise ``no_model``
+    when none is selected. Catalog initialization may create workspace/schema state.
+    This does not scan all Parquet files or infer current data from directories.
+    """
     with Catalog(root) as catalog:
         bundle = catalog.model(model_id) if model_id else catalog.current_model()
         if bundle is None:
@@ -261,6 +311,12 @@ def resolve_model(root: Path, model_id: str | None = None) -> ModelBundle:
 
 
 def _allowed(persona: str) -> set[str]:
+    """Return dataset IDs permitted by a validated trusted-operator persona.
+
+    Normalize case, allow Viewer only national-classified datasets and Analyst/Admin
+    all datasets. Unknown roles raise ``StorageError(unknown_persona)``. A caller-
+    selected string is not HTTP authentication or authorization by itself.
+    """
     normalized = persona.lower()
     if normalized not in {"viewer", "analyst", "admin"}:
         raise StorageError("Unknown persona.", code="unknown_persona")
@@ -272,6 +328,13 @@ def _allowed(persona: str) -> set[str]:
 
 
 def analytical_catalog(root: Path, persona: str, *, model_id: str | None = None) -> dict[str, Any]:
+    """Return role-filtered metadata and metrics for one pinned model contract.
+
+    Filter relationship targets as well as dataset/metric entries so Viewer metadata
+    does not expose detail references. Use the frozen v1 profile and warning for old
+    models. Resolve manifest-bound rows/date ranges without opening analytical files;
+    the persona must come from trusted operator or server identity context.
+    """
     permitted = _allowed(persona)
     bundle = resolve_model(root, model_id)
     profile = contract_profile(bundle.manifest["model_version"])
@@ -307,6 +370,14 @@ def analytical_catalog(root: Path, persona: str, *, model_id: str | None = None)
 def open_model_connection(
     root: Path, dataset_ids: Sequence[str], *, persona: str = "analyst", model_id: str | None = None
 ) -> Iterator[tuple[duckdb.DuckDBPyConnection, ModelBundle]]:
+    """Yield a native DuckDB connection and pinned bundle for trusted analytical SQL.
+
+    Validate every requested dataset against the persona before resolving the model
+    or opening its analytical files, deduplicate selected views and verify their
+    checksums. Close the connection even if registration or caller work fails.
+    A one-thread/256 MB engine configuration is not an OS sandbox or hard RSS cap;
+    arbitrary user SQL must use the separate isolated service path.
+    """
     permitted = _allowed(persona)
     if not dataset_ids or any(key not in permitted for key in dataset_ids):
         raise StorageError("Dataset access is not permitted.", code="dataset_forbidden")

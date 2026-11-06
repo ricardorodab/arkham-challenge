@@ -1,4 +1,11 @@
-"""Process-shared query admission using OS locks that release on process death."""
+"""Coordinate bounded analytical admission across processes on the same host.
+
+OS writer locks enforce one outstanding operation per account, two admitted operations, eight
+waiting tickets and at most five seconds of queue wait. Locks are shared through the
+configured state directory and release on process death; this is bounded polling, not a FIFO
+or multi-host scheduler. ContextVar holds execution-local reentrancy/deadline state, not the
+shared lock registry.
+"""
 
 from __future__ import annotations
 
@@ -12,10 +19,18 @@ from outage_explorer.storage import StorageError, writer_lock
 
 from .errors import APIError
 
+# Python supplies execution-local context isolation; the filesystem locks below
+# remain the cross-process authority for capacity and account exclusion.
 _ACTIVE: ContextVar[tuple[int, float] | None] = ContextVar("outage_query_slot", default=None)
 
 
 def remaining_query_seconds(maximum: float = 8) -> float:
+    """Return maximum capped by the current operation's monotonic deadline.
+
+    Without an admitted context, return the caller's maximum. Raise query_timeout when the
+    remaining budget is nonpositive. Compiler and engine callers consume the same admitted
+    deadline rather than starting independent full budgets.
+    """
     active = _ACTIVE.get()
     remaining = maximum if active is None else min(maximum, active[1] - time.monotonic())
     if remaining <= 0:
@@ -24,6 +39,11 @@ def remaining_query_seconds(maximum: float = 8) -> float:
 
 
 def _take(stack: ExitStack, path) -> bool:
+    """Enter a nonblocking writer lock into stack and report whether it was acquired.
+
+    Only already_running becomes False; propagate other storage failures. ExitStack retains
+    successful acquisitions and releases them on every context exit.
+    """
     try:
         stack.enter_context(writer_lock(path))
         return True
@@ -35,6 +55,14 @@ def _take(stack: ExitStack, path) -> bool:
 
 @contextmanager
 def query_slot(user_id: int):
+    """Admit one account operation and yield while its shared execution budget runs.
+
+    Acquire the account lock, a bounded waiting ticket and one of two host slots. Release the
+    waiting ticket once admitted, then establish the monotonic execution deadline.
+    Same-account nested calls reuse the existing slot and deadline; a different account cannot
+    borrow that context. Reset ContextVar with its token and release all locks on normal
+    completion or exceptions.
+    """
     active = _ACTIVE.get()
     if active is not None:
         if active[0] != user_id:

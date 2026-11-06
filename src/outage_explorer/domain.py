@@ -1,4 +1,11 @@
-"""The intentionally small, explicit EIA source contract (not an analytical model)."""
+"""Validate and type the three EIA source grains before persistence.
+
+The source contract preserves independent national, facility and generator
+observations, exact decimal measures and canonical source-row evidence. Structural
+errors fail validation; representable semantic outliers remain with flags. This
+module neither fetches data nor sanitizes credentials: callers must sanitize rows
+before passing them to ``validate_row``.
+"""
 
 from __future__ import annotations
 
@@ -17,19 +24,36 @@ QUANTUM = Decimal("0.000000001")
 
 
 class DataValidationError(Exception):
-    """Contract errors contain field names, never untrusted values or credentials."""
+    """Signal an invalid source contract with a safe, field-oriented message.
+
+    Callers must avoid including untrusted values or credentials in messages. The
+    ``invalid_data`` code is consumed by ingestion diagnostics and CLI error mapping.
+    """
 
     code = "invalid_data"
 
 
 @dataclass(frozen=True)
 class RouteSpec:
+    """Describe one fixed source route, its grain and ordered natural key.
+
+    ``name`` selects local files, ``route`` selects the allowlisted EIA endpoint, and
+    ``key_fields`` establishes identity and deterministic ordering. Instances are
+    immutable; the column contract is derived from the key rather than source data.
+    """
+
     name: str
     route: str
     key_fields: tuple[str, ...]
 
     @property
     def columns(self) -> tuple[tuple[str, str], ...]:
+        """Return the ordered raw DuckDB schema for this route.
+
+        Entity columns appear only at their applicable grain. Each measure keeps its
+        unit, and evidence columns retain canonical source JSON, its hash and flags.
+        The order also defines ``ValidatedRow.values`` and persisted Parquet columns.
+        """
         columns = [("period", "DATE")]
         if "facility" in self.key_fields:
             columns.extend((("facility", "VARCHAR"), ("facilityName", "VARCHAR")))
@@ -52,23 +76,45 @@ ROUTE_BY_NAME = {spec.name: spec for spec in ROUTES}
 
 
 def identifier(name: str) -> str:
-    """Quote only server-owned column identifiers; never accepts a user SQL fragment."""
+    """Escape an application-owned identifier for DuckDB SQL.
+
+    Double embedded quotes so the name remains one quoted identifier. This helper
+    does not authorize names or validate SQL fragments; callers own those policies.
+    """
     return '"' + name.replace('"', '""') + '"'
 
 
 def canonical_json(value: Any) -> str:
+    """Serialize JSON-native values deterministically for evidence and hashing.
+
+    Keys are sorted, separators are compact and Unicode is retained. Unsupported
+    objects and nonfinite numbers raise ``TypeError`` or ``ValueError``; dates and
+    Decimals must be normalized by the caller.
+    """
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
     )
 
 
 def parse_date(value: str) -> date:
+    """Parse an exact YYYY-MM-DD string as a real calendar date.
+
+    Raise ``ValueError`` for a non-string, a different lexical shape or an invalid
+    calendar day. No timestamp or timezone conversion is performed.
+    """
     if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         raise ValueError("Expected a calendar date in YYYY-MM-DD format.")
     return date.fromisoformat(value)
 
 
 def _measure(value: Any, field: str) -> Decimal | None:
+    """Convert a source measure to exact DECIMAL(24,9), or preserve null.
+
+    Accept strings and integers; null and the empty string mean unknown. Booleans,
+    binary floats, nonfinite numbers, excessive input length, storage overflow and
+    fractional precision loss raise ``DataValidationError`` naming only ``field``.
+    Outlier semantics such as a negative outage are handled separately as flags.
+    """
     if value is None or value == "":
         return None
     if isinstance(value, bool) or not isinstance(value, (str, int)):
@@ -91,6 +137,13 @@ def _measure(value: Any, field: str) -> Decimal | None:
 
 @dataclass(frozen=True)
 class ValidatedRow:
+    """Carry one validated observation and its reproducibility metadata.
+
+    ``values`` follows ``RouteSpec.columns``; ``key`` follows the natural key.
+    ``flags`` records retained semantic anomalies, and ``extra_fields`` lists source
+    fields kept in canonical evidence but absent from the stable typed contract.
+    """
+
     values: tuple[Any, ...]
     key: tuple[Any, ...]
     flags: tuple[str, ...]
@@ -98,6 +151,19 @@ class ValidatedRow:
 
 
 def validate_row(spec: RouteSpec, row: dict[str, Any], start: date, end: date) -> ValidatedRow:
+    """Validate an already-sanitized source row within inclusive date bounds.
+
+    Require the route's identity, measures and exact units. Text identifiers must
+    already be nonempty and trimmed; they are not numerically coerced. Preserve
+    nullable measures, observation-time names and additive fields while flagging
+    semantic outliers. Hash the complete canonical source row, so descriptive or
+    additive-field changes also change the fingerprint.
+
+    Return a ``ValidatedRow`` in the route's column order. Raise
+    ``DataValidationError`` for invalid identity, date, required fields, units,
+    measure representation or JSON evidence. No caller mapping is mutated and no
+    files are written; credential sanitization is the caller's responsibility.
+    """
     required = set(spec.key_fields) | set(METRICS) | {f"{m}-units" for m in METRICS}
     missing = required - row.keys()
     if missing:

@@ -1,4 +1,9 @@
-"""Application URL entry point; all API authorization lives in the service."""
+"""Mount API and frontend apps in the same Django project and origin.
+
+service.urls maps JSON capability views; frontend.urls maps HTML/public assets. Both rely on
+shared policy for protected access. Safe JSON handlers cover project 400/404/500 errors;
+routing alone does not authorize datasets.
+"""
 
 from django.urls import include, path
 

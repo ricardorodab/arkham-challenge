@@ -1,4 +1,4 @@
-<!doctype html>
+{# Private identity-only shell in the shared Django project; all analytical data arrives through authorized JSON API calls. #}<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -23,7 +23,7 @@
         <a href="#overview" data-view="overview" class="nav-link is-active" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Fleet overview</span><span class="nav-index">01</span></a>
         <a href="#explore" data-view="explore" class="nav-link"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11M15 9v11"/></svg><span>Explore data</span><span class="nav-index">02</span></a>
         <a href="#sql" data-view="sql" class="nav-link"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-5 6 5 6m8-12 5 6-5 6M13 3l-2 18"/></svg><span>SQL workspace</span><span class="nav-index">03</span></a>
-        {% if is_admin %}
+{# Omit Admin markup for truthful capabilities; service policy still authorizes every refresh request. #}        {% if is_admin %}
         <span class="nav-divider">Administration</span>
         <a href="#refresh" data-view="refresh" class="nav-link"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M5.3 8a7 7 0 0 1 11.5-3L20 8M4 16l3.2 3A7 7 0 0 0 18.7 16"/></svg><span>Data refresh</span><span class="nav-index">04</span></a>
         {% endif %}
@@ -50,7 +50,7 @@
         <div id="global-notice" class="notice" role="alert" hidden></div>
         <div id="snapshot-notice" class="notice notice-update" role="status" hidden><div><strong>A newer publication is available.</strong><p>This view remains pinned so your results stay consistent.</p></div><button id="apply-snapshot" class="button button-small" type="button">Use latest publication <span aria-hidden="true">↗</span></button></div>
 
-        <section id="view-overview" class="workspace-view" aria-labelledby="overview-heading">
+{# OverviewController owns this pinned period, stored metric presentation and exact table alternative. #}        <section id="view-overview" class="workspace-view" aria-labelledby="overview-heading">
           <div class="section-intro"><div><p class="eyebrow">National perspective</p><h2 id="overview-heading">The fleet at a glance.</h2><p class="section-description">Follow the share of reported U.S. nuclear capacity offline each day.</p></div><span class="section-number" aria-hidden="true">01 / OVERVIEW</span></div>
           <form id="overview-form" class="filter-bar overview-filters" method="post" action="/">
             {% csrf_token %}
@@ -73,7 +73,7 @@
           </div>
         </section>
 
-        <section id="view-explore" class="workspace-view" aria-labelledby="explore-heading" hidden>
+{# ExploreController separates draft controls from applied packet metadata and opaque keyset continuations. #}        <section id="view-explore" class="workspace-view" aria-labelledby="explore-heading" hidden>
           <div class="section-intro"><div><p class="eyebrow">Published observations</p><h2 id="explore-heading">Get closer to the data.</h2><p class="section-description">Choose a dataset, refine the period, and inspect its exact values.</p></div><span class="section-number" aria-hidden="true">02 / EXPLORE</span></div>
           <form id="explore-form" class="panel explorer-controls" method="post" action="/">
             {% csrf_token %}
@@ -88,7 +88,7 @@
           <details class="panel schema-details"><summary><span>Understand this dataset</span><span class="details-hint">Schema &amp; units <span aria-hidden="true">+</span></span></summary><div id="schema-content" class="schema-content schema-grid"><p class="muted">Select a dataset to see its columns, units, and relationships.</p></div></details>
         </section>
 
-        <section id="view-sql" class="workspace-view" aria-labelledby="sql-heading" hidden>
+{# SqlController provides quoted identifier insertion and capped pages; parsing, actor policy and execution remain server-owned. #}        <section id="view-sql" class="workspace-view" aria-labelledby="sql-heading" hidden>
           <div class="section-intro"><div><p class="eyebrow">Ask a precise question</p><h2 id="sql-heading">A workspace for your queries.</h2><p class="section-description">Write a read-only query against one of your available datasets.</p></div><span class="section-number" aria-hidden="true">03 / SQL</span></div>
           <div class="sql-layout"><form id="sql-form" class="panel sql-editor-panel" method="post" action="/">
             {% csrf_token %}
@@ -106,7 +106,7 @@ LIMIT 100</textarea>
           <div id="sql-content" class="panel results-panel" hidden><div class="results-heading"><div><h3>Query results</h3><p id="sql-result-meta" class="result-meta"></p></div><button id="sql-export" class="button button-secondary button-small" type="button">Export this page <span aria-hidden="true">↓</span></button></div><div id="sql-truncated" class="notice notice-subtle" role="status" hidden>The result reached your row cap. Refine the query to focus on a smaller set of observations.</div><div class="table-wrap" tabindex="0" role="region" aria-label="Query results table, scroll horizontally or vertically"><table id="sql-table" class="data-table" aria-label="SQL query results"></table></div><div class="pagination"><p class="pagination-note">Exact values. Consistent publication.</p><div class="pagination-actions"><button id="sql-prev" class="button button-secondary button-small" type="button" disabled><span aria-hidden="true">←</span> Previous</button><span id="sql-page-label" class="page-label" aria-live="polite">Page 1</span><button id="sql-next" class="button button-secondary button-small" type="button" disabled>Next <span aria-hidden="true">→</span></button></div></div></div>
         </section>
 
-        {% if is_admin %}
+{# Omit Admin markup for truthful capabilities; service policy still authorizes every refresh request. #}        {% if is_admin %}
         <section id="view-refresh" class="workspace-view" aria-labelledby="refresh-heading" hidden><div id="admin-panel">
           <div class="section-intro"><div><p class="eyebrow">Publication controls</p><h2 id="refresh-heading">Bring the workspace up to date.</h2><p class="section-description">Queue a refresh and follow its progress without interrupting the published view.</p></div><span class="section-number" aria-hidden="true">04 / ADMIN</span></div>
           <div class="refresh-layout"><form id="refresh-form" class="panel refresh-form" method="post" action="/">
@@ -123,6 +123,6 @@ LIMIT 100</textarea>
       </main>
     </div>
   </div>
-  {{ frontend_session|json_script:'frontend-session' }}
+{# Inert escaped identity/session-scope bootstrap contains no rows, credentials or bearer authorization. #}  {{ frontend_session|json_script:'frontend-session' }}
 </body>
 </html>

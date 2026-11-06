@@ -1,4 +1,11 @@
-"""Reproduce findings using fixed, packaged, application-owned SQL assets."""
+"""Run fixed packaged evidence queries against one pinned analytical model.
+
+These trusted native-DuckDB reports are separate from the hostile user-SQL API
+and its compiler/WASM boundary. Named SELECTs retain provenance, exact scalar
+encodings and a hash of the full query text, including comments. Comment edits
+therefore change future report hashes without changing historical receipts.
+Windowed statements use bound dates; historical probes retain literal dates.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +25,12 @@ from .storage import StorageError
 
 
 def report_queries() -> dict[str, tuple[str, str]]:
+    """Load named report sections from the two packaged SQL assets in file order.
+
+    The exact ``-- name:`` marker is part of the loader contract. Require at least
+    one section per asset and globally unique labels; return asset name and complete
+    trimmed query text. SELECT shape/parameters are validated later against DuckDB.
+    """
     result: dict[str, tuple[str, str]] = {}
     for name in ("reconciliation.sql", "part2_findings.sql"):
         text = files("outage_explorer").joinpath(f"sql/{name}").read_text(encoding="utf-8")
@@ -33,6 +46,11 @@ def report_queries() -> dict[str, tuple[str, str]]:
 
 
 def json_value(value: Any) -> Any:
+    """Encode dates/timestamps as ISO strings and exact Decimal values as text.
+
+    Other values pass through unchanged. No rounding or timezone conversion is
+    introduced while preparing evidence JSON.
+    """
     if isinstance(value, (date, datetime)):
         return value.isoformat()
     if isinstance(value, Decimal):
@@ -43,6 +61,18 @@ def json_value(value: Any) -> Any:
 def findings_report(
     root: Path, start: date, end: date, *, model_id: str | None = None
 ) -> dict[str, Any]:
+    """Execute the named SELECT suite over one trusted, pinned model bundle.
+
+    Require an inclusive window of at least 30 calendar days. Register all modeled
+    datasets through the trusted adapter, accept only one SELECT per section and
+    bind only known ``start``/``end`` parameters. Literal-date historical probes are
+    not implicitly restricted to the supplied reconciliation window.
+
+    Return per-query asset/text hash, columns, rows and counts with model/source
+    IDs and request scope. Fetching is batched but output rows accumulate in Python;
+    there is no API row cap or constant-memory/bulk-report guarantee. The function
+    reads local model data and performs no source extraction or publication.
+    """
     if start > end or (end - start).days + 1 < 30:
         raise ValueError("A reconciliation report requires at least 30 calendar days.")
     statements = report_queries()

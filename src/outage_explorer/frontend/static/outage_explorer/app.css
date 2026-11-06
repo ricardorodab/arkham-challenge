@@ -1,4 +1,11 @@
-/* Self-hosted, system-font workspace. No external assets or font requests. */
+/*
+ * Packaged workspace presentation, shared by login and the private HTML shell.
+ * Native controls, focus/landmarks, contained table scrolling and exact-value
+ * layouts complement semantic HTML. CSS never grants persona capabilities;
+ * server policy and controller lifecycle state own access and hidden content.
+ * System fonts and local assets keep rendering independent of external requests.
+ */
+/* Shared color, typography and spacing tokens; avoid feature-specific copies of these values. */
 :root {
   color-scheme: light;
   --canvas: #f5f5ef;
@@ -144,6 +151,7 @@ main:focus {
   white-space: nowrap;
   border: 0;
 }
+/* Preserve a direct keyboard path past the persistent navigation. */
 .skip-link {
   position: fixed;
   left: 16px;
@@ -175,6 +183,7 @@ main:focus {
 .app-shell {
   min-height: 100vh;
 }
+/* Persistent navigation shell; mobile visibility is controlled by Workspace.toggleNav. */
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;
@@ -457,6 +466,7 @@ main:focus {
   border-radius: var(--radius);
   box-shadow: var(--shadow);
 }
+/* Native control styling retains focus, disabled and validation states from semantic HTML. */
 .button {
   display: inline-flex;
   align-items: center;
@@ -614,6 +624,7 @@ main:focus {
 .overview-filters .date-range {
   margin-left: auto;
 }
+/* Metric presentation must fit reported values without changing their underlying packet text. */
 .metric-grid {
   display: grid;
   grid-template-columns: 1.1fr 1fr 1fr 1fr;
@@ -721,6 +732,7 @@ main:focus {
   color: #5f6f54;
   max-width: 760px;
 }
+/* Approximate SVG presentation is paired with the exact semantic table in the template. */
 .fleet-chart {
   position: relative;
   width: 100%;
@@ -859,6 +871,7 @@ main:focus {
   scrollbar-width: thin;
   scrollbar-color: #c5d0bc #f5f7f1;
 }
+/* Bounded page tables scroll within their container and retain full exact cell content. */
 .data-table {
   width: 100%;
   border-collapse: collapse;
@@ -920,6 +933,7 @@ main:focus {
   color: #5f6f54;
   margin-top: 3px;
 }
+/* Lifecycle messages complement text/ARIA state; meaning does not depend on color alone. */
 .notice {
   display: flex;
   align-items: center;
@@ -1019,6 +1033,7 @@ main:focus {
   animation: spin 0.9s linear infinite;
   flex: none;
 }
+/* Indeterminate activity conveys waiting, not a fabricated completion percentage. */
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1190,6 +1205,7 @@ main:focus {
   color: #5f6f54;
   line-height: 1.7;
 }
+/* Editor/reference layout is independent of backend SQL authority and resource limits. */
 .sql-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 285px;
@@ -1352,6 +1368,7 @@ main:focus {
 .history-bar > .button {
   margin-left: auto;
 }
+/* Refresh controls/status remain separate from the model pinned to analytical views. */
 .refresh-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(250px, 1fr);
@@ -1535,6 +1552,7 @@ main:focus {
 .workspace-footer > span > span {
   padding: 0 5px;
 }
+/* Public authentication shell shares the packaged assets and native control conventions. */
 .login-layout {
   min-height: 100vh;
   display: grid;
@@ -1780,6 +1798,7 @@ main:focus {
 .login-footer > span {
   padding: 0 8px;
 }
+/* Wide-screen spacing is bounded; analytical page size remains a server/API contract. */
 @media (min-width: 1550px) {
   .main-content {
     padding-left: 52px;
@@ -2028,6 +2047,7 @@ main:focus {
     font-size: 0.6875rem;
   }
 }
+/* Collapse navigation without removing keyboard access or the controller-managed expanded state. */
 @media (max-width: 800px) {
   :root {
     --sidebar: 236px;
@@ -2824,6 +2844,7 @@ main:focus {
     margin-top: 30px;
   }
 }
+/* Respect motion preferences without hiding lifecycle/status information. */
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -2835,6 +2856,7 @@ main:focus {
     transition: none !important;
   }
 }
+/* Preserve control and focus boundaries when the user agent replaces authored colors. */
 @media (forced-colors: active) {
   .nav-link.is-active,
   .button,
@@ -2916,6 +2938,7 @@ main:focus {
     text-overflow: ellipsis;
   }
 }
+/* Very narrow metric cards use one column so long reported values remain on one line. */
 @media (max-width: 370px) {
   .header-meta {
     display: none;

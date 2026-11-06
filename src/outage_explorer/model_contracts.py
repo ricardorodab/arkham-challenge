@@ -1,4 +1,10 @@
-"""Versioned analytical contracts, independent of storage and HTTP endpoints."""
+"""Declare the analytical schema, keys, access metadata and metric semantics.
+
+Model version 2 corrects absolute-percent versus percentage-point catalog labels;
+the fleet metric remains version 1. Historical model-v1 semantics are loaded from
+a frozen packaged profile rather than rewriting immutable manifests. Definitions
+are independent of storage and HTTP identity enforcement.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +25,14 @@ PCT_TOLERANCE = "0.005"
 
 @dataclass(frozen=True)
 class DatasetSpec:
+    """Describe one dataset's ordered physical and semantic model contract.
+
+    Primary/foreign keys are validated explicitly because Parquet does not enforce
+    relationships. Classification defaults to detail; national classification allows
+    Viewer metadata/access in the trusted adapter, while HTTP authentication remains
+    separate. The frozen dataclass does not make nested mapping values deeply immutable.
+    """
+
     id: str
     columns: tuple[tuple[str, str], ...]
     primary_key: tuple[str, ...]
@@ -27,6 +41,12 @@ class DatasetSpec:
     description: str = ""
 
     def catalog_definition(self) -> dict[str, Any]:
+        """Return detached JSON-compatible schema, keys, units and persona metadata.
+
+        Derive units from declared measure names, distinguishing percentages from their
+        differences. Copy mutable relationship definitions so consumers cannot mutate the
+        shared contract through this returned metadata.
+        """
         return {
             "id": self.id,
             "schema": [list(item) for item in self.columns],
@@ -53,6 +73,11 @@ class DatasetSpec:
 
 
 def fk(columns: tuple[str, ...], dataset: str, references: tuple[str, ...]) -> dict[str, Any]:
+    """Construct a JSON-compatible ordered foreign-key relationship descriptor.
+
+    Callers supply matching column/reference tuples from the trusted schema; this
+    helper serializes declarations rather than checking referential integrity.
+    """
     return {"columns": list(columns), "dataset": dataset, "references": list(references)}
 
 
@@ -71,6 +96,7 @@ DATASETS: dict[str, DatasetSpec] = {}
 
 
 def _add(spec: DatasetSpec) -> None:
+    """Register a trusted dataset specification by ID during module initialization."""
     DATASETS[spec.id] = spec
 
 
@@ -288,7 +314,14 @@ METRICS = {
 
 
 def contract_profile(version: int) -> dict[str, Any]:
-    """Freeze historical catalog semantics instead of rewriting saved models."""
+    """Return the current semantic profile or the frozen historical v1 profile.
+
+    Version 2 fixes catalog unit labels without changing numeric observations or
+    metric version 1. Load v1 from the packaged JSON, including its warning, so old
+    artifacts retain original semantics. Reject unsupported/non-integer versions
+    including booleans with ``ValueError``. Returned mutable metadata is detached
+    from current shared definitions.
+    """
     if type(version) is not int:
         raise ValueError("Unsupported analytical model version.")
     if version == MODEL_VERSION:

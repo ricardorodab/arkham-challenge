@@ -1,8 +1,14 @@
-"""Execute SQL in a disposable, capability-restricted DuckDB-WASM process.
+"""Supervise disposable DuckDB-WASM executions over one verified Parquet buffer.
 
-This module does not authorize a caller or validate the SQL grammar. The service
-must do both before calling it. It supplies exactly one checksummed Parquet file
-as bytes; the child never receives that file's host path or any application key.
+The service must authorize the dataset and compile the SQL before calling this
+module. This layer checks the trusted runtime, hashes the selected file, sends a
+bounded header/binary payload to a fresh Node child, and supervises resources and
+pipes. It does not establish the caller's persona or validate SQL grammar.
+
+Node permission flags restrict trusted JavaScript bootstrap reads; the engine's
+BUFFER-only WASM imports are the file/network capability boundary. Windows Job
+Objects and the POSIX resource bootstrap are separate resource controls. The
+native DuckDB connection used by trusted ingestion/reports is not used here.
 """
 
 from __future__ import annotations
@@ -45,15 +51,27 @@ _MESSAGES = {
 
 
 class SandboxError(Exception):
-    """Only static, secret-free messages cross the runtime boundary."""
+    """Represent a bounded public execution error without exposing child diagnostics.
+
+    Unknown codes collapse to ``query_failed``; only the static message table is
+    permitted to cross the process boundary into service error handling.
+    """
 
     def __init__(self, code: str):
+        """Normalize ``code`` and attach its static, credential-free public message."""
         self.code = code if code in _MESSAGES else "query_failed"
         self.message = _MESSAGES[self.code]
         super().__init__(self.message)
 
 
 def _runtime() -> tuple[str, Path]:
+    """Resolve the pinned npm engine installation and a supported Node executable.
+
+    An explicit ``OUTAGE_SANDBOX_NODE_MODULES`` replaces automatic candidates.
+    Package metadata and required asset presence are checked here; the extension's
+    content hash is checked separately. Raise ``sandbox_unavailable`` on absence or
+    version mismatch. Operator-selected paths and installed JavaScript are trusted.
+    """
     node = shutil.which("node")
     configured = os.environ.get("OUTAGE_SANDBOX_NODE_MODULES")
     candidates = (
@@ -88,6 +106,11 @@ def _runtime() -> tuple[str, Path]:
 def _environment() -> dict[str, str]:
     # No PATH/NODE_OPTIONS, HOME, EIA key, Django key, database URL or cloud
     # credentials. Absolute executable and package paths remove PATH lookup.
+    """Build the minimal child environment without inherited application secrets.
+
+    Only locale/timezone/warning settings and required Windows runtime variables
+    are retained. Absolute executable and package paths avoid child PATH lookup.
+    """
     environment = {"TZ": "UTC", "LANG": "C.UTF-8", "NODE_NO_WARNINGS": "1"}
     if os.name == "nt":
         for name in ("SystemRoot", "WINDIR"):
@@ -98,6 +121,11 @@ def _environment() -> dict[str, str]:
 
 @lru_cache(maxsize=2)
 def _node_version(node: str) -> str:
+    """Return a cached supported Node version after a bounded, scrubbed probe.
+
+    Require major 24 and minor at least 13. Process, decoding and version failures
+    raise ``sandbox_unavailable``; this check does not execute an analytical query.
+    """
     try:
         result = subprocess.run(
             [node, "--version"], capture_output=True, timeout=2, env=_environment(), check=True
@@ -112,6 +140,13 @@ def _node_version(node: str) -> str:
 
 
 def runtime_status() -> dict[str, Any]:
+    """Describe pinned runtime availability without running submitted SQL.
+
+    Validate package/Node resolution and the packaged Parquet extension checksum.
+    Expose platform-specific resource descriptions, not a completed query or proof
+    of equivalent POSIX runtime acceptance. Known probe failures become a bounded
+    ``available: False`` result.
+    """
     try:
         node, _ = _runtime()
         with (ASSETS / "parquet-v1.5.4-wasm_eh.wasm").open("rb") as stream:
@@ -133,16 +168,29 @@ def runtime_status() -> dict[str, Any]:
 
 
 def is_available() -> bool:
+    """Return the runtime probe's availability flag, without an engine query."""
     return bool(runtime_status()["available"])
 
 
 class _WindowsJob:
-    """OS hard process/job memory and CPU lifetime, plus kill-on-close."""
+    """Own Windows child memory/CPU/process limits and kill-on-close behavior.
+
+    The Job Object caps process and job memory at 512 MiB, user CPU at six seconds,
+    and active processes at one. These OS limits are distinct from the engine's
+    linear-memory/V8 settings and the supervisor's wall-clock deadline.
+    """
 
     def __init__(self, process: subprocess.Popen[bytes]):
+        """Create a Job Object, configure its limits and assign the spawned child.
+
+        The local ctypes structures reproduce the Windows ABI. Failure closes the
+        handle and raises ``sandbox_unavailable``; the caller still owns process reaping.
+        """
         from ctypes import wintypes
 
         class BasicLimits(ctypes.Structure):
+            """Match JOBOBJECT_BASIC_LIMIT_INFORMATION field order and native widths."""
+
             _fields_ = [
                 ("PerProcessUserTimeLimit", ctypes.c_int64),
                 ("PerJobUserTimeLimit", ctypes.c_int64),
@@ -156,6 +204,8 @@ class _WindowsJob:
             ]
 
         class IoCounters(ctypes.Structure):
+            """Match the six unsigned 64-bit Windows IO_COUNTERS fields."""
+
             _fields_ = [
                 (name, ctypes.c_uint64)
                 for name in (
@@ -169,6 +219,8 @@ class _WindowsJob:
             ]
 
         class ExtendedLimits(ctypes.Structure):
+            """Match JOBOBJECT_EXTENDED_LIMIT_INFORMATION, including memory counters."""
+
             _fields_ = [
                 ("BasicLimitInformation", BasicLimits),
                 ("IoInfo", IoCounters),
@@ -207,12 +259,18 @@ class _WindowsJob:
             raise SandboxError("sandbox_unavailable")
 
     def close(self) -> None:
+        """Close the owned Job handle once; kill-on-close also terminates its child."""
         if self._handle:
             self._kernel.CloseHandle(self._handle)
             self._handle = None
 
 
 def _kill(process: subprocess.Popen[bytes]) -> None:
+    """Terminate a live child, or its POSIX process group, without reaping it.
+
+    A disappearing POSIX process group is harmless. Callers must still wait for the
+    process and release handles/pipes after this best-effort termination step.
+    """
     if process.poll() is None:
         if os.name == "nt":
             process.kill()
@@ -226,11 +284,22 @@ def _kill(process: subprocess.Popen[bytes]) -> None:
 def _capture(
     process: subprocess.Popen[bytes], payload: bytes, timeout: float, limit: int
 ) -> tuple[bytes, int]:
-    """Bound both pipes while the child runs; reap it after every outcome."""
+    """Write input and drain bounded child pipes while enforcing a wall deadline.
+
+    Stdout is retained; stderr is counted but discarded. Either pipe exceeding
+    ``limit`` terminates the child. Timeout raises ``query_timeout`` and overflow
+    raises ``result_too_large``. All outcomes wait for the process, join I/O helpers
+    with bounded waits, and close pipes; successful capture returns bytes/status.
+    """
     output = bytearray()
     overflow = threading.Event()
 
     def read(stream: Any, keep: bool) -> None:
+        """Drain one pipe, retaining only stdout while bounding both output streams.
+
+        Signal overflow and kill the child before unbounded output can accumulate.
+        Private stderr is deliberately discarded even when it remains within the cap.
+        """
         count = 0
         try:
             while chunk := stream.read(65536):
@@ -245,6 +314,11 @@ def _capture(
             return
 
     def write() -> None:
+        """Feed the complete framed payload and close stdin to delimit the request.
+
+        A child that exits early may break the pipe; its status/output remains the
+        supervisor's source of the execution outcome.
+        """
         try:
             process.stdin.write(payload)
             process.stdin.close()
@@ -287,6 +361,31 @@ def run_query(
     max_rows: int = MAX_ROWS,
     max_output_bytes: int = MAX_OUTPUT_BYTES,
 ) -> dict[str, Any]:
+    """Execute already-compiled SQL against one checksum-verified dataset file.
+
+    Args:
+        parquet_path: Server-selected immutable file; never supplied to the child.
+        dataset_id: Authorized logical view name created by trusted bootstrap.
+        sql: Regenerated SQL whose grammar and references the caller has checked.
+        expected_sha256: Published digest binding the file bytes to trusted metadata.
+        timeout_seconds: Remaining wall budget, including runtime/input preparation.
+        max_rows: Engine row ceiling, optionally including the caller's sentinel.
+        max_output_bytes: Upper bound for the child response and captured diagnostics.
+
+    Returns:
+        The bounded typed response after protocol/status validation. Decimal and
+        large-integer encodings are produced by the JavaScript worker.
+
+    Raises:
+        SandboxError: Invalid bounds, changed source, unavailable runtime, exhausted
+            resources/deadline, malformed response or a static worker error.
+
+    The whole file is read/hashed before engine execution, up to 64 MiB. Node's
+    trusted bootstrap reads only granted runtime assets; it receives no dataset
+    host path or inherited application credentials. The child is killed/reaped and
+    OS handles/pipes closed after every launched execution. No native fallback is
+    provided, and preflight may consume a short deadline before a child starts.
+    """
     started = time.monotonic()
     if (
         not isinstance(dataset_id, str)

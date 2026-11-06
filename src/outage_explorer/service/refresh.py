@@ -1,4 +1,11 @@
-"""Database-backed refresh queue consumed only by a separately invoked worker."""
+"""Queue durable Admin refresh requests and execute them in a separate worker.
+
+HTTP enqueueing never starts a thread or worker process. The management command owns the
+polling loop; RefreshWorker retains its control lock and injectable executor across jobs.
+Data-catalog raw/model publication and Django job completion are separate transactions, so an
+interrupted or failed job may already have published data. Operators must inspect
+authoritative publication history.
+"""
 
 from __future__ import annotations
 
@@ -25,39 +32,53 @@ LOG = logging.getLogger(__name__)
 
 
 class RefreshServiceError(Exception):
+    """Base category for safe refresh request failures, not an executable worker."""
+
     code = "refresh_error"
     public_message = "The refresh request could not be completed."
 
     def __init__(self) -> None:
+        """Initialize the exception with its category's safe public message."""
         super().__init__(self.public_message)
 
 
 class RefreshBusyError(RefreshServiceError):
+    """Report queue/database contention that a caller may retry later."""
+
     code = "refresh_busy"
     public_message = "The refresh queue is busy; retry the request shortly."
 
 
 class RefreshPermissionError(RefreshServiceError):
+    """Report that enqueueing requires a currently active product Admin."""
+
     code = "forbidden"
     public_message = "An active Admin account is required to refresh data."
 
 
 class RefreshValidationError(RefreshServiceError):
+    """Report an unsupported mode or malformed optional idempotency key."""
+
     code = "invalid_refresh_request"
     public_message = "Choose full or recent and provide a valid optional idempotency key."
 
 
 class IdempotencyConflictError(RefreshServiceError):
+    """Reject reusing an owner's key for a different extraction mode."""
+
     code = "idempotency_conflict"
     public_message = "This idempotency key was already used with another refresh mode."
 
 
 class WorkerAlreadyRunning(RefreshBusyError):
+    """Report ownership of the long-lived worker control lock by another worker."""
+
     code = "worker_already_running"
     public_message = "Another refresh worker holds the worker control lock."
 
 
 def _active_admin(user_id: Any) -> bool:
+    """Query current user activity and Admin persona rather than trusting stale state."""
     return (
         get_user_model()
         .objects.filter(pk=user_id, is_active=True, persona__role=Persona.Role.ADMIN)
@@ -66,7 +87,12 @@ def _active_admin(user_id: Any) -> bool:
 
 
 def enqueue_refresh(user, mode: str, idempotency_key: str | None = None):
-    """Insert under DB uniqueness constraints; no worker starts in this process."""
+    """Return (job, created) after durable enqueueing or owner/key replay.
+
+    Translate SQLite busy/locked failures to RefreshBusyError; propagate unrelated database
+    errors. The inner operation enforces current Admin, validated input and database
+    uniqueness. No ingestion or worker launch happens in this call.
+    """
     try:
         return _enqueue_refresh(user, mode, idempotency_key)
     except OperationalError as error:
@@ -77,6 +103,13 @@ def enqueue_refresh(user, mode: str, idempotency_key: str | None = None):
 
 
 def _enqueue_refresh(user, mode: str, idempotency_key: str | None):
+    """Validate an Admin request, replay a matching key or insert one queued job.
+
+    The owner/key constraint prevents duplicate enqueueing, while the active-job constraint
+    serializes queued/running requests globally. Handle insertion races by checking replay
+    again; a same-key different-mode request conflicts. Avoid a read inside the insertion
+    transaction so SQLite need not upgrade a read snapshot.
+    """
     if not getattr(user, "is_authenticated", False) or not _active_admin(user.pk):
         raise RefreshPermissionError
     if mode not in RefreshJob.Mode.values:
@@ -88,6 +121,11 @@ def _enqueue_refresh(user, mode: str, idempotency_key: str | None):
         raise RefreshValidationError
 
     def replay():
+        """Find this owner's existing key and reject a mode mismatch.
+
+        Close over validated user, mode and idempotency_key so the same replay logic can run
+        both before insertion and after a uniqueness race. No key means no replay.
+        """
         if idempotency_key is None:
             return None
         previous = RefreshJob.objects.filter(
@@ -118,7 +156,15 @@ def _enqueue_refresh(user, mode: str, idempotency_key: str | None):
 
 
 def perform_ingest(mode: str) -> dict[str, str]:
-    """Only the worker calls this credential boundary; no key file is read."""
+    """Download/build/publish data at the worker-only upstream credential boundary.
+
+    Read EIA_API_KEY from this process environment, invoke the normal ingestion pipeline and
+    resolve the model bound to its returned source snapshot. Another operator may publish
+    after the ingestion lock releases, so fall back to retained successful model history
+    rather than blindly returning the current model. Return snapshot_id/model_id/mode, or fail
+    if that matching publication cannot be verified. No key file is loaded and this function
+    does not finish the Django job row.
+    """
     api_key = os.environ.get("EIA_API_KEY", "").strip()
     client = EIAClient(api_key)
     manifest = ingest(IngestConfig(data_dir=Path(settings.OUTAGE_DATA_DIR), mode=mode), client)
@@ -143,6 +189,12 @@ def perform_ingest(mode: str) -> dict[str, str]:
 
 
 def _public_failure(error: Exception) -> tuple[str, str]:
+    """Map worker exception categories to safe public code/message pairs.
+
+    Discard raw upstream/storage/engine detail. Messages direct operators to publication
+    status because failure to record a job outcome does not roll back an already committed
+    data-catalog publication.
+    """
     if isinstance(error, EIAClientError):
         return (
             "upstream_refresh_failed",
@@ -157,14 +209,31 @@ def _public_failure(error: Exception) -> tuple[str, str]:
 
 
 class RefreshWorker:
-    """Hold an OS lock for the whole process lifetime, not a stale PID lease."""
+    """Retain one control-lock context and executor while processing queued jobs.
+
+    The Python object is not an OS process or a background thread: the separately launched
+    management command creates it and repeatedly calls run_once. The held OS lock identifies
+    the sole active worker and releases on context/process exit; database queue constraints
+    and the ingestion writer lock protect separate scopes.
+    """
 
     def __init__(self, *, executor: Callable[[str], dict[str, Any]] | None = None):
+        """Configure the injectable mode-to-result executor without starting any work.
+
+        Default to perform_ingest; keep lock/recovery state on the instance so the management
+        command can reuse it across multiple jobs within one context.
+        """
         self.executor = executor or perform_ingest
         self._lock = None
         self.recovered_count = 0
 
     def __enter__(self):
+        """Acquire sole-worker ownership before recovering abandoned running jobs.
+
+        Reject double entry and map an owned control lock to WorkerAlreadyRunning. Only after
+        acquisition mark previous running jobs interrupted; their data may already be
+        published. Release the lock if recovery fails, then return this worker.
+        """
         if self._lock is not None:
             raise RuntimeError("A refresh worker context cannot be entered twice.")
         self._lock = writer_lock(Path(settings.OUTAGE_STATE_DIR) / "refresh-worker-control")
@@ -190,11 +259,21 @@ class RefreshWorker:
         return self
 
     def __exit__(self, exc_type, exc, traceback):
+        """Release the control-lock context on normal exit or propagated exceptions."""
         if self._lock is not None:
             self._lock.__exit__(exc_type, exc, traceback)
             self._lock = None
 
     def run_once(self) -> RefreshJob | None:
+        """Claim and process at most one oldest queued job while the control lock is held.
+
+        Return None if no job is available/claimed. Recheck the owner's current Admin status
+        before execution, invoke the executor and validate the result-ID shape. Record success,
+        safe failure or interruption; interruption is re-raised for the command to stop.
+        Successful jobs trigger best-effort cache cleanup, while generation-bound keys prevent
+        stale reuse if deletion fails. Revocation after extraction starts does not cancel
+        ingestion. This method does not poll or loop.
+        """
         if self._lock is None:
             raise RuntimeError("The refresh worker control lock must be held.")
         job = RefreshJob.objects.filter(status="queued").order_by("created_at", "id").first()
@@ -253,6 +332,12 @@ class RefreshWorker:
 
     @staticmethod
     def _finish(job, status, *, error_code="", message="", result=None):
+        """Persist a terminal outcome for the given running job and refresh its object.
+
+        This static method needs only job/status arguments, not retained worker state. Update
+        the Django row and log a safe event; it cannot atomically commit or undo the separate
+        data-catalog publication.
+        """
         RefreshJob.objects.filter(pk=job.pk, status="running").update(
             status=status,
             finished_at=timezone.now(),

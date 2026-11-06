@@ -1,3 +1,11 @@
+/**
+ * @module app
+ * Compose the browser workspace, immutable model pin and session lifecycle.
+ *
+ * Controllers share one catalog/model and one tab-local analytical queue. A new
+ * publication is a candidate until explicitly adopted. Persisted actor policy
+ * remains server-owned; client disposal and shields limit stale private state.
+ */
 import { ApiClient, AnalyticalQueue } from './api.js';
 import { byId, setText, visible, element, showError, dateLabel } from './dom.js';
 import { OverviewController } from './overview.js';
@@ -5,7 +13,14 @@ import { ExploreController } from './explore.js';
 import { SqlController, clearPrivateHistory } from './sql.js';
 import { RefreshController } from './refresh.js';
 
+/**
+ * Own shared model/catalog state, navigation and browser session disposal.
+ */
 export class Workspace {
+  /**
+   * Bind controllers to the identity-only bootstrap and install lifecycle listeners.
+   * @param {Object} scope Username, persona and opaque server session scope.
+   */
   constructor(scope) {
     this.scope = scope;
     this.ended = false;
@@ -15,6 +30,7 @@ export class Workspace {
     this.client = new ApiClient({
       onSessionLost: (error) => this.expire(error.status === 403 ? 'permissions' : 'expired'),
     });
+    // Shared closures read current workspace state; controllers never retain a second actor authority.
     const context = {
       scope,
       client: this.client,
@@ -61,6 +77,7 @@ export class Workspace {
     } catch {
       /* Focus and visibility checks cover browsers without BroadcastChannel. */
     }
+    // A restored document can retain private pixels even with no-store; confirm before revealing it.
     window.addEventListener('pageshow', (event) => {
       if (event.persisted) this.checkSession(true);
     });
@@ -74,6 +91,9 @@ export class Workspace {
     this.route(false);
   }
 
+  /**
+   * Bootstrap CSRF and the authorized catalog, preserving a retryable loading failure.
+   */
   async init() {
     visible('global-notice', false);
     try {
@@ -89,6 +109,10 @@ export class Workspace {
     }
   }
 
+  /**
+   * Adopt one validated model for every analytical controller and invalidate prior work.
+   * @param {Object} catalog Server-authorized metadata for one immutable model.
+   */
   configure(catalog) {
     if (!catalog || !/^[0-9a-f]{32}$/.test(catalog.model_id) || !Array.isArray(catalog.datasets))
       throw new Error('The dataset catalog could not be loaded.');
@@ -105,12 +129,23 @@ export class Workspace {
     if (catalog.warnings?.length) this.notice(catalog.warnings.join(' '));
   }
 
+  /**
+   * Synchronize mobile navigation visibility with its expanded accessibility state.
+   * @param {boolean} [value] Explicit open state, or toggle when omitted.
+   */
   toggleNav(value) {
     const opened = value ?? !document.body.classList.contains('nav-open');
     document.body.classList.toggle('nav-open', opened);
     byId('nav-toggle').setAttribute('aria-expanded', opened ? 'true' : 'false');
   }
 
+  /**
+   * Select an allowed hash view, update navigation/focus and activate its controller.
+   *
+   * Persona-based markup/navigation is a usability restriction; API actor policy
+   * remains the permission boundary even if browser state is manipulated.
+   * @param {boolean} focus Whether navigation should move focus to the page heading.
+   */
   route(focus) {
     if (this.ended) return;
     const requested = location.hash.slice(1) || 'overview';
@@ -166,6 +201,10 @@ export class Workspace {
     if (this.view === 'refresh') this.refresh.load();
   }
 
+  /**
+   * Announce a workspace status using text-only DOM content.
+   * @param {string} message Safe status text.
+   */
   notice(message) {
     const container = byId('global-notice');
     container.replaceChildren(element('p', 'state-message', message));
@@ -173,9 +212,15 @@ export class Workspace {
     container.hidden = false;
   }
 
+  /**
+   * Coalesce freshness checks and store a newer catalog as a candidate, without adopting it.
+   *
+   * A failed check leaves the active immutable investigation usable.
+   */
   async checkLatest() {
     if (this.ended || !this.catalog) return;
     if (this.latestPromise) return this.latestPromise;
+    // Deduplicate overlapping freshness checks without switching the active investigation.
     this.latestPromise = (async () => {
       try {
         const latest = await this.client.request('/catalog');
@@ -193,6 +238,9 @@ export class Workspace {
     return this.latestPromise;
   }
 
+  /**
+   * Explicitly adopt a candidate publication and reset all model-dependent controller work.
+   */
   async applyLatest() {
     await this.checkLatest();
     if (this.ended) return;
@@ -207,8 +255,17 @@ export class Workspace {
     this.refresh?.render();
   }
 
+  /**
+   * Confirm the persisted session scope before revealing restored private content.
+   *
+   * A protective focus/restore check escalates an already-running background
+   * check. Unknown network outcomes keep the shield; unchanged username/persona
+   * is insufficient when the actual server session has been replaced.
+   * @param {boolean} protectContent Hide content while confirmation is pending.
+   */
   async checkSession(protectContent) {
     if (this.ended || !this.catalog) return;
+    // Latch protection before the in-flight check guard so focus can escalate a background check.
     if (protectContent) {
       this.protectSessionCheck = true;
       byId('app-root').hidden = true;
@@ -241,6 +298,11 @@ export class Workspace {
     }
   }
 
+  /**
+   * Hide the workspace and focus a safe retry action while access is unconfirmed.
+   * @param {string} message Explanation of the unresolved operation.
+   * @param {function(): *} retry Explicit confirmation retry.
+   */
   shield(message, retry) {
     byId('app-root').hidden = true;
     let shield = byId('session-shield');
@@ -259,6 +321,11 @@ export class Workspace {
     shield.append(button);
     button.focus();
   }
+  /**
+   * End controller lifetimes and clear rendered rows, drafts, history, timers and catalogs.
+   *
+   * Already observed information or downloaded exports cannot be remotely erased.
+   */
   clearSensitive() {
     this.ended = true;
     clearInterval(this.sessionTimer);
@@ -271,11 +338,20 @@ export class Workspace {
     this.catalog = null;
     this.candidate = null;
   }
+  /**
+   * Dispose private state once and replace navigation with the fixed login destination.
+   * @param {string} reason Known noncredential status reason for login presentation.
+   */
   expire(reason) {
     if (this.ended) return;
     this.clearSensitive();
     location.replace(`/login/?reason=${reason}`);
   }
+  /**
+   * Clear private content before logout, then confirm the server outcome or retain a retry shield.
+   *
+   * An unknown network response never becomes a claim that server logout succeeded.
+   */
   async signOut() {
     if (this.signingOut) return;
     this.signingOut = true;

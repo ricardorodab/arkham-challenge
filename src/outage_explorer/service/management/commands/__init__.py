@@ -1,1 +1,1 @@
-"""Explicit operational commands; none is launched by an HTTP request."""
+"""Expose seed_users and run_refresh_worker to Django command discovery."""

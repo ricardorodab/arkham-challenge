@@ -1,4 +1,4 @@
-<!doctype html>
+{# Public shell in the same Django project as /api/v1; login.js performs CSRF-protected JSON authentication. #}<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -20,7 +20,7 @@
       <div class="login-intro-footer"><span class="small-orbit" aria-hidden="true"></span><span>Built on published U.S. EIA observations</span></div>
     </aside>
     <main id="login-main" class="login-main" tabindex="-1"><div class="login-card"><div class="login-card-heading"><p class="eyebrow">Your workspace</p><h1>Welcome back.</h1><p>Sign in to explore the published data.</p></div><noscript><div class="notice notice-error" role="alert">JavaScript is required to sign in securely. Enable JavaScript and reload this page.</div></noscript><div id="login-error" class="notice notice-error" role="alert" hidden></div>
-      <form id="login-form" method="post" action="/login/">
+{# Same-origin POST action avoids credentials in a URL; the GET-only HTML route is not a non-JavaScript login endpoint. #}      <form id="login-form" method="post" action="/login/">
         {% csrf_token %}
         <label class="field login-field" for="username"><span>Username</span><input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="150" required></label>
         <div class="field login-field"><label for="password">Password</label><span class="password-control"><input id="password" name="password" type="password" autocomplete="current-password" maxlength="1024" required><button id="login-toggle-password" class="password-toggle" type="button" aria-controls="password" aria-pressed="false">Show</button></span></div>

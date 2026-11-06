@@ -1,4 +1,8 @@
-"""Consume durable refresh jobs in a dedicated process, never an API thread."""
+"""Poll durable refresh jobs in a separately launched Django management process.
+
+The HTTP endpoint only enqueues jobs. This command owns the loop around the stateful
+RefreshWorker context, sanitized worker logs and signal cleanup.
+"""
 
 import json
 import logging
@@ -13,14 +17,24 @@ from outage_explorer.service.refresh import RefreshWorker, WorkerAlreadyRunning
 
 
 class Command(BaseCommand):
+    """Run the sole refresh consumer, or consume at most one job with --once."""
+
     help = "Run the single refresh worker; --once processes at most one queued job."
     requires_system_checks = []
 
     def add_arguments(self, parser):
+        """Declare one-job mode and a bounded idle polling interval."""
         parser.add_argument("--once", action="store_true")
         parser.add_argument("--poll-interval", type=float, default=0.5)
 
     def handle(self, *args, **options):
+        """Hold worker ownership while polling run_once and reporting safe job outcomes.
+
+        Validate the poll interval, install interruption handlers only on the main thread, and
+        restore prior handlers on exit. Wait only when idle; --once exits after one attempt
+        even if the queue is empty. Worker context cleanup releases the OS control lock;
+        Ctrl+C is reported as stopped, not as an ingestion rollback.
+        """
         for handler in logging.getLogger("outage_explorer").handlers:
             handler.setFormatter(JsonLogFormatter(os.environ.get("EIA_API_KEY", "").strip()))
         interval = options["poll_interval"]
@@ -29,6 +43,11 @@ class Command(BaseCommand):
         previous_handlers = {}
 
         def interrupted(signum, frame):
+            """Translate process termination signals into the worker's interruption path.
+
+            The enclosing command temporarily installs this callback and restores previous
+            handlers in finally. The active worker can then record interruption and unwind.
+            """
             raise KeyboardInterrupt
 
         if threading.current_thread() is threading.main_thread():

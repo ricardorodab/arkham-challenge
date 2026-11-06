@@ -1,13 +1,37 @@
-/** Rendering helpers accept text, never server-supplied HTML. */
+/**
+ * @module dom
+ * Text-only DOM construction, explicit view states and scalar presentation.
+ *
+ * Exact API numeric strings are formatted without Number coercion in tables.
+ * Calendar dates use UTC arithmetic; numberLabel is for approximate display.
+ * These helpers provide presentation, never dataset or SQL authorization.
+ */
+/**
+ * Resolve a DOM binding by its stable template identifier.
+ * @param {string} id Element ID.
+ * @returns {HTMLElement|null} Matching element, if mounted.
+ */
 export const byId = (id) => document.getElementById(id);
+/**
+ * Update an existing binding with text only, avoiding a redundant DOM mutation.
+ */
 export function setText(id, value) {
   const node = byId(id);
   if (node && node.textContent !== String(value ?? '')) node.textContent = value ?? '';
 }
+/**
+ * Synchronize the hidden attribute for an element or template ID.
+ * @param {string|HTMLElement} id Binding or element.
+ * @param {boolean} [value=true] Desired visibility.
+ */
 export function visible(id, value = true) {
   const node = typeof id === 'string' ? byId(id) : id;
   if (node) node.hidden = !value;
 }
+/**
+ * Create a detached HTML element; optional external content is always text.
+ * @returns {HTMLElement} Element with trusted tag/class structure.
+ */
 export function element(tag, className = '', text = null) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -15,6 +39,12 @@ export function element(tag, className = '', text = null) {
   return node;
 }
 
+/**
+ * Select one loading/error/empty/content branch and synchronize aria-busy.
+ * @param {string} prefix Template state-group prefix.
+ * @param {string} kind Desired branch.
+ * @param {Error|null} [error] Optional safe error presentation.
+ */
 export function state(prefix, kind, error = null) {
   for (const value of ['loading', 'error', 'empty', 'content'])
     visible(`${prefix}-${value}`, kind === value);
@@ -23,6 +53,11 @@ export function state(prefix, kind, error = null) {
   if (kind === 'error' && error) showError(`${prefix}-error`, error);
 }
 
+/**
+ * Render safe denial/busy/failure text, request correlation and optional retry action.
+ *
+ * Messages become text nodes; raw server HTML is never interpreted.
+ */
 export function showError(id, error, retry = null) {
   const node = byId(id);
   if (!node) return;
@@ -63,6 +98,9 @@ const TITLES = {
   national_reconciliation_daily: 'National reconciliation',
   data_quality_events: 'Data quality events',
 };
+/**
+ * Choose a known dataset label without inheriting Object prototype properties.
+ */
 export const datasetTitle = (id) =>
   Object.hasOwn(TITLES, id) ? TITLES[id] : id.replaceAll('_', ' ');
 const COLUMN_TITLES = {
@@ -78,20 +116,36 @@ const COLUMN_TITLES = {
   quality_flags: 'Quality flags',
   source_row_hash: 'Source fingerprint',
 };
+/**
+ * Choose a known column label while preserving prototype-like valid SQL aliases.
+ */
 export const columnTitle = (name) =>
   Object.hasOwn(COLUMN_TITLES, name) ? COLUMN_TITLES[name] : name.replaceAll('_', ' ');
 
+/**
+ * Validate an ISO calendar date by UTC round-trip, rejecting overflowed dates.
+ * @returns {Date|null} UTC midnight or null; no local-zone date conversion.
+ */
 export function isoDate(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
   const date = new Date(`${value}T00:00:00Z`);
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value ? date : null;
 }
+/**
+ * Shift an ISO date using UTC calendar arithmetic across DST and month boundaries.
+ * @returns {string} Shifted ISO date.
+ * @throws {Error} Invalid starting calendar date.
+ */
 export function addDays(value, days) {
   const date = isoDate(value);
   if (!date) throw new Error('Choose a valid calendar date.');
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
+/**
+ * Return the inclusive UTC day count for a valid ascending date range.
+ * @throws {Error} Invalid dates or reversed bounds.
+ */
 export function dayCount(start, end) {
   const first = isoDate(start),
     last = isoDate(end);
@@ -99,6 +153,9 @@ export function dayCount(start, end) {
     throw new Error('Choose a valid date range with the start on or before the end.');
   return Math.round((last - first) / 86400000) + 1;
 }
+/**
+ * Format a validated observation date in UTC; invalid/missing dates use a placeholder.
+ */
 export function dateLabel(value, options = {}) {
   const date = isoDate(value);
   return date
@@ -111,6 +168,11 @@ export function dateLabel(value, options = {}) {
       }).format(date)
     : '—';
 }
+/**
+ * Format an approximate presentation number for cards/coordinates, not canonical storage.
+ * @param {*} value Scalar convertible to a finite Number.
+ * @param {number} [digits=1] Fixed displayed fractional digits.
+ */
 export const numberLabel = (value, digits = 1) =>
   value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
     ? new Intl.NumberFormat('en-US', {
@@ -118,11 +180,20 @@ export const numberLabel = (value, digits = 1) =>
         minimumFractionDigits: digits,
       }).format(Number(value))
     : '—';
+/**
+ * Classify supported SQL numeric type names for alignment and scalar presentation.
+ */
 export const numericType = (type) =>
   /^(?:U?(?:TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT)|INT\d*|DECIMAL|NUMERIC|DOUBLE|FLOAT|REAL)/i.test(
     type,
   );
 
+/**
+ * Format exact numeric strings by string operations, retaining their mathematical value.
+ *
+ * Trailing zeros/group separators are presentation only. Never coerce a database
+ * decimal or 64-bit integer string to Number for table/export processing.
+ */
 export function scalarLabel(value, type = '') {
   if (value === null || value === undefined) return '—';
   if (typeof value === 'boolean') return value ? 'True' : 'False';
@@ -135,6 +206,9 @@ export function scalarLabel(value, type = '') {
   return String(value);
 }
 
+/**
+ * Populate choices solely from the authorized catalog and retain a permitted selection.
+ */
 export function fillDatasets(select, datasets, selected) {
   select.replaceChildren();
   for (const dataset of datasets) {
@@ -146,6 +220,11 @@ export function fillDatasets(select, datasets, selected) {
   select.disabled = !datasets.length;
 }
 
+/**
+ * Render column/type/key/unit metadata with optional quoted-identifier insertion.
+ *
+ * This callback assists editing; it neither parses SQL nor grants permissions.
+ */
 export function schema(container, dataset, onInsert = null) {
   container.replaceChildren();
   for (const [name, type] of dataset.schema) {

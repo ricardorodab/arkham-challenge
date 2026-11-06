@@ -1,3 +1,11 @@
+/**
+ * @module sql
+ * Manage SQL drafts, bounded result pages and session-scoped text history.
+ *
+ * The backend owns parsing, permissions, execution and row/resource limits.
+ * Client schema insertion quotes identifiers only. Executed request state is
+ * separate from edited text, and no result rows are persisted in browser storage.
+ */
 import { ApiError, StaleRequest, verifyPage } from './api.js';
 import {
   byId,
@@ -13,13 +21,24 @@ import {
 import { renderTable, exportPage } from './table.js';
 
 export const HISTORY_PREFIX = 'outage-explorer:history:';
+/**
+ * Remove this application's other history scopes without clearing unrelated browser storage.
+ * @param {Storage} storage Usually sessionStorage.
+ * @param {string|null} [keepKey] Exact current scope to preserve on same-session reload.
+ */
 export function retireHistoryScopes(storage, keepKey = null) {
   for (let index = storage.length - 1; index >= 0; index--) {
     const key = storage.key(index);
     if (key?.startsWith(HISTORY_PREFIX) && key !== keepKey) storage.removeItem(key);
   }
 }
+/**
+ * Quote a SQL identifier by doubling embedded quotes; this does not validate SQL syntax.
+ */
 export const quoteIdentifier = (value) => `"${String(value).replaceAll('"', '""')}"`;
+/**
+ * Build a supported single-source example from permitted schema and full primary-key order.
+ */
 export function exampleSql(dataset) {
   const names = dataset.schema.map((column) => column[0]);
   const preferred = [
@@ -38,6 +57,13 @@ export function exampleSql(dataset) {
   return `SELECT ${projection}\nFROM ${quoteIdentifier(dataset.id)}\nORDER BY ${ordering}\nLIMIT 100`;
 }
 
+/**
+ * Retain at most ten permitted history entries, with a bounded SQL-text length.
+ *
+ * Copy only expected text/status/timestamp fields; discard result-row, credential
+ * and other unexpected properties. SQL text itself is not scrubbed for secrets,
+ * and the timestamp's string length is not bounded here.
+ */
 export function cleanHistory(value, allowedIds) {
   if (!Array.isArray(value)) return [];
   return value
@@ -59,6 +85,9 @@ export function cleanHistory(value, allowedIds) {
     }));
 }
 
+/**
+ * Best-effort removal of all scoped query text; callers clear in-memory state separately.
+ */
 export function clearPrivateHistory() {
   try {
     retireHistoryScopes(sessionStorage);
@@ -67,7 +96,13 @@ export function clearPrivateHistory() {
   }
 }
 
+/**
+ * Own per-dataset drafts, captured executions, capped cursor pages and scoped query history.
+ */
 export class SqlController {
+  /**
+   * Bind SQL controls and retire obsolete server-session storage scopes before reading history.
+   */
   constructor(context) {
     this.context = context;
     this.sequence = 0;
@@ -125,9 +160,15 @@ export class SqlController {
     byId('sql-load-history').addEventListener('click', () => this.restoreHistory());
   }
 
+  /**
+   * Resolve the selected source from the pinned authorized catalog, not a local role matrix.
+   */
   dataset() {
     return this.catalog?.datasets.find((dataset) => dataset.id === byId('sql-dataset').value);
   }
+  /**
+   * Invalidate old results, preserve compatible drafts and restore only currently permitted history.
+   */
   configure(catalog) {
     if (this.selected) this.drafts.set(this.selected, byId('sql-editor').value);
     this.catalog = catalog;
@@ -151,6 +192,10 @@ export class SqlController {
     this.selectDataset();
   }
 
+  /**
+   * Switch source without executing text, restoring its draft/example and identifier suggestions.
+   * @param {string|null} [draft] Explicit text loaded from current-session history.
+   */
   selectDataset(draft = null) {
     if (this.selected) this.drafts.set(this.selected, byId('sql-editor').value);
     this.selected = byId('sql-dataset').value;
@@ -176,12 +221,18 @@ export class SqlController {
     this.updatePager();
   }
 
+  /**
+   * Insert one quoted schema identifier at the editor selection and invalidate incompatible paging.
+   */
   insert(name) {
     const editor = byId('sql-editor');
     editor.setRangeText(quoteIdentifier(name), editor.selectionStart, editor.selectionEnd, 'end');
     editor.focus();
     this.updatePager();
   }
+  /**
+   * Accept only a selected catalog identifier; completion is insertion assistance, not SQL validation.
+   */
   complete() {
     const value = byId('sql-complete').value.trim();
     const dataset = this.dataset();
@@ -195,6 +246,11 @@ export class SqlController {
     byId('sql-complete').value = '';
   }
 
+  /**
+   * Validate a nonempty bounded draft, capture SQL/caps/model and reset the result cursor chain.
+   *
+   * Backend compilation, actor policy and execution limits remain authoritative.
+   */
   run() {
     if (!this.catalog || !this.dataset()) {
       state('sql', 'error', new Error('Load the dataset catalog before running a query.'));
@@ -209,6 +265,7 @@ export class SqlController {
       state('sql', 'error', new Error('Keep the query within 16 KiB.'));
       return;
     }
+    // Freeze the question for paging/history; editing the draft does not mutate an in-flight payload.
     this.applied = {
       dataset_id: byId('sql-dataset').value,
       sql,
@@ -221,10 +278,17 @@ export class SqlController {
     this.send(0);
   }
 
+  /**
+   * Request a page of the same capped execution and discard replies from obsolete generations.
+   *
+   * Captured applied text labels the result/history; edits do not change what an
+   * in-flight request means. Only the first page records one success/error history entry.
+   */
   async send(page) {
     if (!this.applied || page < 0 || (page > 0 && !this.cursors[page])) return;
     const applied = { ...this.applied },
       sequence = ++this.sequence;
+    // Captured execution identity remains independent of editable SQL and result-cap controls.
     const isCurrent = () =>
       this.context.alive() &&
       sequence === this.sequence &&
@@ -275,6 +339,9 @@ export class SqlController {
     }
   }
 
+  /**
+   * Compare edited text/caps with the displayed execution and disable incompatible continuation.
+   */
   updatePager() {
     const changed =
       this.applied &&
@@ -299,6 +366,11 @@ export class SqlController {
       );
   }
 
+  /**
+   * Store a deduplicated ten-entry text/status history in the actual server-session scope.
+   *
+   * Storage failure degrades to memory-only history; no result rows are persisted.
+   */
   saveHistory(applied, status) {
     this.history = [
       {
@@ -318,6 +390,9 @@ export class SqlController {
     }
     this.renderHistory();
   }
+  /**
+   * Render text-only summaries of current-session queries without executing their text.
+   */
   renderHistory() {
     const select = byId('sql-history');
     select.replaceChildren();
@@ -336,6 +411,9 @@ export class SqlController {
     });
     byId('sql-load-history').disabled = !this.history.length;
   }
+  /**
+   * Load one retained query into its source draft and focus the editor, without running it.
+   */
   restoreHistory() {
     const index = byId('sql-history').value;
     if (index === '' || !this.history[Number(index)]) return;
@@ -344,6 +422,9 @@ export class SqlController {
     this.selectDataset(entry.sql);
     byId('sql-editor').focus();
   }
+  /**
+   * Invalidate pending render work and clear captured execution, rendered results and pager state.
+   */
   invalidate() {
     this.sequence++;
     this.working = false;
@@ -352,6 +433,9 @@ export class SqlController {
     byId('sql-table').replaceChildren();
     this.updatePager();
   }
+  /**
+   * Clear query results, drafts, editor text and scoped history on workspace/session disposal.
+   */
   dispose() {
     this.invalidate();
     this.history = [];

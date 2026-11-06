@@ -1,3 +1,10 @@
+"""Map versioned JSON routes to service.views transport adapters.
+
+Authentication, methods and dataset permissions are enforced by view decorators and shared
+services rather than by route naming. /api/v1/openapi.json serves the single packaged contract
+behind sign-in; no Swagger UI route is defined here.
+"""
+
 from django.urls import path
 
 from . import views

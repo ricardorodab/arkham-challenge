@@ -1,3 +1,6 @@
+// Browser acceptance uses one fresh synthetic service, one worker and no retries.
+// Explicit output paths intentionally create new work/ artifacts; they are not
+// links to the preserved historical work archive. Never reuse an operator server.
 'use strict';
 
 const { defineConfig } = require('@playwright/test');

@@ -1,6 +1,18 @@
+/**
+ * @module chart
+ * Render the stored fleet metric as an SVG presentation.
+ *
+ * Coordinate arithmetic is approximate; packets retain exact scalar strings for
+ * tables and export. Missing dates and undefined values split segments, while
+ * observed zero remains a plotted value. No authoritative metric is recomputed.
+ */
 import { dateLabel, isoDate, numberLabel } from './dom.js';
 
 const NS = 'http://www.w3.org/2000/svg';
+/**
+ * Create an SVG namespace element with attributes and optional text-only content.
+ * @returns {SVGElement} Detached element for the trusted chart structure.
+ */
 function svgNode(tag, attrs = {}, text = null) {
   const node = document.createElementNS(NS, tag);
   for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value);
@@ -8,6 +20,11 @@ function svgNode(tag, attrs = {}, text = null) {
   return node;
 }
 
+/**
+ * Extract sorted dated metric points while retaining each exact original scalar.
+ * @param {Object} data Typed fleet_daily positional packet.
+ * @returns {Array<Object>} Calendar points with approximate Number coordinates and exact text.
+ */
 export function chartPoints(data) {
   const columns = data.columns.map((column) => column.name);
   const period = columns.indexOf('period'),
@@ -22,6 +39,12 @@ export function chartPoints(data) {
     .sort((a, b) => a.period.localeCompare(b.period));
 }
 
+/**
+ * Split a sorted series at missing calendar days and undefined/nonfinite values.
+ *
+ * Zero is a valid observation, and no missing value is interpolated or filled.
+ * @returns {Array<Array<Object>>} Consecutive defined segments.
+ */
 export function contiguousSegments(points) {
   const groups = [];
   let current = [],
@@ -40,7 +63,17 @@ export function contiguousSegments(points) {
   return groups;
 }
 
-/** A visualization of the stored metric; missing days/undefined ratios break the line. */
+/**
+ * Replace the SVG presentation of the stored metric for a complete bounded period.
+ *
+ * The exact semantic table is maintained separately by the overview controller.
+ * The pointer-only tooltip is aria-hidden; title/description describe gaps and
+ * the table alternative. Outlying representable values are not clipped to 100%.
+ * @param {Element} container Chart mount.
+ * @param {Object} data Validated typed metric packet.
+ * @param {string} start Inclusive ISO calendar date.
+ * @param {string} end Inclusive ISO calendar date.
+ */
 export function renderChart(container, data, start, end) {
   container.replaceChildren();
   const points = chartPoints(data),
@@ -64,6 +97,7 @@ export function renderChart(container, data, start, end) {
   const lower = Math.floor(minimum / step) * step;
   const first = isoDate(start).getTime(),
     last = isoDate(end).getTime();
+  // Coordinate closures use the selected calendar period, including dates without observations.
   const x = (point) =>
     plot.left +
     (last === first ? 0.5 : (isoDate(point.period).getTime() - first) / (last - first)) *
@@ -157,6 +191,7 @@ export function renderChart(container, data, start, end) {
   bubble.append(box, label, amount);
   tooltip.append(marker, dot, bubble);
   svg.append(tooltip);
+  // This hover affordance is supplementary; the exact table supplies keyboard-accessible observations.
   svg.addEventListener('pointermove', (event) => {
     const rectangle = svg.getBoundingClientRect(),
       position = ((event.clientX - rectangle.left) / rectangle.width) * width;

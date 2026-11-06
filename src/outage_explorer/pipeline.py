@@ -1,4 +1,11 @@
-"""Extract, validate and atomically publish all three source grains together."""
+"""Extract all three EIA grains and publish a coherent raw/model generation.
+
+Route work stages typed files and replaces refresh intervals without editing
+published snapshots. The writer lock spans recovery through candidate preparation;
+one data-catalog transaction advances raw/model references after validation. Live
+EIA pagination and the separate application's refresh-job transaction are outside
+that atomic publication boundary.
+"""
 
 from __future__ import annotations
 
@@ -38,6 +45,14 @@ LOG = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class IngestConfig:
+    """Define an immutable extraction scope and local execution policy.
+
+    ``recent`` uses stored route watermarks with a 30-day correction overlap; bounded
+    ``full`` replaces only its interval, while unbounded ``full`` replaces history.
+    ``workers`` overlaps routes, never pages within one route. ``record_responses``
+    enables sanitized evidence under the run directory.
+    """
+
     data_dir: Path = Path("data")
     mode: str = "recent"
     start: date | None = None
@@ -47,6 +62,11 @@ class IngestConfig:
     record_responses: bool = False
 
     def __post_init__(self) -> None:
+        """Reject invalid modes, date combinations, page sizes or worker counts.
+
+        An explicit start requires full mode; the route metadata later bounds actual
+        intervals. Raise ``ValueError`` before any extraction starts.
+        """
         if self.mode not in {"full", "recent"}:
             raise ValueError("Mode must be full or recent.")
         if self.start and self.mode != "full":
@@ -58,10 +78,18 @@ class IngestConfig:
 
 
 def utc_now() -> str:
+    """Return an aware UTC ISO timestamp for operational records."""
     return datetime.now(UTC).isoformat()
 
 
 def write_json(path: Path, value: Any) -> None:
+    """Write canonical UTF-8 JSON with a newline, flush and fsync the file.
+
+    Create parent directories as needed and overwrite the target. The caller must
+    supply sanitized, JSON-native content and a suitable staging/diagnostic path.
+    This is a durable file write, not an atomic publication or rename operation;
+    serialization and filesystem errors propagate.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as stream:
         stream.write(canonical_json(value) + "\n")
@@ -70,6 +98,12 @@ def write_json(path: Path, value: Any) -> None:
 
 
 def _sync_directory(path: Path) -> None:
+    """Fsync a directory on POSIX; perform no directory sync on Windows.
+
+    Call after staging writes or rename to strengthen filesystem durability where
+    supported. Filesystem errors propagate; no universal power-loss guarantee is
+    implied for platforms without portable directory synchronization.
+    """
     # Windows does not expose POSIX directory fsync. SQLite FULL still protects
     # the publication transaction; power-loss guarantees are OS/filesystem-specific.
     if os.name != "nt":
@@ -81,11 +115,13 @@ def _sync_directory(path: Path) -> None:
 
 
 def _sha256(path: Path) -> str:
+    """Return the SHA-256 of file bytes, propagating filesystem errors."""
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def _json_value(value: Any) -> Any:
+    """Normalize dates and Decimals for typed staging JSON without float coercion."""
     return (
         value.isoformat()
         if isinstance(value, date)
@@ -98,6 +134,13 @@ def _json_value(value: Any) -> Any:
 def _bounds(
     config: IngestConfig, meta: RouteMetadata, prior: dict[str, Any] | None
 ) -> tuple[date, date]:
+    """Calculate one route's inclusive extraction interval from config and metadata.
+
+    Recent runs with prior data start at watermark minus 29 days, bounded by source
+    start; the first run backfills. End is the lesser of metadata/requested end.
+    Reject coverage regression or an empty overlap with ``EIAClientError`` before
+    page requests. A recent window cannot discover corrections older than it.
+    """
     start = max(meta.start_period, config.start or meta.start_period)
     if prior:
         watermark = date.fromisoformat(prior["watermark"])
@@ -130,6 +173,19 @@ def _extract(
     recording: Path | None,
     cancelled: threading.Event,
 ) -> dict[str, Any]:
+    """Populate typed incoming/clean staging tables from one paginated extraction.
+
+    Validate sanitized rows and stage one page at a time through explicit JSON types
+    so text IDs and Decimal precision survive DuckDB loading. Collapse identical
+    key/hash duplicates; reject empty extraction or conflicting keys. Return page,
+    row, additive-field and observed-date counts. ``table`` and the connection are
+    application-owned; the tables remain available to the caller.
+
+    Optional recordings contain sanitized page evidence. The page scratch file is
+    removed on exit; created tables and recordings may remain on failure. Cancellation
+    is checked between pages, not inside an active HTTP request. Domain, source,
+    DuckDB and filesystem errors propagate to the enclosing ingestion run.
+    """
     columns = ",".join(f"{identifier(name)} {kind}" for name, kind in spec.columns)
     con.execute(f"CREATE TABLE {table} ({columns})")
     schema = "{" + ",".join(f"'{name}':'{kind}'" for name, kind in spec.columns) + "}"
@@ -199,6 +255,12 @@ def _extract(
 def _logical_summary(
     con: duckdb.DuckDBPyConnection, table: str, spec: RouteSpec
 ) -> tuple[str, dict[str, Any]]:
+    """Hash source-row fingerprints in key order and count retained quality flags.
+
+    Return the ordered logical SHA-256 and per-flag/flagged-row counts for a trusted
+    staging table. Reuse of canonical source hashes makes comparisons include names
+    and additive fields, rather than only numeric measures. No table is modified.
+    """
     digest = hashlib.sha256()
     counts: Counter[str] = Counter()
     flagged = 0
@@ -223,6 +285,18 @@ def _route(
     run_dir: Path,
     cancelled: threading.Event,
 ) -> dict[str, Any]:
+    """Prepare one route's replacement dataset and manifest entry without publishing.
+
+    Use a route-local one-thread DuckDB staging database. Unbounded full extraction
+    replaces history; all other scopes replace only the refreshed interval. Confirm
+    proposed deletions with a second independently paginated logical digest. Reject
+    missing advertised boundaries, but retain interior gaps and semantic flags.
+
+    Write sorted ZSTD Parquet, fsync it, and return counts, hashes, coverage, drift and
+    fetch provenance. Remove the temporary DuckDB files best-effort; candidate files
+    or sanitized recordings may remain after failure. No catalog references advance
+    here, and matching extractions do not establish an upstream transaction.
+    """
     started = utc_now()
     prior = current.manifest["routes"][spec.name] if current else None
     start, end = _bounds(config, meta, prior)
@@ -367,7 +441,21 @@ def _route(
 
 
 def ingest(config: IngestConfig, client: EIAClient) -> dict[str, Any]:
-    """All-or-nothing across routes; return a secret-free persisted manifest."""
+    """Fetch, validate, model and jointly publish all source grains under one lock.
+
+    Recover abandoned run/build records, verify the prior source, validate every
+    route's metadata bounds, and stage route work. Only after the raw candidate and
+    matching full model are ready does ``Catalog.publish`` commit the raw/model
+    references and ingestion/build success records together. Return the sanitized raw
+    manifest; its duration ends before modeling, unlike the final success log.
+
+    Before catalog commit, failures retain the prior published pair. Unpublished
+    staging or immutable candidates may remain. Persist failure/quality diagnostics
+    best-effort without masking the original error or downgrading committed success.
+    Source, validation, storage and interruption errors propagate; unexpected failures
+    become safe ``StorageError`` values. This function does not complete the separate
+    Django application refresh job or make EIA pages transactionally consistent.
+    """
     root = config.data_dir.resolve()
     with writer_lock(root), Catalog(root) as catalog:
         recovered = catalog.recover_interrupted()

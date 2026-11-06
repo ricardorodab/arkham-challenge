@@ -1,4 +1,10 @@
-"""Versioned JSON capabilities; browser sessions use CSRF on every mutation."""
+"""Adapt versioned same-origin HTTP requests to authenticated application services.
+
+service.urls dispatches here; catalog/data/query delegate to api_services rather than
+downloading EIA data. Django middleware supplies session authentication and CSRF checks.
+Helpers enforce transport shape, bounded JSON and safe errors; business authorization remains
+in the shared policy/services.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +30,11 @@ from .refresh import RefreshServiceError, enqueue_refresh
 
 
 def response(payload, *, status=200):
+    """Serialize a finite JSON payload within the configured response-byte cap.
+
+    status is keyword-only so callers distinguish an HTTP status from the payload. Oversized
+    encoded output raises result_too_large before a JsonResponse is built.
+    """
     encoded = json.dumps(payload, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
     if len(encoded.encode()) > settings.OUTAGE_QUERY_MAX_BYTES:
         raise APIError(413, "result_too_large", "The result exceeds the response size limit.")
@@ -33,9 +44,23 @@ def response(payload, *, status=200):
 
 
 def endpoint(*methods, authenticated=True):
+    """Build a decorator for allowed HTTP methods and optional session authentication.
+
+    methods collects the permitted method names; authenticated is keyword-only. Each wrapped
+    request derives a current Actor when required, checks its method, injects that Actor into
+    the view and converts APIError to Problem Details.
+    """
+
     def decorate(function):
+        """Capture a view together with this decorator's method/authentication policy."""
+
         @wraps(function)
         def call(request, *args, **kwargs):
+            """Apply captured policy and forward URL positional/keyword arguments to the view.
+
+            The closure retains function, methods and authenticated; wraps preserves view
+            metadata. Only APIError is handled here; unexpected exceptions reach middleware.
+            """
             try:
                 actor = identity(request) if authenticated else None
                 if request.method not in methods:
@@ -55,6 +80,7 @@ def endpoint(*methods, authenticated=True):
 
 
 def _pairs(pairs):
+    """Build a JSON object while rejecting duplicate keys at every decoded level."""
     result = {}
     for key, value in pairs:
         if key in result:
@@ -64,6 +90,12 @@ def _pairs(pairs):
 
 
 def body(request, allowed):
+    """Decode one bounded UTF-8 JSON object containing only allowed field names.
+
+    Require application/json and at most 32 KiB of raw body. Reject duplicate keys, nonfinite
+    constants, invalid UTF-8, nonobjects and unsupported fields. Convert transport/decoding
+    failures to safe 400/413/415 APIError categories.
+    """
     if request.content_type != "application/json":
         raise APIError(415, "json_required", "Send an application/json request body.")
     try:
@@ -73,6 +105,8 @@ def body(request, allowed):
         payload = json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=_pairs,
+            # A rejecting callback prevents JSON NaN/Infinity from bypassing the
+            # finite scalar contract; duplicate-key rejection also applies nested.
             parse_constant=lambda value: (_ for _ in ()).throw(ValueError()),
         )
         if not isinstance(payload, dict) or set(payload) - set(allowed):
@@ -87,6 +121,7 @@ def body(request, allowed):
 
 
 def parameters(request, allowed):
+    """Return single-valued supported query parameters, rejecting duplicates/unknowns."""
     if set(request.GET) - set(allowed) or any(
         len(values) != 1 for _, values in request.GET.lists()
     ):
@@ -99,11 +134,18 @@ def parameters(request, allowed):
 @ensure_csrf_cookie
 @endpoint("GET", authenticated=False)
 def csrf(request, actor):
+    """Issue a CSRF cookie/token before login or a later same-origin mutation."""
     return response({"csrf_token": get_token(request)})
 
 
 @endpoint("POST", authenticated=False)
 def login(request, actor):
+    """Validate credentials, apply login admission and establish a Django session.
+
+    Django authenticate checks the password; limit_login separately controls attempts. Require
+    a valid product persona, then return identity and the rotated CSRF token. No request field
+    may choose a product role.
+    """
     payload = body(request, {"username", "password"})
     username = api_services.text(payload.get("username"), "username", 150)
     password = api_services.text(payload.get("password"), "password", 1024)
@@ -120,6 +162,7 @@ def login(request, actor):
 
 @endpoint("POST")
 def logout(request, actor):
+    """Require an empty JSON object and invalidate the current persisted session."""
     body(request, set())
     django_logout(request)
     return response({"signed_out": True})
@@ -127,6 +170,7 @@ def logout(request, actor):
 
 @endpoint("GET")
 def session(request, actor):
+    """Return the current persona and opaque scope used to retire browser-private state."""
     parameters(request, set())
     return response(
         {
@@ -138,23 +182,31 @@ def session(request, actor):
 
 @endpoint("GET")
 def catalog(request, actor):
+    """Delegate an optional model pin to the authorized analytical metadata service."""
     args = parameters(request, {"model_id"})
     return response(api_services.catalog(request, actor, args.get("model_id")))
 
 
 @endpoint("GET")
 def data(request, actor, dataset_id):
+    """Delegate supported date/facility/keyset parameters for one dataset preview page."""
     args = parameters(request, {"start", "end", "facility_id", "limit", "cursor", "model_id"})
     return response(api_services.preview(request, actor, dataset_id, args))
 
 
 @endpoint("POST")
 def query(request, actor):
+    """Delegate one bounded SQL request; this endpoint reads saved data, not EIA."""
     payload = body(request, {"dataset_id", "sql", "max_rows", "page_size", "cursor", "model_id"})
     return response(api_services.query(request, actor, payload))
 
 
 def _job(job):
+    """Serialize public refresh lifecycle fields and the polling URL.
+
+    Authorization and ownership checks belong to the calling view; this helper does not
+    independently authorize a job or inspect publication history.
+    """
     return {
         "id": str(job.id),
         "mode": job.mode,
@@ -171,6 +223,12 @@ def _job(job):
 
 @endpoint("POST", "GET")
 def refresh(request, actor):
+    """List this Admin's jobs or durably enqueue/replay a refresh request.
+
+    GET is owner-filtered history. POST validates mode and optional header key, maps service
+    errors and returns 202 for creation or 200 for replay plus Location. No worker or
+    ingestion starts in the HTTP process; recheck identity before reply.
+    """
     require_admin(actor)
     if request.method == "GET":
         args = parameters(request, {"limit"})
@@ -201,6 +259,7 @@ def refresh(request, actor):
 
 @endpoint("GET")
 def refresh_status(request, actor, job_id):
+    """Return one current Admin-owned job, hiding other owners' jobs behind 404."""
     require_admin(actor)
     parameters(request, set())
     job = RefreshJob.objects.filter(pk=job_id, owner_id=actor.user_id).first()
@@ -212,11 +271,17 @@ def refresh_status(request, actor, job_id):
 
 @endpoint("GET", authenticated=False)
 def live(request, actor):
+    """Report process liveness without requiring a session or analytical availability."""
     return response({"status": "ok"})
 
 
 @endpoint("GET")
 def ready(request, actor):
+    """Check Admin access, selected model and isolated-runtime availability.
+
+    This resolves runtime assets/version checks but does not execute a complete query or
+    establish workload capacity. Recheck identity before exposing readiness details.
+    """
     require_admin(actor)
     bundle = api_services._bundle(None)
     from outage_explorer.query_sandbox import runtime_status
@@ -230,6 +295,7 @@ def ready(request, actor):
 
 @endpoint("GET")
 def openapi(request, actor):
+    """Serve the single packaged OpenAPI contract to an authenticated caller."""
     return response(
         json.loads(
             files("outage_explorer.service").joinpath("openapi.json").read_text(encoding="utf-8")
@@ -238,6 +304,7 @@ def openapi(request, actor):
 
 
 def csrf_failure(request, reason=""):
+    """Return a safe CSRF Problem Details response without exposing Django's reason."""
     return problem(
         request,
         APIError(403, "csrf_failed", "A valid CSRF token and same-origin request are required."),
@@ -245,12 +312,15 @@ def csrf_failure(request, reason=""):
 
 
 def not_found(request, exception=None):
+    """Format unmatched endpoint failures as safe JSON rather than an HTML redirect."""
     return problem(request, APIError(404, "not_found", "This endpoint does not exist."))
 
 
 def bad_request(request, exception=None):
+    """Format Django request-validation failures without raw request details."""
     return problem(request, APIError(400, "bad_request", "The request is invalid."))
 
 
 def server_error(request):
+    """Provide the configured safe JSON fallback for unhandled server errors."""
     return problem(request, APIError(500, "internal_error", "The request could not be completed."))

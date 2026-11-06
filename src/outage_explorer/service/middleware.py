@@ -1,4 +1,9 @@
-"""Correlate safe operational events without logging request bodies or SQL."""
+"""Attach request correlation, safe operational logging and browser response policy.
+
+MiddlewareMixin invokes the process hooks through Django's supported middleware lifecycle.
+Request attributes are transient in-memory state. Logs record route, method, status and
+duration, never request bodies, SQL or raw exception text.
+"""
 
 from __future__ import annotations
 
@@ -21,11 +26,21 @@ HTML_CSP = (
 
 
 class RequestMiddleware(MiddlewareMixin):
+    """Apply consistent correlation, cache policy and security/error formatting."""
+
     def process_request(self, request):
+        """Assign an opaque request ID and monotonic start time for this request only."""
         request.request_id = uuid.uuid4().hex
         request._outage_started = time.monotonic()
 
     def process_response(self, request, response):
+        """Attach correlation/security headers and emit one bounded request event.
+
+        Default to no-store; only explicitly marked public static assets retain their own
+        revalidation caching. HTML gets the self-only application CSP, while JSON receives a
+        no-content policy. Log the resolved route pattern rather than URLs or request
+        parameters that could contain sensitive values.
+        """
         response["X-Request-ID"] = getattr(request, "request_id", "")
         if not getattr(response, "_outage_public_asset", False):
             response["Cache-Control"] = "no-store"
@@ -57,6 +72,11 @@ class RequestMiddleware(MiddlewareMixin):
         return response
 
     def process_exception(self, request, exception):
+        """Map APIError or unexpected failures to safe JSON; let Django handle Http404.
+
+        Unexpected failures log only exception type and request ID, then return a generic 500.
+        Returning None for Http404 preserves Django's configured not-found handler.
+        """
         if isinstance(exception, APIError):
             return problem(request, exception)
         if isinstance(exception, Http404):

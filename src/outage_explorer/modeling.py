@@ -1,7 +1,10 @@
-"""Pure, versioned analytical transformation of a pinned source snapshot.
+"""Build versioned analytical bundles from explicit pinned source files.
 
-This module neither reads credentials nor selects/publishes a current version.
-Its caller owns snapshot selection, the writer lock and the catalog transaction.
+Transformations preserve source grains, missingness and exact Decimal semantics;
+reconciliation and quality warnings annotate rather than repair observations.
+The caller selects the source and owns locking/publication. This module writes
+staging files and uses native DuckDB, but reads no credentials and never advances
+a catalog reference. It is trusted application code, not a user-SQL sandbox.
 """
 
 from __future__ import annotations
@@ -25,6 +28,12 @@ from .model_contracts import DATASETS, METRICS, MODEL_VERSION, MW_TOLERANCE, PCT
 
 
 class ModelError(DataValidationError):
+    """Report a safe model-contract or persistence failure as ``invalid_model``.
+
+    This specialization lets ingestion reject the complete candidate while retaining
+    the previous raw/model publication pair.
+    """
+
     code = "invalid_model"
 
 
@@ -33,12 +42,25 @@ ModelBuildError = ModelError
 
 @dataclass(frozen=True)
 class ModelBundle:
+    """Describe a staged or immutable model and its analytical model manifest.
+
+    The model manifest records pinned source bindings. The descriptor alone does not
+    imply verification or publication. After moving
+    staged files, ``prepare_model`` returns a new descriptor with the immutable
+    path; catalog registration is a later operation.
+    """
+
     id: str
     path: Path
     manifest: dict[str, Any]
 
 
 def _normalized(value: Any) -> Any:
+    """Encode dates/timestamps and Decimals as stable JSON strings for typed rows.
+
+    Use fixed-point Decimal formatting to avoid binary floats and exponent-dependent
+    logical fingerprints. Other JSON-native scalar values pass through unchanged.
+    """
     if isinstance(value, (date, datetime)):
         return value.isoformat()
     if isinstance(value, Decimal):
@@ -49,7 +71,14 @@ def _normalized(value: Any) -> Any:
 def logical_digest(
     connection: duckdb.DuckDBPyConnection, table_or_query: str, primary_key: tuple[str, ...]
 ) -> str:
-    """Hash ordered typed rows; input SQL/identifiers must be application-owned."""
+    """Hash canonical typed rows in deterministic primary-key order.
+
+    Accept an application-owned table name or SELECT/WITH query. Normalize dates and
+    Decimals before hashing each compact JSON row plus newline, allowing logical
+    comparison across writer versions with different Parquet bytes. Execute and read
+    in batches without modifying tables. This is trusted SQL, not input validation or
+    an upstream correctness check.
+    """
     query = table_or_query.strip()
     if not query.lower().startswith(("select ", "with ")):
         query = f"SELECT * FROM {identifier(query)}"
@@ -64,11 +93,18 @@ def logical_digest(
 
 
 def _sha256(path: Path) -> str:
+    """Return the SHA-256 of a physical file without changing its contents."""
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def _create(con: duckdb.DuckDBPyConnection, dataset: str, query: str | None = None) -> None:
+    """Create a staging table with the exact registered schema and optional trusted SQL.
+
+    The optional query inserts into explicit typed columns so incompatible values
+    fail through DuckDB rather than silently changing the contract. ``dataset`` and
+    ``query`` must be application-owned; engine errors propagate to ``build_model``.
+    """
     spec = DATASETS[dataset]
     columns = ",".join(f"{identifier(name)} {kind}" for name, kind in spec.columns)
     con.execute(f"CREATE TABLE {identifier(dataset)} ({columns})")
@@ -79,6 +115,14 @@ def _create(con: duckdb.DuckDBPyConnection, dataset: str, query: str | None = No
 def _insert_rows(
     con: duckdb.DuckDBPyConnection, dataset: str, rows: Iterable[tuple[Any, ...]], destination: Path
 ) -> None:
+    """Load contract-ordered tuples through an explicitly typed temporary JSONL file.
+
+    Normalize exact values and require tuple/schema arity equality. The target
+    table must already exist; an empty iterable leaves it unchanged. Failures
+    while consuming rows propagate before INSERT, with scratch cleanup in finally.
+    File, row-shape and DuckDB errors also propagate to the builder. Supporting
+    generators does not promise bounded upstream accumulation.
+    """
     spec = DATASETS[dataset]
     source = destination / f"_{dataset}.jsonl"
     try:
@@ -106,6 +150,13 @@ def _insert_rows(
 def _source_contract(
     con: duckdb.DuckDBPyConnection, source_paths: dict[str, Path]
 ) -> dict[str, Any]:
+    """Register the three pinned raw views and verify schema, keys and units.
+
+    Require exactly the known source grains, nonempty unique/non-null natural keys
+    and their exact physical schemas/units. Return physical hashes and row counts for
+    source bindings. Paths and SQL are caller-owned; errors prevent model creation
+    rather than coercing a different source contract.
+    """
     if set(source_paths) != {spec.name for spec in ROUTES}:
         raise ModelError("The model requires exactly the three source grains.")
     result = {}
@@ -143,6 +194,13 @@ def _source_contract(
 
 
 def _facts_and_dimensions(con: duckdb.DuckDBPyConnection) -> None:
+    """Create independent source facts and observed-date/entity dimensions.
+
+    Keep observation-time names in facts. Facility identity is the union of detail
+    routes; its descriptive name is latest non-null with deterministic route/name
+    ties. Generator identity includes facility. Observed first/last dates are not
+    commissioning/retirement, and the date dimension is not a generated calendar.
+    """
     suffix = 'capacity,outage,"percentOutage",_quality_flags,_row_hash'
     _create(con, "national_daily", f"SELECT period,{suffix} FROM _raw_national")
     _create(
@@ -194,6 +252,13 @@ def _facts_and_dimensions(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def _pct(numerator: Decimal | None, denominator: Decimal | None) -> Decimal | None:
+    """Divide an already-scaled numerator and quantize to nine Decimal places.
+
+    Return None for unknown operands or nonpositive denominator. Use precision 28 and
+    ROUND_HALF_UP; callers pass capacity-times-reported-percent when computing a
+    weighted percentage, so no extra multiplication by 100 occurs here. Decimal
+    arithmetic errors propagate rather than becoming an ordinary null.
+    """
     if numerator is None or denominator is None or denominator <= 0:
         return None
     with localcontext() as context:
@@ -203,6 +268,11 @@ def _pct(numerator: Decimal | None, denominator: Decimal | None) -> Decimal | No
 
 
 def _gap(child: Decimal | None, parent: Decimal | None) -> Decimal | None:
+    """Return child minus parent with precision sufficient for DECIMAL(38,9) totals.
+
+    Preserve None when either operand is unknown. Use a local precision of 50 so
+    Python's default context cannot silently round a stored reconciliation gap.
+    """
     if child is None or parent is None:
         return None
     # Aggregate MW uses DECIMAL(38,9), wider than Python's default 28 digits.
@@ -213,6 +283,12 @@ def _gap(child: Decimal | None, parent: Decimal | None) -> Decimal | None:
 
 
 def _comparison(gaps: list[Decimal | None], tolerance: str, *, pct: bool = False) -> str:
+    """Classify signed gaps as undefined, exact, within tolerance or mismatch.
+
+    A null gap makes the comparison undefined. Test zero before inclusive absolute
+    tolerance; retain actual differences elsewhere. ``pct`` selects the distinct
+    rounding-tolerance label, not different arithmetic or source-value correction.
+    """
     if any(item is None for item in gaps):
         return "undefined"
     if all(item == 0 for item in gaps):
@@ -223,6 +299,15 @@ def _comparison(gaps: list[Decimal | None], tolerance: str, *, pct: bool = False
 
 
 def _fleet(con: duckdb.DuckDBPyConnection, destination: Path) -> None:
+    """Build US-08 from the same day's published national outage and capacity.
+
+    Use Decimal precision 28/ROUND_HALF_UP, rounding share to 12 places and percentage
+    to nine independently from the unrounded ratio. Null outage or null/nonpositive
+    capacity yields null metrics plus ``metric_undefined``. Preserve source
+    percent/flags and representable outliers; overflow/quantization errors fail the
+    candidate through ``build_model`` instead of clipping or silently returning null.
+    This helper accumulates national rows before typed insertion.
+    """
     _create(con, "fleet_daily")
     rows = con.execute(
         "SELECT period,capacity_mw,outage_mw,reported_outage_pct,quality_flags "
@@ -259,6 +344,13 @@ def _fleet(con: duckdb.DuckDBPyConnection, destination: Path) -> None:
 
 
 def _aggregates(con: duckdb.DuckDBPyConnection) -> None:
+    """Create child-grain totals with explicit per-measure null and entity counts.
+
+    A total is null when any contributing measure is null; ordinary SUM must not hide
+    incomplete evidence. Retain capacity-weighted reported-percentage numerators as
+    a diagnostic distinct from the national MW-derived fleet metric. Mutate only
+    staging tables on the supplied trusted connection.
+    """
     # Nulls cannot disappear into SUM: only a fully observed measure has a total.
     for dataset, grouping in (
         ("generator_daily", "period,facility_id"),
@@ -282,6 +374,13 @@ def _aggregates(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def _reconciliation(con: duckdb.DuckDBPyConnection, destination: Path) -> None:
+    """Build full-coverage facility and national comparison tables.
+
+    Preserve missing parents/children, zero-versus-null meaning, counts and signed
+    child-minus-parent MW/percentage gaps. Coverage and numeric statuses are separate;
+    review tolerances never rewrite observations. Facility rows stream in batches,
+    while national rows are accumulated before typed insertion.
+    """
     _aggregates(con)
     _create(con, "facility_reconciliation_daily")
     query = """
@@ -297,6 +396,12 @@ def _reconciliation(con: duckdb.DuckDBPyConnection, destination: Path) -> None:
     """
 
     def facility_rows():
+        """Yield facility comparison tuples in schema order from the trusted join cursor.
+
+        Propagate incomplete measures into undefined gaps, retain missing-side coverage,
+        and calculate independent MW and weighted-percentage classifications. Consume
+        this generator serially on the same connection before executing another query.
+        """
         reader = con.execute(query)
         while batch := reader.fetchmany(8192):
             for period, facility, name, present, count, nc, no, np, fc, gc, fo, go, fp, wn in batch:
@@ -423,6 +528,14 @@ def _reconciliation(con: duckdb.DuckDBPyConnection, destination: Path) -> None:
 
 
 def _events(con: duckdb.DuckDBPyConnection, destination: Path) -> None:
+    """Derive deterministic review warnings without inventing or removing facts.
+
+    Inspect preserved source flags, zero-capacity conditions, interior observation
+    gaps, consecutive capacity steps and facility reconciliation coverage. A capacity step requires
+    positive previous capacity, adjacent dates, at least 100 MW and at least 10%.
+    Attach gap warnings to the next observation. Accumulate events by stable ID;
+    multiple rules/grains can describe one source condition and imply no physical cause.
+    """
     _create(con, "data_quality_events")
     events: dict[str, tuple[Any, ...]] = {}
 
@@ -441,6 +554,13 @@ def _events(con: duckdb.DuckDBPyConnection, destination: Path) -> None:
         pct=None,
         details=None,
     ):
+        """Insert or replace one warning under a deterministic rule/entity/date hash.
+
+        Hash rule, date, grain, facility, generator and previous date; store before/after
+        measures and canonical details separately. Default details explicitly withhold a
+        physical interpretation. Repeated equivalent event identities deduplicate in the
+        enclosing event mapping.
+        """
         event_id = hashlib.sha256(
             canonical_json(
                 [rule, str(period), grain, facility, generator, str(previous) if previous else None]
@@ -533,7 +653,13 @@ def _events(con: duckdb.DuckDBPyConnection, destination: Path) -> None:
 
 
 def validate_model_tables(con: duckdb.DuckDBPyConnection) -> None:
-    """Independent primary/foreign-key checks before any output is published."""
+    """Enforce every declared PK and FK against materialized staging tables.
+
+    Require unique/non-null primary keys and use anti-joins for non-null FK tuples.
+    Raise ``ModelError`` on violations before Parquet publication. Generator facts
+    reference identity dimensions so missing facility-day observations can survive as
+    reconciliation evidence.
+    """
     for dataset, spec in DATASETS.items():
         keys = ",".join(identifier(name) for name in spec.primary_key)
         nulls = " OR ".join(f"{identifier(name)} IS NULL" for name in spec.primary_key)
@@ -563,7 +689,20 @@ def validate_model_tables(con: duckdb.DuckDBPyConnection) -> None:
 def build_model(
     source_paths: dict[str, Path], source_snapshot_id: str, destination: Path, *, model_id: str
 ) -> ModelBundle:
-    """Build into a fresh directory; caller publishes the verified immutable bundle."""
+    """Write a complete fresh analytical candidate from three pinned source files.
+
+    Require safe source/model IDs and an empty destination. Build all facts,
+    dimensions, metric, reconciliation and quality tables, validate keys, then write
+    PK-sorted ZSTD Parquet plus a manifest with physical/logical hashes and contracts.
+    Return ``ModelBundle`` without catalog publication; caller owns the writer lock
+    and subsequent verification/immutable rename.
+
+    Use a one-thread staging DuckDB with a 256 MB engine setting, not a hard process
+    RSS guarantee. Normalize supported engine/arithmetic/shape/filesystem failures to
+    ``ModelError``; derived Decimal overflow rejects the complete candidate. Close
+    and remove temporary database files best-effort, but partial candidate outputs
+    can remain for recovery/evidence. Directory synchronization is POSIX-specific.
+    """
     if any(
         not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{32}", value) is None
         for value in (source_snapshot_id, model_id)

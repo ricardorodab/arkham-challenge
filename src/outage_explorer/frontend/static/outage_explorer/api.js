@@ -1,5 +1,21 @@
-/** Same-origin JSON transport. Cookies stay HttpOnly; CSRF tokens stay in memory. */
+/**
+ * @module api
+ * Same-origin HTTP client and per-workspace analytical scheduling.
+ *
+ * This code calls the sibling JSON API in the same Django deployment; it does
+ * not authorize datasets or execute SQL. The session cookie is HttpOnly; this
+ * client keeps CSRF tokens in memory. The server independently enforces
+ * account-wide admission.
+ */
+/**
+ * Safe transport/API failure carrying status, code, request ID and retry metadata.
+ */
 export class ApiError extends Error {
+  /**
+   * Construct a client error without including private response bodies or diagnostics.
+   * @param {string} message Safe display message.
+   * @param {Object} [options] HTTP/status correlation and bounded retry metadata.
+   */
   constructor(
     message,
     { status = 0, code = 'network_error', requestId = '', retryAfter = 0 } = {},
@@ -9,24 +25,50 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Internal control-flow marker for work whose captured workspace state is obsolete.
+ */
 export class StaleRequest extends Error {}
 
+/**
+ * JSON client with in-memory CSRF rotation and a session-loss notification hook.
+ */
 export class ApiClient {
+  /**
+   * Create a client; the optional hook disposes UI state after authoritative denial.
+   * @param {Object} [options] Optional onSessionLost callback.
+   */
   constructor({ onSessionLost = null } = {}) {
     this.csrf = null;
     this.onSessionLost = onSessionLost;
   }
 
+  /**
+   * Fetch the CSRF bootstrap endpoint and replace the in-memory token.
+   * @returns {Promise<string>} Token to accompany subsequent unsafe requests.
+   */
   async bootstrap() {
     const data = await this.request('/auth/csrf');
     this.csrf = data.csrf_token;
     return this.csrf;
   }
 
+  /**
+   * Send JSON to /api/v1 with same-origin cookies, no-store and a 22-second transport timeout.
+   *
+   * Only an explicit CSRF rejection receives one token-refresh retry. Network
+   * uncertainty is not interpreted as confirmed logout; API policy denials may
+   * notify the session-loss hook. The transport timeout does not prove server cancellation.
+   * @param {string} path API-relative absolute path, not a host URL.
+   * @param {Object} [options] Method, JSON body, headers and one-shot CSRF retry flag.
+   * @returns {Promise<Object>} Successful decoded JSON.
+   * @throws {ApiError} Safe transport, protocol or API failure.
+   */
   async request(path, { method = 'GET', body, headers = {}, retryCsrf = true } = {}) {
     if (!path.startsWith('/') || path.startsWith('//') || /[?#]/.test(path.split('?')[0])) {
       throw new ApiError('The request could not be prepared.', { code: 'invalid_request' });
     }
+    // Aborting fetch bounds client waiting, not the lifetime of server-side analytical work.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 22000);
     const requestHeaders = { ...headers, Accept: 'application/json' };
@@ -88,12 +130,27 @@ export class ApiClient {
   }
 }
 
-/** Never overlap analytical requests from one account or render obsolete work. */
+/**
+ * Serialize analytical work within one workspace/tab, not across all account sessions.
+ */
 export class AnalyticalQueue {
+  /**
+   * Initialize a settled promise tail so a failed task cannot poison later work.
+   */
   constructor() {
     this.tail = Promise.resolve();
   }
+  /**
+   * Queue work and reject obsolete state before execution and after every wait/result.
+   *
+   * Retry only bounded 429 capacity replies, up to three attempts; generic query
+   * errors propagate. Backend admission remains authoritative across tabs/processes.
+   * @param {function(): Promise<*>} task Deferred analytical request.
+   * @param {function(): boolean} [isCurrent] Captured generation/model guard.
+   * @returns {Promise<*>} Task value or a StaleRequest/API failure.
+   */
   run(task, isCurrent = () => true) {
+    // Recover the previous tail only to allow later tasks; each caller still receives its own failure.
     const result = this.tail
       .catch(() => {})
       .then(async () => {
@@ -125,6 +182,11 @@ export class AnalyticalQueue {
   }
 }
 
+/**
+ * Encode supplied nonempty scalar parameters without changing zero or false values.
+ * @param {Object} values Parameter mapping.
+ * @returns {string} Empty string or a query string including its leading question mark.
+ */
 export function queryString(values) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(values)) {
@@ -134,6 +196,17 @@ export function queryString(values) {
   return result ? `?${result}` : '';
 }
 
+/**
+ * Validate expected dataset/model identity and the bounded positional result shape.
+ *
+ * This accepts finite primitive scalars, not a complete semantic type schema;
+ * exactness depends on the backend serializing decimals/large integers as strings.
+ * @param {Object} data Decoded page packet.
+ * @param {string} datasetId Expected logical source.
+ * @param {string} modelId Expected immutable model.
+ * @returns {Object} The unchanged validated packet.
+ * @throws {ApiError} Invalid identity, column/row bounds or scalar shape.
+ */
 export function verifyPage(data, datasetId, modelId) {
   if (
     !data ||
