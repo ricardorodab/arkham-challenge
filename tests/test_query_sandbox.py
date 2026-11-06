@@ -219,7 +219,9 @@ def test_runtime_status_contains_no_local_paths():
     assert status["isolation"] == "wasm-buffer-v1"
     assert "D:\\" not in json.dumps(status)
     assert status["process_memory_limit_mib"] == (512 if os.name == "nt" else None)
-    assert status["data_allocation_limit_mib"] == (512 if os.name != "nt" else None)
+    assert status["data_allocation_limit_mib"] == (
+        (1024 if sys.platform == "linux" else 512) if os.name != "nt" else None
+    )
 
 
 @pytest.mark.parametrize("version", ["v22.13.0", "v24.12.0", "v25.0.0"])

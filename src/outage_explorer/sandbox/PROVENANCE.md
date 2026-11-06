@@ -23,11 +23,26 @@ path or application environment secret reaches the worker.
 
 Windows uses a Job Object with a hard 512 MiB process/job memory limit, six
 seconds of user CPU time, one process and kill-on-close. POSIX uses a separate
-trusted bootstrap to set 512 MiB RLIMIT_DATA, six seconds RLIMIT_CPU, no core or
-file output and 64 file descriptors before exec; this is a data-allocation
-ceiling, not an RSS measurement. WebAssembly memory has a separate hard 256 MiB
-ceiling and the V8 old heap is limited to 96 MiB. One baseline compilation task
-and disabled optimizing tier-up keep compilation within the Windows limit.
+trusted bootstrap: default/compiler mode keeps 512 MiB RLIMIT_DATA; the trusted
+parent selects `--engine` for Node, allowing 1,024 MiB on Linux and 512 MiB on
+other POSIX systems. Both modes retain six seconds RLIMIT_CPU, no core/file
+output and 64 file descriptors before exec.
+
+The Linux engine allowance budgets 512 MiB for the tested Node 24.13.0 x64 V8
+JavaScript code-cage reservation plus 512 MiB for other DATA-accounted mappings.
+V8 defines the x64 maximum code-range size in
+[globals.h](https://github.com/nodejs/node/blob/v24.13.0/deps/v8/src/common/globals.h#L471-L475)
+and precommits the cage as writable outside Windows/iOS in
+[code-range.cc](https://github.com/nodejs/node/blob/v24.13.0/deps/v8/src/heap/code-range.cc#L226-L256).
+Linux counts this mapping against RLIMIT_DATA even when pages are not resident.
+The 1,024 MiB ceiling is one shared DATA allowance, not an RSS ceiling or an
+equivalent of the Windows hard process-memory limit.
+
+WebAssembly linear memory has a separate hard 256 MiB ceiling, V8 old heap is
+limited to 96 MiB and WASM committed code to 128 MiB. Linux additionally sets
+`--wasm-max-code-space-size-mb=128` to bound WASM code-space reservations; this
+is distinct from the JavaScript code cage. One baseline compilation task and
+disabled optimizing tier-up keep compilation within the Windows limit.
 The Python supervisor caps output and applies an eight-second wall deadline,
 kills and reaps the process, and drops inherited application environment values.
 

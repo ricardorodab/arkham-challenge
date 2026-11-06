@@ -250,3 +250,21 @@ def test_problem_details_wire_contract_matches_an_authentication_failure(
     assert set(response.json()) == set(schema["required"])
     assert response["Content-Type"].startswith("application/problem+json")
     assert response.json()["request_id"] == response["X-Request-ID"]
+
+
+def test_available_runtime_status_matches_its_strict_public_schema(specification):
+    from outage_explorer.query_sandbox import runtime_status
+
+    status = runtime_status()
+    assert status["available"], "Contract acceptance requires the pinned query runtime."
+    schema = specification["components"]["schemas"]["RuntimeStatus"]
+    assert schema["additionalProperties"] is False
+    assert set(status) == set(schema["required"]) == set(schema["properties"])
+    for name, value in status.items():
+        field = schema["properties"][name]
+        if "const" in field:
+            assert type(value) is type(field["const"]) and value == field["const"]
+        elif "enum" in field:
+            assert value in field["enum"]
+        else:
+            assert field["type"] == "string" and isinstance(value, str)

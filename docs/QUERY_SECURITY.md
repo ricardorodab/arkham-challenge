@@ -2,7 +2,7 @@
 
 Django decides who may ask for data. A separate compiler decides which SQL language is allowed. A disposable engine receives only the authorized data bytes, and operating-system controls bound its work. These are four different protections: calling SQL “read only” would not establish all of them. Even a SELECT can read files, contact a network or consume excessive resources in a general-purpose engine.
 
-Read the request path first, then use the boundary and limit sections as a reference. [API_CONTRACT.md](API_CONTRACT.md) defines client requests and errors; [BROWSER_WORKSPACE.md](BROWSER_WORKSPACE.md) explains the interface. The current verification result and its dates are in [docs/NOTES.md](NOTES.md). The mechanisms described here exist in source; this documentation rewrite did not execute them again.
+Read the request path first, then use the boundary and limit sections as a reference. [API_CONTRACT.md](API_CONTRACT.md) defines client requests and errors; [BROWSER_WORKSPACE.md](BROWSER_WORKSPACE.md) explains the interface. Recorded verification and qualifications are in [NOTES.md](NOTES.md); [GitHub Actions](https://github.com/ricardorodab/arkham-challenge/actions) records subsequent CI runs.
 
 ## What is trusted, and what is protected
 
@@ -92,7 +92,7 @@ The custom runtime uses **BUFFER-only** imports instead of the host-capable `NOD
 
 The packaged official Parquet extension has a fixed SHA-256 and is supplied locally through a narrow bootstrap-only bridge. That bridge serves only the exact pinned asset and closes before submitted SQL runs. Resolution/hash failures fail closed; requests do not download extensions. Bootstrap sets one engine thread and a 96 MB DuckDB memory setting, disables temporary spill storage, external access and automatic/community extensions, then locks configuration. [Runtime provenance](../src/outage_explorer/sandbox/PROVENANCE.md) records extension origin, license, hash and assumptions.
 
-Node permission mode separately limits host reads to installed runtime files and exact shim/extension assets. Writes, child processes, workers, native addons, inspector and WASI are not granted. The child receives only timezone/language/warning configuration and necessary Windows runtime variables; no PATH, HOME, NODE_OPTIONS, EIA/Django/database/cloud credentials. Absolute executable/package paths avoid child PATH lookup. V8 old heap is 96 MiB; WASM linear memory is capped at 4,096 pages, or 256 MiB, with conservative compilation flags.
+Node permission mode separately limits host reads to installed runtime files and exact shim/extension assets. Writes, child processes, workers, native addons, inspector and WASI are not granted. The child receives only timezone/language/warning configuration and necessary Windows runtime variables; no PATH, HOME, NODE_OPTIONS, EIA/Django/database/cloud credentials. Absolute executable/package paths avoid child PATH lookup. V8 old heap is 96 MiB; WASM linear memory is capped at 4,096 pages, or 256 MiB. WASM committed code is capped at 128 MiB. Linux also sets `--wasm-max-code-space-size-mb=128` to bound individual WASM code-space reservations; this is separate from linear memory and the JavaScript code cage.
 
 Node also rejects string-generated JavaScript with `--disallow-code-generation-from-strings` and sets `--disable-proto=throw` as additional hardening. These flags are defense in depth around the trusted worker, not an arbitrary-JavaScript sandbox.
 
@@ -108,9 +108,11 @@ Typed serialization preserves decimals and 64-bit integers as strings, dates as 
 | Admitted compilation and execution | Eight-second wall budget, including startup/input preparation; compiler receives at most two seconds; queue wait excluded |
 | Windows compiler/engine child | Job Object: hard 512 MiB process/job memory, six seconds user CPU, one process, kill-on-close |
 | WASM/V8 | Hard 256 MiB WASM linear memory; 96 MiB V8 old heap; one engine thread/baseline compilation task |
-| POSIX bootstrap | RLIMIT_DATA 512 MiB; six seconds CPU; no core/file output; 64 file descriptors |
+| POSIX bootstrap | Compiler: RLIMIT_DATA 512 MiB. Linux engine: 1,024 MiB; other POSIX engines: 512 MiB. Both modes: six seconds CPU; no core/file output; 64 file descriptors |
 | Data/result transport | One Parquet input ≤64 MiB; 1,000 client rows plus one private sentinel; 2 MiB output |
 | HTTP/local WSGI | JSON body 32 KiB; Waitress body 64 KiB, headers 16 KiB, 32 connections, 12 request threads; 30-second channel timeout |
+
+The trusted supervisor selects the bootstrap's `--engine` mode only for Node. On Linux, its 1,024 MiB DATA allowance budgets 512 MiB for the tested Node 24.13.0 x64 V8 JavaScript code-cage reservation and 512 MiB for other DATA-accounted mappings. V8 precommits this cage as writable and Linux counts it against RLIMIT_DATA, even while resident use remains much smaller. This is one shared data-allocation limit, not a total RSS/process-memory guarantee or the Windows Job limit. [Runtime provenance](../src/outage_explorer/sandbox/PROVENANCE.md) links the relevant V8 source.
 
 Admission uses OS locks, so HTTP processes sharing the state directory share capacity and process death releases it. Reentrant work by the same user reuses the existing slot/deadline instead of resetting the budget. This is bounded polling admission, not a fair FIFO scheduler or a distributed cluster queue. It depends on compatible shared-filesystem locking semantics.
 
@@ -118,7 +120,7 @@ Cache hits still undergo admission, compilation and authorization. A SQL LIMIT c
 
 Public timeout is `504`; result overflow is `413`; safe execution/resource/type failure is `422`; compiler unavailability/resource/protocol failure is `503 compiler_unavailable`. Missing engine runtime is `503 sandbox_unavailable`. No fallback widens authority. API details are in the [error contract](API_CONTRACT.md#errors-and-health).
 
-**Windows is the live-verified platform for Job limits and real dataset queries in the recorded delivery.** The POSIX launcher exists, but equivalent Linux/macOS acceptance has not been performed on this Windows host. RLIMIT_DATA limits data allocations; it is not a total RSS/process-memory guarantee. Validate the deployment platform before promising equivalent operation.
+**The recorded Windows delivery verified Job limits and real dataset queries.** A targeted probe with official Node 24.13.0 on Linux x64 under WSL also completed a real Parquet count with the revised 1,024 MiB DATA limit; sampled peak RSS was about 278 MiB while VmData reached about 1,002 MiB. This probe does not establish full Linux or macOS acceptance. Validate the complete release on its deployment platform; consult [GitHub Actions](https://github.com/ricardorodab/arkham-challenge/actions) for subsequent CI results.
 
 ## Immutable data, cache and cursor integrity
 
@@ -166,7 +168,7 @@ The browser's opaque session-scope HMAC is neither a raw session ID nor a bearer
 
 A 100× data/user scenario is a planning question, not a measured load result. A cache miss reads/hashes the entire selected Parquet file, copies it through Python/pipe/Node/WASM, and cold-starts compiler plus engine. Predicate pushdown inside DuckDB cannot avoid Python's initial whole-file read. The 64 MiB file ceiling is intentional; larger data needs measured partitioning or another execution design.
 
-Two 512 MiB child slots do not cap all service memory: parent buffers/copies, Python objects, HTTP threads, the service database and runtime allocations add overhead. Eight cache entries per user is not a global byte budget; many users and large results can pressure SQLite/storage, while cleanup is opportunistic. Authentication/compiler/admission work remains on cache hits. Queues protect availability without increasing throughput or promising fairness.
+Two admitted request slots do not cap all service memory: parent buffers/copies, Python objects, HTTP threads, the service database and runtime allocations add overhead. Eight cache entries per user is not a global byte budget; many users and large results can pressure SQLite/storage, while cleanup is opportunistic. Authentication/compiler/admission work remains on cache hits. Queues protect availability without increasing throughput or promising fairness.
 
 SQLite and local OS locks fit a single-host product. Growing sessions, cache writes, jobs and concurrent users introduce contention. Possible future designs include PostgreSQL state, an explicit job queue/distributed admission, partitioned object-store Parquet and measured engine pooling or a containerized read-only query service. These are alternatives, not implemented features. Preserve authorization and model pinning while measuring before choosing infrastructure.
 
@@ -184,7 +186,7 @@ These tests probe executable boundaries rather than only matching forbidden SQL 
 | Generated/private setup, password preservation, conflicting identities, environment cleanup | [Service setup](../tests/test_service_setup.py), [local operator](../tests/test_local_operator.py) |
 | Published schema and response consistency | [OpenAPI](../tests/test_openapi.py) |
 
-The sandbox engine suite visibly skips if the runtime is unavailable. Such a skip is not isolation evidence; release acceptance requires actual pinned runtime probes on its target platform. CI configuration is not evidence that remote CI ran. The latest recorded full Python result remains November 2: **654 passed, one failed, one skipped**, including the unresolved 50 ms timeout-startup assumption. Earlier green acceptance records remain historical.
+The sandbox engine suite visibly skips if the runtime is unavailable. Such a skip is not isolation evidence; release acceptance requires actual pinned runtime probes on its target platform. CI configuration is not evidence that remote CI ran. The historical November 2 full Python result was **654 passed, one failed, one skipped**, including a failure of the 50 ms timeout-startup assumption. This is a historical result; [GitHub Actions](https://github.com/ricardorodab/arkham-challenge/actions) records subsequent runs.
 
 ## Source-reading route
 

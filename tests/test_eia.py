@@ -311,23 +311,47 @@ def test_secret_canaries_in_mapping_keys_are_sanitized_recursively():
 
 def test_parallel_routes_share_one_request_rate_limiter_and_counters():
     clock = Clock()
-    starts = []
+    request_clock = threading.local()
+    reservations = []
+    observations = []
     calls_lock = threading.Lock()
+    # The timeout is a deadlock watchdog, not a request-speed assertion.
+    transports_ready = threading.Barrier(3, timeout=5)
+
+    def monotonic():
+        instant = clock.monotonic()
+        request_clock.last_read = instant
+        return instant
 
     def opener(request, *, timeout):
+        # The client reads its reservation time while holding the shared rate
+        # lock. A different route can advance fake time before this opener runs.
+        reserved_at = request_clock.last_read
+        # Require transport overlap: the rate lock must be released before I/O.
+        transports_ready.wait()
         with calls_lock:
-            starts.append(clock.monotonic())
+            reservations.append(reserved_at)
+            observations.append(clock.monotonic())
         return Response(fixture("eia_empty_page.json"))
 
     client = EIAClient(
-        KEY, opener=opener, min_request_interval=1.0, sleep=clock.sleep, monotonic=clock.monotonic
+        KEY, opener=opener, min_request_interval=1.0, sleep=clock.sleep, monotonic=monotonic
     )
     routes = [ROUTE, "facility-nuclear-outages", "generator-nuclear-outages"]
     with ThreadPoolExecutor(max_workers=3) as pool:
         results = list(pool.map(lambda route: list(client.iter_pages(route, START, END)), routes))
     assert results == [[], [], []]
-    assert sorted(starts) == [0.0, 1.0, 2.0]
-    assert client.statistics["requests"] == 3
+    assert sorted(reservations) == [0.0, 1.0, 2.0]
+    assert clock.sleeps == [1.0, 1.0]
+    # All slots are reserved before recording, so the late shared-clock samples
+    # intentionally coincide instead of being mistaken for reservation times.
+    assert observations == [2.0, 2.0, 2.0]
+    assert client.statistics == {
+        "requests": 3,
+        "retries": 0,
+        "pages": 0,
+        "declared_totals": {route: 2850 for route in routes},
+    }
 
 
 def test_unknown_routes_are_rejected_before_transport():

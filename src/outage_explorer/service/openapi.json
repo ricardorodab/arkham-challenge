@@ -1879,7 +1879,19 @@
             "const": "wasm-buffer-v1"
           },
           "process_memory_limit_mib": {
-            "const": 512
+            "enum": [
+              512,
+              null
+            ],
+            "description": "Windows Job Object process/job memory cap; null on POSIX."
+          },
+          "data_allocation_limit_mib": {
+            "enum": [
+              512,
+              1024,
+              null
+            ],
+            "description": "POSIX engine data-allocation allowance: 1024 MiB on Linux for Node/V8 code reservations, 512 MiB on other POSIX systems; not total RSS. Null on Windows."
           },
           "wasm_memory_limit_mib": {
             "const": 256
@@ -1892,6 +1904,7 @@
           "engine",
           "isolation",
           "process_memory_limit_mib",
+          "data_allocation_limit_mib",
           "wasm_memory_limit_mib"
         ],
         "additionalProperties": false

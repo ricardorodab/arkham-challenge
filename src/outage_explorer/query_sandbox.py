@@ -160,7 +160,9 @@ def runtime_status() -> dict[str, Any]:
             "engine": ENGINE_VERSION,
             "isolation": "wasm-buffer-v1",
             "process_memory_limit_mib": 512 if os.name == "nt" else None,
-            "data_allocation_limit_mib": 512 if os.name != "nt" else None,
+            "data_allocation_limit_mib": (1024 if sys.platform == "linux" else 512)
+            if os.name != "nt"
+            else None,
             "wasm_memory_limit_mib": 256,
         }
     except (SandboxError, OSError, subprocess.SubprocessError, UnicodeError):
@@ -445,7 +447,12 @@ def run_query(
         str(modules),
     ]
     if os.name != "nt":
-        args = [sys.executable, "-I", "-S", str(ASSETS / "posix_launcher.py"), *args]
+        if sys.platform == "linux":
+            # Linux counts V8's writable code reservations against RLIMIT_DATA.
+            # Bound WASM reservations separately from committed code; engine mode
+            # also budgets the pinned Linux x64 Node's JavaScript CodeRange.
+            args.insert(1, "--wasm-max-code-space-size-mb=128")
+        args = [sys.executable, "-I", "-S", str(ASSETS / "posix_launcher.py"), "--engine", *args]
     remaining = timeout_seconds - (time.monotonic() - started)
     if remaining <= 0:
         raise SandboxError("query_timeout")
