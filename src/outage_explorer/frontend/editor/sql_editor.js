@@ -37,6 +37,7 @@ import {
   closeCompletion,
 } from '@codemirror/autocomplete';
 import { tags } from '@lezer/highlight';
+import { t } from '../static/outage_explorer/i18n.js';
 
 const KEYWORDS = [
   'SELECT',
@@ -92,7 +93,7 @@ export function schemaCompletions(dataset) {
     {
       label: dataset.id,
       type: 'class',
-      detail: 'Selected dataset',
+      detail: t('Selected dataset'),
       apply: quote(dataset.id),
       boost: 2,
     },
@@ -133,7 +134,7 @@ export function sqlCompletionSource(getDataset) {
             ...FUNCTIONS.map(([label, insertion, detail]) => ({
               label,
               type: 'function',
-              detail,
+              detail: t(detail),
               apply(view, completion, start, end) {
                 const cursor = start + insertion.length - (insertion.endsWith('()') ? 1 : 0);
                 view.dispatch({
@@ -185,10 +186,21 @@ const theme = EditorView.theme({
     overflow: 'auto',
     maxHeight: '520px',
   },
-  '.cm-scroller:focus-visible': { outline: '2px solid #2563eb', outlineOffset: '-2px' },
-  '.cm-content': { minHeight: '252px', padding: '14px 0', caretColor: '#172b4d' },
+  '.cm-scroller:focus-visible': {
+    outline: '2px solid #2563eb',
+    outlineOffset: '-2px',
+  },
+  '.cm-content': {
+    minHeight: '252px',
+    padding: '14px 0',
+    caretColor: '#172b4d',
+  },
   '.cm-line': { padding: '0 14px' },
-  '.cm-gutters': { backgroundColor: '#f4f6fa', color: '#52647b', borderRight: '1px solid #dce3ee' },
+  '.cm-gutters': {
+    backgroundColor: '#f4f6fa',
+    color: '#52647b',
+    borderRight: '1px solid #dce3ee',
+  },
   '.cm-lineNumbers .cm-gutterElement': { minWidth: '34px', padding: '0 8px' },
   '.cm-activeLine': { backgroundColor: '#f4f7fd' },
   '.cm-activeLineGutter': { backgroundColor: '#e7eefd', color: '#19469f' },
@@ -196,7 +208,10 @@ const theme = EditorView.theme({
     backgroundColor: '#dbe7ff !important',
   },
   '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#172b4d' },
-  '.cm-matchingBracket': { backgroundColor: '#e7eefd', outline: '1px solid #829dca' },
+  '.cm-matchingBracket': {
+    backgroundColor: '#e7eefd',
+    outline: '1px solid #829dca',
+  },
   '.cm-tooltip': {
     border: '1px solid #9baabe',
     borderRadius: '8px',
@@ -205,14 +220,24 @@ const theme = EditorView.theme({
     boxShadow: '0 8px 24px #172b4d24',
     maxWidth: 'min(560px, 92vw)',
   },
-  '.cm-tooltip-autocomplete > ul': { fontFamily: 'inherit', maxHeight: '230px' },
+  '.cm-tooltip-autocomplete > ul': {
+    fontFamily: 'inherit',
+    maxHeight: '230px',
+  },
   '.cm-tooltip-autocomplete > ul > li': { padding: '7px 10px' },
   '.cm-tooltip-autocomplete > ul > li[aria-selected]': {
     backgroundColor: '#2458c6',
     color: '#fff',
   },
-  '.cm-completionDetail': { marginLeft: '14px', fontSize: '12px', opacity: '1' },
-  '.cm-completionMatchedText': { textDecoration: 'underline', textUnderlineOffset: '2px' },
+  '.cm-completionDetail': {
+    marginLeft: '14px',
+    fontSize: '12px',
+    opacity: '1',
+  },
+  '.cm-completionMatchedText': {
+    textDecoration: 'underline',
+    textUnderlineOffset: '2px',
+  },
   '@media (max-width: 600px)': {
     '.cm-content': { minHeight: '220px' },
     '.cm-line': { padding: '0 8px' },
@@ -252,7 +277,7 @@ export function createSqlEditor({ textarea, onChange = () => {}, onRun = () => {
     });
   const attributes = {
     role: 'textbox',
-    'aria-label': 'SQL query',
+    'aria-label': t('SQL query'),
     'aria-multiline': 'true',
     spellcheck: 'false',
     autocapitalize: 'off',
@@ -262,6 +287,13 @@ export function createSqlEditor({ textarea, onChange = () => {}, onRun = () => {
   if (textarea.getAttribute('aria-describedby'))
     attributes['aria-describedby'] = textarea.getAttribute('aria-describedby');
   const extensions = () => [
+    EditorState.phrases.of({
+      Completions: t('Completions'),
+      'Control character': t('Control character'),
+      'Selection deleted': t('Selection deleted'),
+      'Folded lines': t('Folded lines'),
+      close: t('Close'),
+    }),
     EditorView.cspNonce.of(styleNonce),
     EditorView.contentAttributes.of(attributes),
     lineNumbers(),
@@ -297,7 +329,11 @@ export function createSqlEditor({ textarea, onChange = () => {}, onRun = () => {
   ];
   let view;
   try {
-    view = new EditorView({ doc: textarea.value, extensions: extensions(), parent: mount });
+    view = new EditorView({
+      doc: textarea.value,
+      extensions: extensions(),
+      parent: mount,
+    });
   } catch (error) {
     mount.remove();
     throw error;
@@ -306,7 +342,7 @@ export function createSqlEditor({ textarea, onChange = () => {}, onRun = () => {
   // users a named scrolling stop as well as the separate editable textbox.
   view.scrollDOM.tabIndex = 0;
   view.scrollDOM.setAttribute('role', 'region');
-  view.scrollDOM.setAttribute('aria-label', 'SQL editor scroll area');
+  view.scrollDOM.setAttribute('aria-label', t('SQL editor scroll area'));
   textarea.hidden = true;
   const label = textarea.ownerDocument.querySelector(`label[for="${textarea.id}"]`);
   const focusLabel = (event) => {
@@ -316,7 +352,9 @@ export function createSqlEditor({ textarea, onChange = () => {}, onRun = () => {
   label?.addEventListener('click', focusLabel);
   const syncInput = () => {
     if (!destroyed && textarea.value !== view.state.doc.toString()) {
-      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: textarea.value } });
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: textarea.value },
+      });
     }
   };
   textarea.addEventListener('input', syncInput);

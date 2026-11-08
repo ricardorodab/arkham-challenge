@@ -177,16 +177,25 @@ def test_output_and_deadline_failure_recover_on_next_child(facilities):
 
 
 def test_integrity_cache_is_bounded_and_avoids_repeat_full_reads(facilities, monkeypatch):
-    runtime._VERIFIED.clear()
-    execute(facilities)
+    with runtime._CACHE_LOCK:
+        runtime._VERIFIED.clear()
+    source_identity = facilities[0].stat()
     original = os.read
     reads = []
 
-    def recorded(*args):
-        reads.append(True)
-        return original(*args)
+    def recorded(descriptor, size):
+        # os is shared with subprocess: POSIX startup can also read an error pipe.
+        # Observe only the selected Parquet file, not unrelated process-control I/O.
+        source_read = os.path.samestat(os.fstat(descriptor), source_identity)
+        data = original(descriptor, size)
+        if source_read:
+            reads.append(len(data))
+        return data
 
     monkeypatch.setattr(runtime.os, "read", recorded)
+    execute(facilities)
+    assert sum(reads) == source_identity.st_size
+    reads.clear()
     execute(facilities)
     assert reads == []
     assert len(runtime._VERIFIED) <= runtime.CACHE_SIZE

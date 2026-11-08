@@ -6,6 +6,7 @@
  * statement uses one fixed logical source and the supported SELECT language. The
  * caller owns catalog authorization; the server remains authoritative for execution.
  */
+import { t } from './i18n.js';
 
 /** Construct a detached example definition with readable, bounded SQL text. */
 const example = (level, title, description, sql) => ({
@@ -489,5 +490,9 @@ export function sqlExamples(dataset) {
   }
   const source = EXAMPLES[dataset.id];
   if (!source.columns.every((name) => names.has(name))) return [];
-  return source.items.map((item) => ({ ...item }));
+  return source.items.map((item) => ({
+    ...item,
+    title: t(item.title),
+    description: t(item.description),
+  }));
 }

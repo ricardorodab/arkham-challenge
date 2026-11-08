@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 /**
  * @module api
  * Same-origin HTTP client and per-workspace analytical scheduling.
@@ -20,7 +21,7 @@ export class ApiError extends Error {
     message,
     { status = 0, code = 'network_error', requestId = '', retryAfter = 0 } = {},
   ) {
-    super(message);
+    super(t(message));
     Object.assign(this, { name: 'ApiError', status, code, requestId, retryAfter });
   }
 }

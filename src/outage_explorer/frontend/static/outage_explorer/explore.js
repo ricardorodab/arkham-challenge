@@ -4,6 +4,7 @@
  * Drafts never alter applied cursor requests. Generation guards discard obsolete
  * work, and one raw packet plus its visible subset bound browser memory.
  */
+import { t, getLocale } from './i18n.js';
 import { StaleRequest, verifyPage } from './api.js';
 import {
   byId,
@@ -82,26 +83,34 @@ export function compareDecimals(first, second) {
   return a.sign * magnitude;
 }
 
-/** Validate one exact input against its declared scalar type; never round a user's value. */
+/** Validate exact scalar input; normalize only an unambiguous Spanish decimal comma. */
 function scalarInput(value, type) {
   if (typeof value !== 'string' || value.includes('\0') || [...value].length > 256)
-    throw new Error('Use at most 256 characters and no null characters in a filter value.');
+    throw new Error(t('Use at most 256 characters and no null characters in a filter value.'));
   const kind = filterKind(type);
-  if (kind === 'date' && !isoDate(value)) throw new Error('Choose a valid calendar date.');
+  if (kind === 'date' && !isoDate(value)) throw new Error(t('Choose a valid calendar date.'));
   if (kind === 'boolean' && !['true', 'false'].includes(value))
-    throw new Error('Choose True or False.');
+    throw new Error(t('Choose True or False.'));
   if (kind === 'number') {
     const integer = /^(?:INTEGER|BIGINT)$/.test(type);
+    if (
+      getLocale() === 'es-ES' &&
+      /^DECIMAL\(\d+,\d+\)$/.test(type) &&
+      /^[+-]?\d+,\d+$/.test(value)
+    )
+      value = value.replace(',', '.');
     if (!(integer ? /^[+-]?\d+$/ : /^[+-]?\d+(?:\.\d+)?$/).test(value))
       throw new Error(
-        'Enter an exact number with digits before the decimal point; do not use exponent notation.',
+        t(
+          'Enter an exact number with digits before the decimal point; do not use exponent notation.',
+        ),
       );
     if (integer) {
-      if (value.length > 32) throw new Error('Use at most 32 characters for an integer.');
+      if (value.length > 32) throw new Error(t('Use at most 32 characters for an integer.'));
       const bits = type === 'INTEGER' ? 32n : 64n,
         number = BigInt(value);
       if (number < -(1n << (bits - 1n)) || number >= 1n << (bits - 1n))
-        throw new Error('This integer is outside the column’s supported range.');
+        throw new Error(t('This integer is outside the column’s supported range.'));
     } else {
       const match = type.match(/^DECIMAL\((\d+),(\d+)\)$/);
       if (match) {
@@ -111,7 +120,7 @@ function scalarInput(value, type) {
           whole.replace(/^0+/, '').length > Number(match[1]) - Number(match[2]) ||
           fraction.replace(/0+$/, '').length > Number(match[2])
         )
-          throw new Error(`Enter a value that fits ${type} without rounding.`);
+          throw new Error(t('Enter a value that fits {type} without rounding.', { type }));
       }
     }
   }
@@ -121,13 +130,13 @@ function scalarInput(value, type) {
 /** Normalize up to eight typed AND conditions from draft controls to strict wire objects. */
 export function normalizeConditions(columns, drafts) {
   if (!Array.isArray(drafts) || drafts.length > 8)
-    throw new Error('Use at most eight column conditions.');
+    throw new Error(t('Use at most eight column conditions.'));
   const types = new Map(columns);
   return drafts.map((draft, index) => {
     try {
       const type = types.get(draft.column);
       if (!type || !filterOperators(type).includes(draft.op))
-        throw new Error('Choose a column and a supported condition.');
+        throw new Error(t('Choose a column and a supported condition.'));
       const result = { column: draft.column, op: draft.op };
       if (!NULL_OPS.includes(draft.op)) result.value = scalarInput(draft.value, type);
       if (draft.op === 'between') {
@@ -137,11 +146,13 @@ export function normalizeConditions(columns, drafts) {
             ? result.value.localeCompare(result.upper)
             : compareDecimals(result.value, result.upper)) > 0
         )
-          throw new Error('The lower value must be at most the upper value.');
+          throw new Error(t('The lower value must be at most the upper value.'));
       }
       return result;
     } catch (error) {
-      throw new Error(`Condition ${index + 1}: ${error.message}`);
+      throw new Error(
+        t('Condition {number}: {message}', { number: index + 1, message: error.message }),
+      );
     }
   });
 }
@@ -265,10 +276,10 @@ export class ExploreController {
     const dataset = this.dataset();
     if (!dataset) return;
     setText('dataset-description', dataset.description);
-    setText('dataset-row-count', Number(dataset.rows).toLocaleString());
+    setText('dataset-row-count', Number(dataset.rows).toLocaleString(getLocale()));
     setText(
       'dataset-grain',
-      dataset.primary_key.map((name) => name.replaceAll('_id', '')).join(' + '),
+      dataset.primary_key.map((name) => t(name.replaceAll('_id', ''))).join(' + '),
     );
     schema(byId('schema-content'), dataset);
     const sort = byId('explore-sort');
@@ -339,13 +350,13 @@ export class ExploreController {
   /** Render accessible typed inputs; column/operator edits preserve the focused select node. */
   renderConditions() {
     const list = byId('explore-filter-list');
-    list.replaceChildren(element('legend', 'sr-only', 'Column conditions'));
+    list.replaceChildren(element('legend', 'sr-only', t('Column conditions')));
     const columns = this.dataset()?.schema || [];
     this.conditions.forEach((draft, index) => {
       const row = element('div', 'column-filter-row');
       row.dataset.filterIndex = index;
       row.setAttribute('role', 'group');
-      row.setAttribute('aria-label', `Condition ${index + 1}`);
+      row.setAttribute('aria-label', t('Condition {number}', { number: index + 1 }));
       const field = (label, control) => {
         const wrapper = element('label', 'field');
         wrapper.append(element('span', '', label), control);
@@ -366,7 +377,7 @@ export class ExploreController {
       const fillOperators = () => {
         operator.replaceChildren();
         for (const op of filterOperators(type())) {
-          const option = element('option', '', LABELS[op]);
+          const option = element('option', '', t(LABELS[op]));
           option.value = op;
           operator.append(option);
         }
@@ -375,7 +386,7 @@ export class ExploreController {
       const fillValues = () => {
         values.replaceChildren();
         if (NULL_OPS.includes(draft.op)) {
-          values.append(element('p', 'condition-hint', 'No value needed.'));
+          values.append(element('p', 'condition-hint', t('No value needed.')));
           return;
         }
         const input = (key, label) => {
@@ -384,9 +395,9 @@ export class ExploreController {
           if (kind === 'boolean') {
             control = element('select');
             for (const [value, text] of [
-              ['', 'Choose…'],
-              ['true', 'True'],
-              ['false', 'False'],
+              ['', t('Choose…')],
+              ['true', t('True')],
+              ['false', t('False')],
             ]) {
               const option = element('option', '', text);
               option.value = value;
@@ -398,9 +409,15 @@ export class ExploreController {
             control.maxLength = 256;
             if (kind === 'number') {
               control.inputMode = 'decimal';
-              control.placeholder = 'Exact number';
+              control.placeholder = t('Exact number');
+              if (/^DECIMAL\(\d+,\d+\)$/.test(type()))
+                control.title = t(
+                  getLocale() === 'es-ES'
+                    ? 'Use a comma or decimal point, without thousands separators.'
+                    : 'Use a decimal point, without thousands separators.',
+                );
             }
-            if (kind === 'text') control.placeholder = 'Literal text (empty allowed)';
+            if (kind === 'text') control.placeholder = t('Literal text (empty allowed)');
           }
           control.dataset.filterPart = key;
           control.value = draft[key] || '';
@@ -410,8 +427,8 @@ export class ExploreController {
           });
           values.append(field(label, control));
         };
-        input('value', draft.op === 'between' ? 'From value' : 'Value');
-        if (draft.op === 'between') input('upper', 'Through value');
+        input('value', draft.op === 'between' ? t('From value') : t('Value'));
+        if (draft.op === 'between') input('upper', t('Through value'));
       };
       column.addEventListener('change', () => {
         draft.column = column.value;
@@ -426,9 +443,9 @@ export class ExploreController {
         fillValues();
         this.markDirty();
       });
-      const remove = element('button', 'button button-quiet condition-remove', 'Remove');
+      const remove = element('button', 'button button-quiet condition-remove', t('Remove'));
       remove.type = 'button';
-      remove.setAttribute('aria-label', `Remove condition ${index + 1}`);
+      remove.setAttribute('aria-label', t('Remove condition {number}', { number: index + 1 }));
       remove.addEventListener('click', () => {
         const index = this.conditions.indexOf(draft);
         if (index < 0) return;
@@ -440,15 +457,15 @@ export class ExploreController {
       fillOperators();
       fillValues();
       row.append(
-        field(`Column ${index + 1}`, column),
-        field('Condition', operator),
+        field(t('Column {number}', { number: index + 1 }), column),
+        field(t('Condition'), operator),
         values,
         remove,
       );
       list.append(row);
     });
     byId('explore-add-filter').disabled = this.conditions.length >= 8;
-    setText('explore-filter-count', `${this.conditions.length} of 8`);
+    setText('explore-filter-count', t('{count} of 8', { count: this.conditions.length }));
   }
 
   /** Capture strings without changing the last applied request or loaded packet. */
@@ -485,8 +502,7 @@ export class ExploreController {
     } catch {
       this.dirty = true;
     }
-    if (byId('explore-draft-warning').textContent !== 'Unapplied changes')
-      setText('explore-draft-warning', 'Unapplied changes');
+    setText('explore-draft-warning', t('Unapplied changes'));
     this.updatePager();
   }
 
@@ -497,7 +513,7 @@ export class ExploreController {
     try {
       const draft = this.rawDraft();
       if ([...draft.search].length > 256 || draft.search.includes('\0'))
-        throw new Error('Search accepts at most 256 characters and no null characters.');
+        throw new Error(t('Search accepts at most 256 characters and no null characters.'));
       const applied = {
         dataset_id: dataset.id,
         search: draft.search,
@@ -514,7 +530,7 @@ export class ExploreController {
         applied.limit < 1 ||
         applied.limit > 1000
       )
-        throw new Error('Choose a column, direction and page size from 1 to 1,000.');
+        throw new Error(t('Choose a column, direction and page size from 1 to 1,000.'));
       this.applied = applied;
       this.cursors = new Map([[0, null]]);
       this.page = 0;
@@ -544,15 +560,17 @@ export class ExploreController {
 
   /** Summarize the actual database request, separately from page-local filtering. */
   appliedSummary(applied) {
-    const parts = ['Applied query'];
-    if (applied.search) parts.push(`Dataset search “${applied.search}”`);
+    const parts = [t('Applied query')];
+    if (applied.search) parts.push(t('Dataset search “{search}”', { search: applied.search }));
     for (const item of applied.filters) {
       const value = item.value === undefined ? '' : ` ${item.value}`;
-      const upper = item.upper === undefined ? '' : ` to ${item.upper}`;
-      parts.push(`${columnTitle(item.column)} ${LABELS[item.op].toLowerCase()}${value}${upper}`);
+      const upper = item.upper === undefined ? '' : t(' to {value}', { value: item.upper });
+      parts.push(
+        `${columnTitle(item.column)} ${t(LABELS[item.op]).toLocaleLowerCase(getLocale())}${value}${upper}`,
+      );
     }
     parts.push(
-      `${columnTitle(applied.sort)} ${applied.direction === 'desc' ? 'descending' : 'ascending'}`,
+      `${columnTitle(applied.sort)} ${t(applied.direction === 'desc' ? 'descending' : 'ascending')}`,
     );
     return parts.join(' · ');
   }
@@ -575,7 +593,7 @@ export class ExploreController {
     visible('explore-local-empty', false);
     visible('explore-empty', false);
     visible('explore-table', false);
-    setText('explore-applied-filters', 'Loading database results…');
+    setText('explore-applied-filters', t('Loading database results…'));
     this.updatePager();
     const { dataset_id: datasetId, ...parameters } = applied;
     if (this.cursors.get(page)) parameters.cursor = this.cursors.get(page);
@@ -601,7 +619,10 @@ export class ExploreController {
       renderTable(
         byId('explore-table'),
         result,
-        `${datasetTitle(datasetId)} observations, database page ${page + 1}`,
+        t('{dataset} observations, database page {page}', {
+          dataset: datasetTitle(datasetId),
+          page: page + 1,
+        }),
         {
           sort: applied.sort,
           direction: applied.direction,
@@ -617,7 +638,7 @@ export class ExploreController {
         this.loaded = false;
         state('explore', 'error', error);
         visible('explore-content');
-        setText('explore-applied-filters', 'Database results could not be loaded.');
+        setText('explore-applied-filters', t('Database results could not be loaded.'));
         showError('explore-error', error, () => this.send(page));
       }
     } finally {
@@ -676,14 +697,17 @@ export class ExploreController {
     for (const button of byId('explore-table').querySelectorAll('.table-sort'))
       button.disabled = this.working;
     visible('explore-draft-warning', this.dirty && !!this.applied);
-    const pageLabel = this.packet ? `Page ${this.page + 1}` : '—';
+    const pageLabel = this.packet ? t('Page {page}', { page: this.page + 1 }) : '—';
     if (byId('explore-page-label').textContent !== pageLabel)
       setText('explore-page-label', pageLabel);
     const resultMeta = this.packet
-      ? `${this.visiblePacket?.rows.length ?? this.packet.rows.length} of ${this.packet.rows.length} loaded rows shown`
+      ? t('{visible} of {loaded} loaded rows shown', {
+          visible: this.visiblePacket?.rows.length ?? this.packet.rows.length,
+          loaded: this.packet.rows.length,
+        })
       : this.working
-        ? 'Loading a database page…'
-        : 'No database page loaded';
+        ? t('Loading a database page…')
+        : t('No database page loaded');
     if (byId('explore-result-meta').textContent !== resultMeta)
       setText('explore-result-meta', resultMeta);
   }

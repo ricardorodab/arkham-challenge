@@ -6,6 +6,7 @@
  * execution runs as the current viewer on the workspace's active publication;
  * sharing is not a substitute for underlying dataset permission.
  */
+import { t, getLocale } from './i18n.js';
 import { ApiError, StaleRequest, queryString, verifyPage } from './api.js';
 import { byId, element, visible, datasetTitle, columnTitle } from './dom.js';
 import { renderTable, exportPage } from './table.js';
@@ -66,9 +67,15 @@ function field(label, input) {
 
 /** Render a safe bounded API error without exposing response bodies or SQL literals. */
 function failure(container, error) {
-  container.replaceChildren(element('p', '', error.message || 'The view could not be loaded.'));
+  container.replaceChildren(element('p', '', error.message || t('The view could not be loaded.')));
   if (error.requestId)
-    container.append(element('p', 'request-reference', `Reference: ${error.requestId}`));
+    container.append(
+      element(
+        'p',
+        'request-reference',
+        t('Reference: {reference}', { reference: error.requestId }),
+      ),
+    );
   container.hidden = false;
 }
 
@@ -95,7 +102,7 @@ export async function collectSavedViewResult(request, view, modelId, isCurrent =
     });
     if (!isCurrent()) throw new StaleRequest();
     if (response?.view?.id !== view.id || response.view.revision !== view.revision)
-      throw new ApiError('This saved view changed. Reload the list before running it again.', {
+      throw new ApiError(t('This saved view changed. Reload the list before running it again.'), {
         code: 'view_changed',
       });
     const packet = verifyPage(response.result, view.dataset_id, modelId);
@@ -106,7 +113,7 @@ export async function collectSavedViewResult(request, view, modelId, isCurrent =
       packet.returned_rows !== packet.rows.length ||
       typeof packet.truncated !== 'boolean'
     )
-      throw new ApiError('The saved result did not match its bounded execution.', {
+      throw new ApiError(t('The saved result did not match its bounded execution.'), {
         code: 'invalid_response',
       });
     if (
@@ -115,27 +122,30 @@ export async function collectSavedViewResult(request, view, modelId, isCurrent =
         packet.result_rows !== first.result_rows ||
         packet.truncated !== first.truncated)
     )
-      throw new ApiError('The saved result changed while its pages were loading.', {
+      throw new ApiError(t('The saved result changed while its pages were loading.'), {
         code: 'invalid_response',
       });
     first ??= packet;
     bytes += new TextEncoder().encode(JSON.stringify(packet)).length;
     rows.push(...packet.rows);
     if (rows.length > MAX_ROWS || rows.length > first.result_rows || bytes > MAX_BYTES)
-      throw new ApiError('This preview is too large. Reduce the query or its result cap.', {
+      throw new ApiError(t('This preview is too large. Reduce the query or its result cap.'), {
         code: 'result_too_large',
       });
     cursor = packet.next_cursor ?? null;
     if (cursor && (typeof cursor !== 'string' || cursors.has(cursor) || !packet.rows.length))
-      throw new ApiError('The saved result continuation was invalid.', {
+      throw new ApiError(t('The saved result continuation was invalid.'), {
         code: 'invalid_response',
       });
     if (cursor) cursors.add(cursor);
   } while (cursor);
   if (!first || rows.length !== first.result_rows)
-    throw new ApiError('The complete retained result could not be loaded. Please run it again.', {
-      code: 'incomplete_result',
-    });
+    throw new ApiError(
+      t('The complete retained result could not be loaded. Please run it again.'),
+      {
+        code: 'incomplete_result',
+      },
+    );
   return { ...first, rows, returned_rows: rows.length, next_cursor: null };
 }
 
@@ -214,7 +224,7 @@ export class SavedViewsController {
       listGeneration === this.listGeneration &&
       this.catalog?.model_id === modelId;
     visible('saved-views-error', false);
-    byId('saved-views-status').textContent = 'Loading saved views…';
+    byId('saved-views-status').textContent = t('Loading saved views…');
     byId('saved-views-list').setAttribute('aria-busy', 'true');
     const promise = (async () => {
       try {
@@ -234,7 +244,7 @@ export class SavedViewsController {
           typeof response.can_create !== 'boolean' ||
           typeof response.can_share !== 'boolean'
         )
-          throw new ApiError('The saved-view list could not be read.', {
+          throw new ApiError(t('The saved-view list could not be read.'), {
             code: 'invalid_response',
           });
         this.capabilities = {
@@ -252,7 +262,7 @@ export class SavedViewsController {
       } catch (error) {
         if (error instanceof StaleRequest || !isCurrent()) return;
         failure(byId('saved-views-error'), error);
-        byId('saved-views-status').textContent = 'Saved views are unavailable. Try refreshing.';
+        byId('saved-views-status').textContent = t('Saved views are unavailable. Try refreshing.');
       } finally {
         if (isCurrent()) {
           byId('saved-views-list').setAttribute('aria-busy', 'false');
@@ -272,13 +282,21 @@ export class SavedViewsController {
     for (const state of this.cards.values()) state.sequence++;
     this.cards.clear();
     byId('saved-views-description').textContent = this.capabilities.can_create
-      ? `Create a query in SQL workspace, then save its table and optional time-series chart here. Each account can keep up to ${this.maxOwned} saved views.`
-      : 'Shared tables and graphs appear here when their data is permitted for your account.';
+      ? t(
+          'Create a query in SQL workspace, then save its table and optional time-series chart here. Each account can keep up to {count} saved views.',
+          { count: this.maxOwned },
+        )
+      : t('Shared tables and graphs appear here when their data is permitted for your account.');
     byId('saved-views-status').textContent = this.views.length
-      ? `${this.views.length} saved view${this.views.length === 1 ? '' : 's'} on this page. Load a view to see its current data.`
+      ? t(
+          this.views.length === 1
+            ? '{count} saved view on this page. Load a view to see its current data.'
+            : '{count} saved views on this page. Load a view to see its current data.',
+          { count: this.views.length },
+        )
       : this.capabilities.can_create
-        ? 'No saved views yet. Save a query from SQL workspace to get started.'
-        : 'No shared views are available for your account.';
+        ? t('No saved views yet. Save a query from SQL workspace to get started.')
+        : t('No shared views are available for your account.');
     for (const view of this.views) {
       const card = element('article', 'panel saved-view-card');
       card.dataset.viewId = view.id;
@@ -288,42 +306,44 @@ export class SavedViewsController {
       card.setAttribute('aria-labelledby', title.id);
       const labels = view.shared_roles?.length
         ? view.is_owner
-          ? `Shared with ${ROLES.filter(([id]) => view.shared_roles.includes(id))
-              .map(([, label]) => label)
-              .join(', ')}`
-          : 'Shared with you'
-        : 'Private';
+          ? t('Shared with {roles}', {
+              roles: ROLES.filter(([id]) => view.shared_roles.includes(id))
+                .map(([, label]) => t(label))
+                .join(', '),
+            })
+          : t('Shared with you')
+        : t('Private');
       const metadata = element(
         'p',
         'saved-view-meta',
-        `${datasetTitle(view.dataset_id)} · ${labels}${view.is_owner ? ' · Your view' : ''}`,
+        `${datasetTitle(view.dataset_id)} · ${labels}${view.is_owner ? t(' · Your view') : ''}`,
       );
       const summary = element('div');
       summary.append(title, metadata);
       const actions = element('div', 'saved-view-actions');
       const output = element('div', 'saved-view-result');
-      const status = element('p', 'saved-view-meta', 'Not loaded.');
+      const status = element('p', 'saved-view-meta', t('Not loaded.'));
       status.setAttribute('role', 'status');
       const error = element('div', 'notice notice-error');
       error.setAttribute('role', 'alert');
       error.hidden = true;
       const state = { view, card, output, status, error, packet: null, page: 0, sequence: 0 };
-      const run = button('Load view', () => this.runView(state));
+      const run = button(t('Load view'), () => this.runView(state));
       state.run = run;
       actions.append(run);
       if (view.can_edit) {
         actions.append(
-          button('Edit view', () => this.openSave({ ...view, packet: state.packet }, view)),
+          button(t('Edit view'), () => this.openSave({ ...view, packet: state.packet }, view)),
         );
         actions.append(
-          button('Open in SQL', () => {
+          button(t('Open in SQL'), () => {
             this.onLoadSql(view);
           }),
         );
       }
       if (view.can_delete) {
         state.deleteButton = button(
-          'Delete',
+          t('Delete'),
           () => this.confirmDelete(state),
           'button button-quiet button-small',
         );
@@ -335,8 +355,8 @@ export class SavedViewsController {
       const sql = element('pre', 'saved-view-sql', view.sql);
       sql.tabIndex = 0;
       sql.setAttribute('role', 'region');
-      sql.setAttribute('aria-label', `${view.name} SQL definition`);
-      definition.append(element('summary', '', 'Query definition'), sql);
+      sql.setAttribute('aria-label', t('{name} SQL definition', { name: view.name }));
+      definition.append(element('summary', '', t('Query definition')), sql);
       card.append(definition);
       list.append(card);
       this.cards.set(view.id, state);
@@ -344,11 +364,15 @@ export class SavedViewsController {
     const pager = byId('saved-views-pagination');
     pager.replaceChildren();
     if (this.page || this.cursorChain[this.page + 1]) {
-      const previous = button('Previous views', () => this.load(true, this.page - 1));
+      const previous = button(t('Previous views'), () => this.load(true, this.page - 1));
       previous.disabled = this.page === 0;
-      const next = button('Next views', () => this.load(true, this.page + 1));
+      const next = button(t('Next views'), () => this.load(true, this.page + 1));
       next.disabled = !this.cursorChain[this.page + 1];
-      pager.append(previous, element('span', 'page-label', `Page ${this.page + 1}`), next);
+      pager.append(
+        previous,
+        element('span', 'page-label', t('Page {page}', { page: this.page + 1 })),
+        next,
+      );
     }
   }
 
@@ -368,7 +392,7 @@ export class SavedViewsController {
     state.run.disabled = true;
     state.card.setAttribute('aria-busy', 'true');
     state.error.hidden = true;
-    state.status.textContent = 'Loading the complete retained result…';
+    state.status.textContent = t('Loading the complete retained result…');
     this.detachChart(state);
     state.output.replaceChildren();
     state.packet = null;
@@ -395,12 +419,12 @@ export class SavedViewsController {
       this.renderResult(state);
     } catch (error) {
       if (error instanceof StaleRequest || !isCurrent()) return;
-      state.status.textContent = 'This view could not be loaded.';
+      state.status.textContent = t('This view could not be loaded.');
       failure(state.error, error);
     } finally {
       if (isCurrent()) {
         state.run.disabled = false;
-        state.run.textContent = state.packet ? 'Reload view' : 'Load view';
+        state.run.textContent = state.packet ? t('Reload view') : t('Load view');
         state.card.setAttribute('aria-busy', 'false');
       }
     }
@@ -416,9 +440,10 @@ export class SavedViewsController {
       this.detachChart(state);
       state.packet = null;
       state.output.replaceChildren();
-      state.status.textContent =
-        'Preview released to keep the workspace bounded. Load it again when needed.';
-      state.run.textContent = 'Load view';
+      state.status.textContent = t(
+        'Preview released to keep the workspace bounded. Load it again when needed.',
+      );
+      state.run.textContent = t('Load view');
     }
   }
 
@@ -428,10 +453,14 @@ export class SavedViewsController {
     const tableId = `saved-view-table-${view.id}`;
     this.detachChart(state);
     state.output.replaceChildren();
-    state.status.textContent = `${packet.rows.length.toLocaleString()} retained rows · Version ${packet.model_id.slice(0, 8)}${packet.truncated ? ' · Capped result; refine the SQL for complete coverage.' : ''}`;
+    state.status.textContent = t('{count} retained rows · Version {version}{capped}', {
+      count: packet.rows.length.toLocaleString(getLocale()),
+      version: packet.model_id.slice(0, 8),
+      capped: packet.truncated ? t(' · Capped result; refine the SQL for complete coverage.') : '',
+    });
     if (!packet.rows.length) {
       state.output.append(
-        element('p', 'empty-state', 'This query returned no rows on the active publication.'),
+        element('p', 'empty-state', t('This query returned no rows on the active publication.')),
       );
       return;
     }
@@ -450,41 +479,53 @@ export class SavedViewsController {
     table.id = tableId;
     const start = state.page * TABLE_PAGE_SIZE;
     const page = { ...packet, rows: packet.rows.slice(start, start + TABLE_PAGE_SIZE) };
-    renderTable(table, page, `${view.name}: exact values, page ${state.page + 1}`, {
-      showTypes: false,
-    });
+    renderTable(
+      table,
+      page,
+      t('{name}: exact values, page {page}', { name: view.name, page: state.page + 1 }),
+      {
+        showTypes: false,
+      },
+    );
     const wrap = element('div', 'table-wrap');
     wrap.tabIndex = 0;
     wrap.setAttribute('role', 'region');
     wrap.setAttribute(
       'aria-label',
-      `${view.name} table, page ${state.page + 1}, scroll for additional columns`,
+      t('{name} table, page {page}, scroll for additional columns', {
+        name: view.name,
+        page: state.page + 1,
+      }),
     );
     wrap.append(table);
     state.output.append(wrap);
     const pager = element('div', 'pagination');
-    const previous = button('Previous rows', () => {
+    const previous = button(t('Previous rows'), () => {
       state.page--;
       this.renderResult(state);
       state.output.querySelector('.table-wrap')?.focus();
     });
     previous.disabled = state.page === 0;
-    const next = button('Next rows', () => {
+    const next = button(t('Next rows'), () => {
       state.page++;
       this.renderResult(state);
       state.output.querySelector('.table-wrap')?.focus();
     });
     next.disabled = start + TABLE_PAGE_SIZE >= packet.rows.length;
-    const exportButton = button('Export this page', () =>
+    const exportButton = button(t('Export this page'), () =>
       exportPage(page, view.dataset_id, packet.model_id),
     );
     const actions = element('div', 'pagination-actions');
-    actions.append(previous, element('span', 'page-label', `Page ${state.page + 1}`), next);
+    actions.append(
+      previous,
+      element('span', 'page-label', t('Page {page}', { page: state.page + 1 })),
+      next,
+    );
     pager.append(
       element(
         'p',
         'pagination-note',
-        'Chart covers all retained rows; table pages keep exact values.',
+        t('Chart covers all retained rows; table pages keep exact values.'),
       ),
       actions,
       exportButton,
@@ -559,12 +600,12 @@ export class SavedViewsController {
     state.card.querySelector('.saved-view-confirm')?.remove();
     const confirmation = element('div', 'notice saved-view-confirm');
     confirmation.setAttribute('role', 'group');
-    confirmation.setAttribute('aria-label', `Delete ${state.view.name}`);
-    const cancel = button('Keep view', () => {
+    confirmation.setAttribute('aria-label', t('Delete {name}', { name: state.view.name }));
+    const cancel = button(t('Keep view'), () => {
       confirmation.remove();
       state.deleteButton?.focus();
     });
-    const remove = button('Delete saved view', async () => {
+    const remove = button(t('Delete saved view'), async () => {
       const generation = this.generation;
       remove.disabled = cancel.disabled = true;
       try {
@@ -576,7 +617,7 @@ export class SavedViewsController {
         state.sequence++;
         this.detachChart(state);
         state.packet = null;
-        this.context.notice?.('Saved view deleted.');
+        this.context.notice?.(t('Saved view deleted.'));
         await this.load(true, 0);
         this.focusListStatus();
       } catch (error) {
@@ -589,7 +630,9 @@ export class SavedViewsController {
       element(
         'p',
         '',
-        `Delete “${state.view.name}”? This removes its saved query and chart definition.`,
+        t('Delete “{name}”? This removes its saved query and chart definition.', {
+          name: state.view.name,
+        }),
       ),
       cancel,
       remove,
@@ -604,7 +647,7 @@ export class SavedViewsController {
     if (this.disposed || !this.catalog || !this.context.alive()) return;
     if (existing ? !existing.can_edit : !this.capabilities.can_create) {
       this.context.notice?.(
-        'Your current permissions do not allow creating or editing saved queries.',
+        t('Your current permissions do not allow creating or editing saved queries.'),
       );
       return;
     }
@@ -618,15 +661,17 @@ export class SavedViewsController {
     this.returnFocus = document.activeElement;
     dialog.replaceChildren();
     const form = element('form', 'saved-view-form');
-    const title = element('h2', '', existing ? 'Edit saved view' : 'Save table and graph');
+    const title = element('h2', '', existing ? t('Edit saved view') : t('Save table and graph'));
     title.id = 'saved-view-dialog-title';
     const description = element(
       'p',
       'saved-view-meta',
-      'Save this query as a named Overview view. Results run against the publication you are currently exploring.',
+      t(
+        'Save this query as a named Overview view. Results run against the publication you are currently exploring.',
+      ),
     );
     const controls = element('fieldset', 'saved-view-fields');
-    controls.append(element('legend', 'sr-only', 'View settings'));
+    controls.append(element('legend', 'sr-only', t('View settings')));
     const name = element('input');
     name.type = 'text';
     name.required = true;
@@ -636,16 +681,19 @@ export class SavedViewsController {
     const sql = element('pre', 'saved-view-sql', specification.sql);
     sql.tabIndex = 0;
     sql.setAttribute('role', 'region');
-    sql.setAttribute('aria-label', 'Saved SQL definition');
+    sql.setAttribute('aria-label', t('Saved SQL definition'));
     const sqlDetails = element('details');
-    sqlDetails.append(element('summary', '', `Query · ${datasetTitle(dataset.id)}`), sql);
-    controls.append(field('View name', name), sqlDetails);
+    sqlDetails.append(
+      element('summary', '', t('Query · {dataset}', { dataset: datasetTitle(dataset.id) })),
+      sql,
+    );
+    controls.append(field(t('View name'), name), sqlDetails);
     const chartEnabled = element('input');
     chartEnabled.type = 'checkbox';
     chartEnabled.checked =
       specification.chart?.enabled === true || specification.chart_config?.enabled === true;
     const chartLabel = element('label', 'saved-view-checkbox');
-    chartLabel.append(chartEnabled, element('span', '', 'Include a time-series graph'));
+    chartLabel.append(chartEnabled, element('span', '', t('Include a time-series graph')));
     const settings = element('div', 'saved-view-chart-fields');
     const choices = specification.packet
       ? chartOptions(specification.packet)
@@ -677,17 +725,21 @@ export class SavedViewsController {
       input.autocomplete = 'off';
       input.maxLength = 128;
       input.value = currentChart[key] ?? (optional ? '' : (values[0]?.name ?? ''));
-      input.placeholder = optional ? 'One series' : 'Exact result column name';
+      input.placeholder = optional ? t('One series') : t('Exact result column name');
       const wrapper = field(label, input);
       wrapper.append(list);
       settings.append(wrapper);
       return input;
     };
-    const dateColumn = chartInput('date_column', 'Date column', choices.date_columns);
-    const valueColumn = chartInput('value_column', 'Numeric value column', choices.numeric_columns);
+    const dateColumn = chartInput('date_column', t('Date column'), choices.date_columns);
+    const valueColumn = chartInput(
+      'value_column',
+      t('Numeric value column'),
+      choices.numeric_columns,
+    );
     const seriesColumn = chartInput(
       'series_column',
-      'Series column (optional)',
+      t('Series column (optional)'),
       choices.series_columns,
       true,
     );
@@ -695,7 +747,9 @@ export class SavedViewsController {
       element(
         'p',
         'saved-view-meta',
-        'Use result column names, including SQL aliases. Each date and series pair must identify one row; aggregate duplicates in SQL.',
+        t(
+          'Use result column names, including SQL aliases. Each date and series pair must identify one row; aggregate duplicates in SQL.',
+        ),
       ),
     );
     const syncChart = () => {
@@ -706,7 +760,7 @@ export class SavedViewsController {
     syncChart();
     controls.append(chartLabel, settings);
     const audience = element('fieldset', 'saved-view-audience');
-    audience.append(element('legend', '', 'Who can see this view?'));
+    audience.append(element('legend', '', t('Who can see this view?')));
     const roleInputs = [];
     const allowedPersonas = dataset.allowed_personas?.map((role) => role.toLowerCase());
     if (this.capabilities.can_share) {
@@ -717,7 +771,7 @@ export class SavedViewsController {
         checkbox.checked = existing?.shared_roles?.includes(role) ?? false;
         checkbox.disabled = !!allowedPersonas && !allowedPersonas.includes(role);
         const wrapper = element('label', 'saved-view-checkbox');
-        wrapper.append(checkbox, element('span', '', label));
+        wrapper.append(checkbox, element('span', '', t(label)));
         audience.append(wrapper);
         roleInputs.push(checkbox);
       }
@@ -725,19 +779,21 @@ export class SavedViewsController {
         element(
           'p',
           'saved-view-meta',
-          'Leave all unchecked for a private view. Sharing includes the query text and requires the recipient to have dataset access.',
+          t(
+            'Leave all unchecked for a private view. Sharing includes the query text and requires the recipient to have dataset access.',
+          ),
         ),
       );
     } else
-      audience.append(element('p', 'saved-view-meta', 'This view is private to your account.'));
+      audience.append(element('p', 'saved-view-meta', t('This view is private to your account.')));
     controls.append(audience);
     const error = element('div', 'notice notice-error');
     error.setAttribute('role', 'alert');
     error.hidden = true;
     const status = element('p', 'saved-view-meta');
     status.setAttribute('role', 'status');
-    const cancel = button('Cancel', () => this.closeEditor());
-    const submit = element('button', 'button', existing ? 'Save changes' : 'Save view');
+    const cancel = button(t('Cancel'), () => this.closeEditor());
+    const submit = element('button', 'button', existing ? t('Save changes') : t('Save view'));
     submit.type = 'submit';
     const actions = element('div', 'saved-view-actions');
     actions.append(cancel, submit);
@@ -775,7 +831,7 @@ export class SavedViewsController {
       this.formWorking = true;
       controls.disabled = cancel.disabled = submit.disabled = true;
       error.hidden = true;
-      status.textContent = 'Validating the query and saving this view…';
+      status.textContent = t('Validating the query and saving this view…');
       try {
         await this.context.queue.run(
           () =>
@@ -788,7 +844,9 @@ export class SavedViewsController {
         if (!isCurrent()) return;
         this.formWorking = false;
         this.closeEditor();
-        this.context.notice?.(existing ? 'Saved view updated.' : 'Saved view added to Overview.');
+        this.context.notice?.(
+          existing ? t('Saved view updated.') : t('Saved view added to Overview.'),
+        );
         await this.load(true, 0);
         this.focusListStatus();
       } catch (caught) {

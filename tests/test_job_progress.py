@@ -154,6 +154,7 @@ def test_terminal_failure_preserves_last_real_event(settings, tmp_path, monkeypa
 @pytest.mark.django_db(transaction=True)
 def test_progress_migration_preserves_existing_jobs_and_defaults_to_unknown():
     executor = MigrationExecutor(connection)
+    latest = executor.loader.graph.leaf_nodes()
     previous = [("service", "0001_initial")]
     current = [("service", "0002_refreshjob_progress")]
     executor.migrate(previous)
@@ -167,4 +168,6 @@ def test_progress_migration_preserves_existing_jobs_and_defaults_to_unknown():
         assert restored.status == "failed" and restored.progress == {} and restored.result == {}
         assert restored.owner_id == user.pk and restored.created_at == job.created_at
     finally:
-        MigrationExecutor(connection).migrate(current)
+        # Restore the complete current schema rather than leaving later account
+        # and saved-view migrations unapplied for subsequent transaction tests.
+        MigrationExecutor(connection).migrate(latest)

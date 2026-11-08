@@ -1,3 +1,4 @@
+import { t, bindLanguageSwitcher } from './i18n.js';
 /**
  * @module app
  * Compose the browser workspace, immutable model pin and session lifecycle.
@@ -61,7 +62,7 @@ export class Workspace {
         if (
           ![...byId('sql-max-rows').options].some((item) => item.value === String(view.max_rows))
         ) {
-          const option = element('option', '', `${view.max_rows} rows`);
+          const option = element('option', '', t(view.max_rows === 1 ? '{count} row' : '{count} rows', { count: view.max_rows }));
           option.value = String(view.max_rows);
           byId('sql-max-rows').append(option);
         }
@@ -148,7 +149,7 @@ export class Workspace {
    */
   configure(catalog) {
     if (!catalog || !/^[0-9a-f]{32}$/.test(catalog.model_id) || !Array.isArray(catalog.datasets))
-      throw new Error('The dataset catalog could not be loaded.');
+      throw new Error(t('The dataset catalog could not be loaded.'));
     this.catalog = catalog;
     this.candidate = null;
     visible('snapshot-notice', false);
@@ -196,12 +197,12 @@ export class Workspace {
     for (const section of document.querySelectorAll('.workspace-view'))
       section.hidden = section.id !== `view-${this.view}`;
     const titles = {
-      overview: 'Fleet overview',
-      explore: 'Explore data',
-      sql: 'SQL workspace',
-      refresh: 'Data refresh',
-      users: 'User management',
-      denied: 'Access restricted',
+      overview: t('Fleet overview'),
+      explore: t('Explore data'),
+      sql: t('SQL workspace'),
+      refresh: t('Data refresh'),
+      users: t('User management'),
+      denied: t('Access restricted'),
     };
     setText('page-title', titles[this.view]);
     document.title = `${titles[this.view]} · Outage Explorer`;
@@ -218,10 +219,10 @@ export class Workspace {
         denied = element('section', 'workspace-view empty-state');
         denied.id = 'view-denied';
         denied.append(
-          element('h2', '', 'Not allowed'),
-          element('p', '', 'This view is not available with your current access.'),
+          element('h2', '', t('Not allowed')),
+          element('p', '', t('This view is not available with your current access.')),
         );
-        const back = element('a', 'button', 'Return to fleet overview');
+        const back = element('a', 'button', t('Return to fleet overview'));
         back.href = '#overview';
         denied.append(back);
         byId('main-content').prepend(denied);
@@ -297,12 +298,12 @@ export class Workspace {
     await this.checkLatest();
     if (this.ended) return;
     if (!this.candidate) {
-      this.notice('You are already viewing the latest available publication.');
+      this.notice(t('You are already viewing the latest available publication.'));
       return;
     }
     const next = this.candidate;
     this.configure(next);
-    this.notice('The workspace is now using the latest verified publication.');
+    this.notice(t('The workspace is now using the latest verified publication.'));
     this.route(false);
     this.refresh?.render();
   }
@@ -342,7 +343,9 @@ export class Workspace {
     } catch (error) {
       if (!this.ended && !this.users?.awaitingSelfPasswordReset && this.protectSessionCheck)
         this.shield(
-          'Unable to verify your session. Your workspace is hidden until access can be confirmed.',
+          t(
+            'Unable to verify your session. Your workspace is hidden until access can be confirmed.',
+          ),
           () => this.checkSession(true),
         );
     } finally {
@@ -364,10 +367,10 @@ export class Workspace {
       document.body.append(shield);
     }
     shield.replaceChildren(
-      element('h1', '', 'Your workspace is protected'),
+      element('h1', '', t('Your workspace is protected')),
       element('p', '', message),
     );
-    const button = element('button', 'button', 'Try again');
+    const button = element('button', 'button', t('Try again'));
     button.type = 'button';
     button.addEventListener('click', retry);
     shield.append(button);
@@ -421,7 +424,9 @@ export class Workspace {
         location.replace('/login/?reason=signed-out');
       } else
         this.shield(
-          'Workspace content has been cleared, but sign-out could not be confirmed. Reconnect and try again.',
+          t(
+            'Workspace content has been cleared, but sign-out could not be confirmed. Reconnect and try again.',
+          ),
           () => this.signOut(),
         );
     } finally {
@@ -431,6 +436,7 @@ export class Workspace {
 }
 
 if (typeof document !== 'undefined' && byId('frontend-session')) {
+  bindLanguageSwitcher();
   const bootstrap = JSON.parse(byId('frontend-session').textContent);
   new Workspace(bootstrap).init();
 }

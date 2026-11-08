@@ -6,6 +6,7 @@
  * tables and export. Missing dates and undefined values split segments, while
  * observed zero remains a plotted value. No authoritative metric is recomputed.
  */
+import { t, getLocale } from './i18n.js';
 import { dateLabel, isoDate, numberLabel } from './dom.js';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -81,7 +82,7 @@ export function renderChart(container, data, start, end) {
   if (!valid.length) {
     const message = document.createElement('p');
     message.className = 'chart-empty';
-    message.textContent = 'No defined offline-capacity values in this range.';
+    message.textContent = t('No defined offline-capacity values in this range.');
     container.append(message);
     return;
   }
@@ -109,11 +110,18 @@ export function renderChart(container, data, start, end) {
     'aria-labelledby': 'fleet-chart-title fleet-chart-description',
   });
   svg.append(
-    svgNode('title', { id: 'fleet-chart-title' }, 'Daily share of national capacity offline'),
+    svgNode('title', { id: 'fleet-chart-title' }, t('Daily share of national capacity offline')),
     svgNode(
       'desc',
       { id: 'fleet-chart-description' },
-      `${valid.length} defined daily observations from ${dateLabel(start)} to ${dateLabel(end)}. Gaps and undefined values are shown as breaks. Exact observations are available in the chart data table.`,
+      t(
+        '{count} defined daily observations from {start} to {end}. Gaps and undefined values are shown as breaks. Exact observations are available in the chart data table.',
+        {
+          count: valid.length,
+          start: dateLabel(start),
+          end: dateLabel(end),
+        },
+      ),
     ),
   );
   for (let index = 0; index <= 4; index++) {
@@ -185,7 +193,8 @@ export function renderChart(container, data, start, end) {
   });
   const dot = svgNode('circle', { r: 5, class: 'chart-dot' });
   const bubble = svgNode('g');
-  const box = svgNode('rect', { width: 182, height: 56, rx: 6 });
+  const tooltipWidth = Math.min(getLocale() === 'es-ES' ? 230 : 182, width - 4);
+  const box = svgNode('rect', { width: tooltipWidth, height: 56, rx: 6 });
   const label = svgNode('text', { x: 12, y: 21 }),
     amount = svgNode('text', { x: 12, y: 43 });
   bubble.append(box, label, amount);
@@ -206,10 +215,10 @@ export function renderChart(container, data, start, end) {
     dot.setAttribute('cy', py);
     bubble.setAttribute(
       'transform',
-      `translate(${Math.max(plot.left, Math.min(width - 210, px + 14))},${Math.max(2, py - 70)})`,
+      `translate(${Math.max(2, Math.min(width - tooltipWidth - 2, px + 14))},${Math.max(2, py - 70)})`,
     );
     label.textContent = dateLabel(nearest.period);
-    amount.textContent = `${numberLabel(nearest.value, 3)}% offline`;
+    amount.textContent = t('{value}% offline', { value: numberLabel(nearest.value, 3) });
     tooltip.setAttribute('visibility', 'visible');
   });
   svg.addEventListener('pointerleave', () => tooltip.setAttribute('visibility', 'hidden'));

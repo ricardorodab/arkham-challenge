@@ -24,8 +24,10 @@
   },
   "type": "module",
   "scripts": {
-    "build:editor": "node scripts/build-sql-editor.mjs",
-    "check:editor": "node scripts/build-sql-editor.mjs --check",
+    "build:i18n": "node scripts/build-locales.mjs",
+    "check:i18n": "node scripts/build-locales.mjs --check",
+    "build:editor": "npm run build:i18n && node scripts/build-sql-editor.mjs",
+    "check:editor": "npm run check:i18n && node scripts/build-sql-editor.mjs --check",
     "test:browser": "playwright test",
     "test:unit": "node --test tests/frontend/*.test.mjs"
   }

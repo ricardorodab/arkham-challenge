@@ -6,6 +6,7 @@
  * Client schema insertion quotes identifiers only. Executed request state is
  * separate from edited text, and no result rows are persisted in browser storage.
  */
+import { t, getLocale } from './i18n.js';
 import { ApiError, StaleRequest, verifyPage } from './api.js';
 import {
   byId,
@@ -143,7 +144,7 @@ export class SqlController {
                 this.completePacket,
                 this.chartShownConfig,
                 {
-                  title: 'Query results over time',
+                  title: t('Query results over time'),
                   tableId: 'sql-table',
                 },
               );
@@ -321,7 +322,10 @@ export class SqlController {
     );
     schema(byId('sql-schema'), dataset, (name) => this.insert(name));
     state('sql', 'empty');
-    setText('sql-empty', 'Your query results will appear here. Run a read-only SELECT to begin.');
+    setText(
+      'sql-empty',
+      t('Your query results will appear here. Run a read-only SELECT to begin.'),
+    );
     visible('sql-truncated', false);
     byId('sql-run').disabled = false;
     this.updatePager();
@@ -349,16 +353,16 @@ export class SqlController {
    */
   run() {
     if (!this.catalog || !this.dataset()) {
-      state('sql', 'error', new Error('Load the dataset catalog before running a query.'));
+      state('sql', 'error', new Error(t('Load the dataset catalog before running a query.')));
       return;
     }
     const sql = byId('sql-editor').value;
     if (!sql.trim()) {
-      state('sql', 'error', new Error('Enter a SELECT query before running it.'));
+      state('sql', 'error', new Error(t('Enter a SELECT query before running it.')));
       return;
     }
     if (new TextEncoder().encode(sql).length > 16384) {
-      state('sql', 'error', new Error('Keep the query within 16 KiB.'));
+      state('sql', 'error', new Error(t('Keep the query within 16 KiB.')));
       return;
     }
     this.resetChart();
@@ -413,19 +417,26 @@ export class SqlController {
       renderTable(
         byId('sql-table'),
         result,
-        `SQL results for ${datasetTitle(applied.dataset_id)}, page ${page + 1}`,
+        t('SQL results for {dataset}, page {page}', {
+          dataset: datasetTitle(applied.dataset_id),
+          page: page + 1,
+        }),
       );
       state('sql', result.rows.length ? 'content' : 'empty');
       if (!result.rows.length)
         setText(
           'sql-empty',
-          'The query ran successfully and returned no rows. Try a wider date range or different filters.',
+          t(
+            'The query ran successfully and returned no rows. Try a wider date range or different filters.',
+          ),
         );
       visible('sql-truncated', result.truncated);
       if (result.truncated)
         setText(
           'sql-truncated',
-          `The result is limited to ${applied.max_rows.toLocaleString()} rows. Refine your query for a complete answer.`,
+          t('The result is limited to {count} rows. Refine your query for a complete answer.', {
+            count: applied.max_rows.toLocaleString(getLocale()),
+          }),
         );
       if (page === 0) this.saveHistory(applied, 'success');
     } catch (error) {
@@ -458,21 +469,33 @@ export class SqlController {
     byId('sql-save-view').disabled =
       this.working || !this.packet || !!changed || !this.context.savedViews?.canCreate();
     visible('sql-save-view', !!this.context.savedViews?.canCreate());
-    setText('sql-save-view', this.savedViewEditing ? 'Update saved view' : 'Save to overview');
+    setText(
+      'sql-save-view',
+      this.savedViewEditing ? t('Update saved view') : t('Save to overview'),
+    );
     byId('sql-save-view').title = changed
-      ? 'Run the edited query before saving it.'
-      : 'Save the last successful query as a named view.';
+      ? t('Run the edited query before saving it.')
+      : t('Save the last successful query as a named view.');
     byId('sql-chart-show').disabled = this.working || !this.packet || !this.chartPossible;
     setText(
       'sql-page-label',
       this.packet
-        ? `Page ${this.page + 1} · ${this.packet.result_rows.toLocaleString()} retained rows`
-        : 'No results yet',
+        ? t('Page {page} · {count} retained rows', {
+            page: this.page + 1,
+            count: this.packet.result_rows.toLocaleString(getLocale()),
+          })
+        : t('No results yet'),
     );
     if (this.packet)
       setText(
         'sql-result-meta',
-        `${datasetTitle(this.applied.dataset_id)} · ${this.packet.returned_rows} rows shown · Version ${this.applied.model_id.slice(0, 8)}${this.packet.cache_hit ? ' · Cached' : ''}${changed ? ' · Query or limits changed; results show the last run.' : ''}`,
+        t('{dataset} · {count} rows shown · Version {version}{cached}{changed}', {
+          dataset: datasetTitle(this.applied.dataset_id),
+          count: this.packet.returned_rows,
+          version: this.applied.model_id.slice(0, 8),
+          cached: this.packet.cache_hit ? t(' · Cached') : '',
+          changed: changed ? t(' · Query or limits changed; results show the last run.') : '',
+        }),
       );
   }
 
@@ -509,12 +532,12 @@ export class SqlController {
     const placeholder = element(
       'option',
       '',
-      this.history.length ? 'Choose a recent query' : 'No queries in this session',
+      this.history.length ? t('Choose a recent query') : t('No queries in this session'),
     );
     placeholder.value = '';
     select.append(placeholder);
     this.history.forEach((entry, index) => {
-      const label = `${datasetTitle(entry.dataset_id)} · ${entry.status === 'error' ? 'Error · ' : ''}${entry.sql.replace(/\s+/g, ' ').slice(0, 85)}`;
+      const label = `${datasetTitle(entry.dataset_id)} · ${entry.status === 'error' ? t('Error · ') : ''}${entry.sql.replace(/\s+/g, ' ').slice(0, 85)}`;
       const option = element('option', '', label);
       option.value = String(index);
       select.append(option);
@@ -556,7 +579,7 @@ export class SqlController {
       const select = byId(id);
       select.replaceChildren();
       if (optional) {
-        const option = element('option', '', 'One series');
+        const option = element('option', '', t('One series'));
         option.value = '';
         select.append(option);
       }
@@ -585,8 +608,12 @@ export class SqlController {
     setText(
       'sql-chart-hint',
       possible
-        ? 'Charts use all retained query rows, sorted by time. Repeated dates need a series field.'
-        : 'For a time graph, return a date column and a numeric value. This query can still be saved as a table.',
+        ? t(
+            'Charts use all retained query rows, sorted by time. Repeated dates need a series field.',
+          )
+        : t(
+            'For a time graph, return a date column and a numeric value. This query can still be saved as a table.',
+          ),
     );
   }
 
@@ -603,7 +630,7 @@ export class SqlController {
   /** Load the captured query's complete retained result, never a partial result page. */
   async retainedResult() {
     if (this.completePacket) return this.completePacket;
-    if (!this.applied || !this.firstPacket) throw new Error('Run the query before charting it.');
+    if (!this.applied || !this.firstPacket) throw new Error(t('Run the query before charting it.'));
     const applied = { ...this.applied };
     const generation = this.chartGeneration;
     const current = () =>
@@ -634,7 +661,7 @@ export class SqlController {
     const selection = ++this.chartSelectionGeneration;
     const config = this.chartConfig();
     visible('sql-chart-status', true);
-    setText('sql-chart-status', 'Loading the retained result for its time graph…');
+    setText('sql-chart-status', t('Loading the retained result for its time graph…'));
     try {
       const packet = await this.retainedResult();
       if (
@@ -644,14 +671,17 @@ export class SqlController {
       )
         return;
       renderQueryChart(byId('sql-query-chart'), packet, config, {
-        title: 'Query results over time',
+        title: t('Query results over time'),
         tableId: 'sql-table',
       });
       this.chartShownConfig = { ...config };
       this.chartWidth = byId('sql-query-chart').clientWidth;
       setText(
         'sql-chart-status',
-        `${packet.rows.length} retained rows · Version ${packet.model_id.slice(0, 8)}`,
+        t('{count} retained rows · Version {version}', {
+          count: packet.rows.length.toLocaleString(getLocale()),
+          version: packet.model_id.slice(0, 8),
+        }),
       );
     } catch (error) {
       if (
@@ -662,7 +692,7 @@ export class SqlController {
         return;
       setText(
         'sql-chart-status',
-        error.message || 'The query cannot be plotted with these fields.',
+        error.message || t('The query cannot be plotted with these fields.'),
       );
     }
   }

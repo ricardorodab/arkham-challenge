@@ -17,6 +17,7 @@ def test_populated_v3_accounts_jobs_views_and_sessions_survive_upgrade():
     previous = [("service", "0003_savedview")]
     current = [("service", "0004_user_sessions_and_refresh_owner")]
     executor = MigrationExecutor(connection)
+    leaves = executor.loader.graph.leaf_nodes()
     executor.migrate(previous)
     try:
         apps = executor.loader.project_state(previous).apps
@@ -74,4 +75,4 @@ def test_populated_v3_accounts_jobs_views_and_sessions_survive_upgrade():
         assert RefreshJob.objects.get(pk=old_job.pk).owner_id is None
         assert not SavedView.objects.filter(pk=old_view.pk).exists()
     finally:
-        MigrationExecutor(connection).migrate(current)
+        MigrationExecutor(connection).migrate(leaves)

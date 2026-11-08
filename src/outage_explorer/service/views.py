@@ -25,6 +25,7 @@ from . import api_services, saved_views, user_management
 from .authentication import limit_login
 from .errors import APIError, problem
 from .job_progress import public_progress
+from .localization import catalog_presentation, public_message
 from .models import RefreshJob
 from .policy import frontend_session_scope, identity, recheck, require_admin
 from .refresh import RefreshServiceError, enqueue_refresh
@@ -186,7 +187,9 @@ def session(request, actor):
 def catalog(request, actor):
     """Delegate an optional model pin to the authorized analytical metadata service."""
     args = parameters(request, {"model_id"})
-    return response(api_services.catalog(request, actor, args.get("model_id")))
+    return response(
+        catalog_presentation(api_services.catalog(request, actor, args.get("model_id")))
+    )
 
 
 @endpoint("GET", "POST")
@@ -315,7 +318,7 @@ def _job(job):
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         "error_code": job.error_code or None,
-        "message": job.public_message,
+        "message": public_message(job.public_message),
         "result": job.result,
         "progress": public_progress(job.progress),
         "status_url": f"/api/v1/refresh/{job.id}",

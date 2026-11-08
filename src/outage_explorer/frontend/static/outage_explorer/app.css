@@ -1298,6 +1298,10 @@ main:focus {
 .editor-footer > p > span {
   padding: 0 5px;
 }
+.editor-footer > .button-group {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 .sql-reference {
   padding: 21px 19px;
 }
@@ -2656,7 +2660,8 @@ main:focus {
   }
   .editor-footer > .button-group {
     width: 100%;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
   }
   .editor-footer .button {
     font-size: var(--text-xs);
@@ -4284,6 +4289,91 @@ main:focus {
 }
 .user-credential-actions {
   margin: 12px 0;
+}
+/* Language preference is public and independent of account or dataset permissions. */
+.language-toolbar {
+  min-height: 48px;
+  padding: 6px 36px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-soft);
+}
+.language-switcher {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: var(--text-xs);
+}
+.language-switcher label {
+  color: var(--muted);
+  font-weight: 600;
+}
+.language-switcher select {
+  min-height: 34px;
+  min-width: 112px;
+  padding: 5px 30px 5px 10px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--control-border);
+  font-size: var(--text-xs);
+}
+.language-switcher.is-enhanced button {
+  display: none;
+}
+.login-language-toolbar {
+  position: absolute;
+  top: 18px;
+  left: 24px;
+  right: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+@media (max-width: 800px) {
+  .workspace > .language-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 80;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .workspace-header {
+    top: 48px;
+  }
+  .sidebar {
+    top: 148px;
+  }
+}
+@media (max-width: 600px) {
+  .workspace-header {
+    min-height: 96px;
+  }
+  .workspace-header .header-meta {
+    display: none;
+  }
+  .page-heading {
+    min-width: 0;
+  }
+  .page-heading h1 {
+    font-size: 1.5rem;
+    overflow-wrap: anywhere;
+  }
+  .sidebar {
+    top: 144px;
+  }
+  .login-main {
+    padding-top: 96px;
+  }
+  .language-switcher select {
+    font-size: 16px;
+  }
+  .workspace-footer {
+    flex-wrap: wrap;
+  }
 }
 @media (max-width: 700px) {
   .user-section-intro {

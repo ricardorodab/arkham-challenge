@@ -50,14 +50,19 @@ class Browser:
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
         )
 
-    def request(self, path, payload=None, *, expected=200, method=None):
-        headers = {"Origin": self.base}
+    def request(
+        self, path, payload=None, *, expected=200, method=None, headers=None, include_headers=False
+    ):
+        """Send a bounded request, optionally retaining response headers for HTTP contracts."""
+        request_headers = {"Origin": self.base, **(headers or {})}
         data = None
         if payload is not None:
             data = json.dumps(payload).encode()
-            headers.update({"Content-Type": "application/json", "X-CSRFToken": self.csrf or ""})
+            request_headers.update(
+                {"Content-Type": "application/json", "X-CSRFToken": self.csrf or ""}
+            )
         request = urllib.request.Request(
-            self.base + path, data=data, headers=headers, method=method
+            self.base + path, data=data, headers=request_headers, method=method
         )
         try:
             response = self.opener.open(request, timeout=20)
@@ -67,7 +72,9 @@ class Browser:
             require(response.status == expected, "Unexpected HTTP status during acceptance.")
             body = response.read(3 * 1024 * 1024)
             content_type = response.headers.get("Content-Type", "")
-        return json.loads(body) if "json" in content_type else body
+            response_headers = response.headers
+        result = json.loads(body) if "json" in content_type else body
+        return (result, response_headers) if include_headers else result
 
     def login(self, username, password, *, role=None):
         self.csrf = self.request("/api/v1/auth/csrf")["csrf_token"]
@@ -327,6 +334,74 @@ class Acceptance:
         )
         self.completed.append(self.stage)
 
+    def check_interface_languages(self, base):
+        """Verify packaged translations through only this fresh acceptance HTTP service."""
+        self.stage = "packaged English and Spanish interface"
+        browser = Browser(base)
+        english, headers = browser.request("/login/", include_headers=True)
+        require(
+            b'<html lang="en">' in english
+            and b"Sign in" in english
+            and headers.get("Content-Language") == "en",
+            "The packaged login must default to English without a language preference.",
+        )
+        spanish_preference = {"Accept-Language": "es-MX,es;q=0.9,en;q=0.8"}
+        spanish, headers = browser.request(
+            "/login/", headers=spanish_preference, include_headers=True
+        )
+        require(
+            b'<html lang="es">' in spanish
+            and "Iniciar sesión".encode() in spanish
+            and b"Su espacio de trabajo" in spanish
+            and headers.get("Content-Language") == "es",
+            "The built image must load its Spanish server catalog and formal login copy.",
+        )
+        require(
+            {"cookie", "accept-language"}
+            <= {value.strip().lower() for value in headers.get("Vary", "").split(",")},
+            "Localized private pages must vary by language-cookie and browser preference.",
+        )
+        preferred, headers = browser.request(
+            "/login/",
+            headers={**spanish_preference, "Cookie": "outage_language=en"},
+            include_headers=True,
+        )
+        require(
+            b'<html lang="en">' in preferred and headers.get("Content-Language") == "en",
+            "An explicit English cookie must override a Spanish browser preference.",
+        )
+        denied, headers = browser.request(
+            "/api/v1/catalog", expected=401, headers=spanish_preference, include_headers=True
+        )
+        require(
+            denied["code"] == "authentication_required"
+            and denied["detail"] == "Inicie sesión para usar esta función."
+            and headers.get("Content-Language") == "es",
+            "Spanish API presentation must preserve the authentication boundary and code.",
+        )
+        helper, helper_headers = browser.request(
+            "/assets/i18n.js", headers=spanish_preference, include_headers=True
+        )
+        catalog, catalog_headers = browser.request(
+            "/assets/messages.es.js", headers=spanish_preference, include_headers=True
+        )
+        require(
+            b"messages.es.js" in helper
+            and "Iniciar sesión".encode() in catalog
+            and b"Su espacio de trabajo" in catalog,
+            "The built image must publish the shared helper and current Spanish browser catalog.",
+        )
+        require(
+            all(
+                "javascript" in values.get("Content-Type", "")
+                and not values.get("Content-Language")
+                and not values.get("Vary")
+                for values in (helper_headers, catalog_headers)
+            ),
+            "Translation assets must remain language-neutral JavaScript resources.",
+        )
+        self.completed.append(self.stage)
+
     @staticmethod
     def check_publication(state):
         require(state["uid"] != 0, "Stateful command ran as root.")
@@ -544,6 +619,7 @@ class Acceptance:
         )
         self.completed.append(self.stage)
 
+        self.check_interface_languages(base)
         self.check_accounts(clients)
 
         self.stage = "automatic worker reports missing configuration"

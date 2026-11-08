@@ -6,6 +6,7 @@
  * rather than charting a truncated period; retain exact values in the table and
  * use approximate numeric formatting only for graphical/card presentation.
  */
+import { t } from './i18n.js';
 import { ApiError, StaleRequest, queryString, verifyPage } from './api.js';
 import {
   byId,
@@ -109,11 +110,13 @@ export class OverviewController {
       end = byId('overview-end').value;
     try {
       if (!this.dataset)
-        throw new ApiError('The fleet metric is not available for this account.', { status: 403 });
+        throw new ApiError(t('The fleet metric is not available for this account.'), {
+          status: 403,
+        });
       const days = dayCount(start, end);
       if (days > 366)
         throw new Error(
-          'Choose a period of at most 366 days. Use Explore data to browse the full history.',
+          t('Choose a period of at most 366 days. Use Explore data to browse the full history.'),
         );
     } catch (error) {
       this.packet = null;
@@ -138,7 +141,7 @@ export class OverviewController {
       verifyPage(packet, 'fleet_daily', model);
       if (packet.next_cursor)
         throw new Error(
-          'This period has too many observations for the chart. Choose a shorter period.',
+          t('This period has too many observations for the chart. Choose a shorter period.'),
         );
       this.packet = packet;
       this.range = { start, end };
@@ -155,8 +158,8 @@ export class OverviewController {
       );
       byId('metric-offline-share').title =
         value('offline_pct') === null
-          ? 'Undefined; no valid denominator.'
-          : `Exact calculated percentage: ${value('offline_pct')}%`;
+          ? t('Undefined; no valid denominator.')
+          : t('Exact calculated percentage: {value}%', { value: value('offline_pct') });
       setText('metric-outage', numberLabel(value('outage_mw'), 1));
       setText('metric-capacity', numberLabel(value('capacity_mw'), 1));
       setText('metric-date', dateLabel(value('period')));
@@ -167,12 +170,22 @@ export class OverviewController {
       const missing = Math.max(0, dayCount(start, end) - packet.rows.length);
       setText(
         'chart-description',
-        `${defined} defined daily observations · ${dateLabel(start)} – ${dateLabel(end)}.${missing ? ` ${missing} calendar day${missing === 1 ? '' : 's'} without observations.` : ''} Gaps and undefined ratios are not zero. Exact values are available in the table below.`,
+        t(
+          '{count} defined daily observations · {start} – {end}.{missing} Gaps and undefined ratios are not zero. Exact values are available in the table below.',
+          {
+            count: defined,
+            start: dateLabel(start),
+            end: dateLabel(end),
+            missing: missing
+              ? ` ${t(missing === 1 ? '{count} calendar day without observations.' : '{count} calendar days without observations.', { count: missing })}`
+              : '',
+          },
+        ),
       );
       renderTable(
         byId('overview-table'),
         packet,
-        'Exact national offline-capacity observations for the selected period',
+        t('Exact national offline-capacity observations for the selected period'),
       );
       byId('overview-export').disabled = false;
       this.draw();

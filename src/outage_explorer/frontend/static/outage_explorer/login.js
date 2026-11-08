@@ -1,3 +1,4 @@
+import { t, bindLanguageSwitcher } from './i18n.js';
 /**
  * @module login
  * Authenticate through the same-origin service API from the public shell.
@@ -16,13 +17,13 @@ let ready = false;
 const reason = new URLSearchParams(location.search).get('reason');
 const reasonMessage =
   reason === 'expired'
-    ? 'Your session ended. Sign in to continue.'
+    ? t('Your session ended. Sign in to continue.')
     : reason === 'permissions'
-      ? 'Your access changed. Sign in with an authorized account.'
+      ? t('Your access changed. Sign in with an authorized account.')
       : reason === 'signed-out'
-        ? 'You have been signed out.'
+        ? t('You have been signed out.')
         : reason === 'password-reset'
-          ? 'Your password was reset. Sign in with your new password.'
+          ? t('Your password was reset. Sign in with your new password.')
           : '';
 /**
  * Bootstrap the CSRF token before enabling login; leave failures explicitly retryable.
@@ -30,7 +31,7 @@ const reasonMessage =
 async function prepare() {
   byId('login-submit').disabled = true;
   visible('login-error', false);
-  setText('login-status', 'Preparing secure sign-in…');
+  setText('login-status', t('Preparing secure sign-in…'));
   try {
     await client.bootstrap();
     ready = true;
@@ -47,7 +48,7 @@ byId('login-toggle-password').addEventListener('click', () => {
   const input = byId('password'),
     showing = input.type === 'password';
   input.type = showing ? 'text' : 'password';
-  byId('login-toggle-password').textContent = showing ? 'Hide' : 'Show';
+  byId('login-toggle-password').textContent = showing ? t('Hide') : t('Show');
   byId('login-toggle-password').setAttribute('aria-pressed', showing ? 'true' : 'false');
 });
 
@@ -58,7 +59,7 @@ form.addEventListener('submit', async (event) => {
   visible('login-error', false);
   byId('login-submit').disabled = true;
   form.setAttribute('aria-busy', 'true');
-  setText('login-status', 'Signing in…');
+  setText('login-status', t('Signing in…'));
   try {
     const result = await client.request('/auth/login', {
       method: 'POST',
@@ -87,4 +88,5 @@ form.addEventListener('submit', async (event) => {
     form.setAttribute('aria-busy', 'false');
   }
 });
+bindLanguageSwitcher();
 prepare();

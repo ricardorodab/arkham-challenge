@@ -7,11 +7,13 @@ to the same allowlisted resource view; neither grants general filesystem access.
 from django.urls import path
 
 from . import views
+from .language import change_language
 
 app_name = "frontend"
 urlpatterns = [
     path("", views.home, name="home"),
     path("login/", views.login, name="login"),
+    path("language/", change_language, name="language"),
     path("assets/<str:filename>", views.asset, name="asset"),
     path("assets/outage_explorer/<str:filename>", views.asset, name="static_asset"),
 ]

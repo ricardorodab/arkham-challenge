@@ -6,6 +6,7 @@
  * every cell and guards spreadsheet-shaped text without claiming control over
  * the receiving spreadsheet application's type inference.
  */
+import { t } from './i18n.js';
 import { element, columnTitle, numericType, scalarLabel } from './dom.js';
 
 /**
@@ -43,7 +44,10 @@ export function renderTable(
       button.dataset.sortColumn = column.name;
       button.setAttribute(
         'aria-label',
-        `Sort current results by ${columnTitle(column.name)}, ${next === 'asc' ? 'ascending' : 'descending'}, across the dataset`,
+        t('Sort current results by {column}, {direction}, across the dataset', {
+          column: columnTitle(column.name),
+          direction: t(next === 'asc' ? 'ascending' : 'descending'),
+        }),
       );
       const indicator = element(
         'span',
@@ -71,7 +75,7 @@ export function renderTable(
         value === null ? 'cell-null' : numericType(type) ? 'cell-number' : '',
         scalarLabel(value, type),
       );
-      if (value === null) cell.setAttribute('aria-label', 'Not reported or undefined');
+      if (value === null) cell.setAttribute('aria-label', t('Not reported or undefined'));
       else cell.title = String(value);
       row.append(cell);
     });

@@ -1,3 +1,5 @@
+import { t, getLocale, getLanguage } from './i18n.js';
+
 /**
  * @module dom
  * Text-only DOM construction, explicit view states and scalar presentation.
@@ -63,22 +65,26 @@ export function showError(id, error, retry = null) {
   if (!node) return;
   const denied = error.status === 403;
   const title = denied
-    ? 'Not allowed'
+    ? t('Not allowed')
     : error.status === 429
-      ? 'Workspace is busy'
-      : 'Something needs your attention';
+      ? t('Workspace is busy')
+      : t('Something needs your attention');
   node.replaceChildren(
     element('strong', 'state-title', title),
     element('p', 'state-message', error.message || String(error)),
   );
   if (error.retryAfter)
     node.append(
-      element('p', 'state-message', `Please wait ${error.retryAfter} seconds before trying again.`),
+      element(
+        'p',
+        'state-message',
+        t('Please wait {seconds} seconds before trying again.', { seconds: error.retryAfter }),
+      ),
     );
   if (error.requestId)
-    node.append(element('p', 'request-reference', `Reference: ${error.requestId}`));
+    node.append(element('p', 'request-reference', t('Reference: {id}', { id: error.requestId })));
   if (retry) {
-    const button = element('button', 'button button-secondary', 'Try again');
+    const button = element('button', 'button button-secondary', t('Try again'));
     button.type = 'button';
     button.addEventListener('click', retry);
     node.append(button);
@@ -102,7 +108,7 @@ const TITLES = {
  * Choose a known dataset label without inheriting Object prototype properties.
  */
 export const datasetTitle = (id) =>
-  Object.hasOwn(TITLES, id) ? TITLES[id] : id.replaceAll('_', ' ');
+  Object.hasOwn(TITLES, id) ? t(TITLES[id]) : id.replaceAll('_', ' ');
 const COLUMN_TITLES = {
   capacity_mw: 'Capacity (MW)',
   outage_mw: 'Offline (MW)',
@@ -116,11 +122,72 @@ const COLUMN_TITLES = {
   quality_flags: 'Quality flags',
   source_row_hash: 'Source fingerprint',
 };
+const MODEL_COLUMN_NAMES = new Set([
+  'after_capacity_mw',
+  'before_capacity_mw',
+  'capacity_abs_gap_mw',
+  'capacity_gap_mw',
+  'coverage_status',
+  'day',
+  'details',
+  'event_id',
+  'facility_capacity_abs_gap_mw',
+  'facility_capacity_gap_mw',
+  'facility_capacity_mw',
+  'facility_count',
+  'facility_null_capacity_count',
+  'facility_null_outage_count',
+  'facility_null_pct_count',
+  'facility_outage_abs_gap_mw',
+  'facility_outage_gap_mw',
+  'facility_outage_mw',
+  'facility_present',
+  'facility_reported_pct',
+  'facility_reported_pct_gap_pp',
+  'facility_weighted_reported_pct',
+  'first_observed',
+  'gap_days',
+  'generator_capacity_abs_gap_mw',
+  'generator_capacity_gap_mw',
+  'generator_capacity_mw',
+  'generator_count',
+  'generator_null_capacity_count',
+  'generator_null_outage_count',
+  'generator_null_pct_count',
+  'generator_outage_abs_gap_mw',
+  'generator_outage_gap_mw',
+  'generator_outage_mw',
+  'generator_reported_pct_gap_pp',
+  'generator_weighted_reported_pct',
+  'grain',
+  'last_observed',
+  'month',
+  'mw_comparison_status',
+  'national_capacity_mw',
+  'national_outage_mw',
+  'national_present',
+  'national_reported_pct',
+  'outage_abs_gap_mw',
+  'outage_gap_mw',
+  'pct_comparison_status',
+  'previous_period',
+  'reported_pct_gap_pp',
+  'reported_vs_calculated_pct_gap',
+  'rule_id',
+  'seen_in_facility_route',
+  'seen_in_generator_route',
+  'severity',
+  'year',
+]);
 /**
  * Choose a known column label while preserving prototype-like valid SQL aliases.
  */
 export const columnTitle = (name) =>
-  Object.hasOwn(COLUMN_TITLES, name) ? COLUMN_TITLES[name] : name.replaceAll('_', ' ');
+  Object.hasOwn(COLUMN_TITLES, name)
+    ? t(COLUMN_TITLES[name])
+    : MODEL_COLUMN_NAMES.has(name)
+      ? t(name.replaceAll('_', ' '))
+      : name.replaceAll('_', ' ');
 
 /**
  * Validate an ISO calendar date by UTC round-trip, rejecting overflowed dates.
@@ -138,7 +205,7 @@ export function isoDate(value) {
  */
 export function addDays(value, days) {
   const date = isoDate(value);
-  if (!date) throw new Error('Choose a valid calendar date.');
+  if (!date) throw new Error(t('Choose a valid calendar date.'));
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
@@ -150,7 +217,7 @@ export function dayCount(start, end) {
   const first = isoDate(start),
     last = isoDate(end);
   if (!first || !last || first > last)
-    throw new Error('Choose a valid date range with the start on or before the end.');
+    throw new Error(t('Choose a valid date range with the start on or before the end.'));
   return Math.round((last - first) / 86400000) + 1;
 }
 /**
@@ -159,7 +226,7 @@ export function dayCount(start, end) {
 export function dateLabel(value, options = {}) {
   const date = isoDate(value);
   return date
-    ? new Intl.DateTimeFormat('en-US', {
+    ? new Intl.DateTimeFormat(getLocale(), {
         month: 'short',
         day: 'numeric',
         year: 'numeric',
@@ -175,7 +242,7 @@ export function dateLabel(value, options = {}) {
  */
 export const numberLabel = (value, digits = 1) =>
   value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
-    ? new Intl.NumberFormat('en-US', {
+    ? new Intl.NumberFormat(getLocale(), {
         maximumFractionDigits: digits,
         minimumFractionDigits: digits,
       }).format(Number(value))
@@ -196,12 +263,14 @@ export const numericType = (type) =>
  */
 export function scalarLabel(value, type = '') {
   if (value === null || value === undefined) return '—';
-  if (typeof value === 'boolean') return value ? 'True' : 'False';
+  if (typeof value === 'boolean') return value ? t('True') : t('False');
   if (numericType(type) && typeof value === 'string' && /^-?\d+(?:\.\d+)?$/.test(value)) {
     const [integer, fraction] = value.split('.');
-    const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const group = getLanguage() === 'es' ? '.' : ',';
+    const separator = getLanguage() === 'es' ? ',' : '.';
+    const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, group);
     const decimals = fraction?.replace(/0+$/, '');
-    return grouped + (decimals ? `.${decimals}` : '');
+    return grouped + (decimals ? `${separator}${decimals}` : '');
   }
   return String(value);
 }
@@ -232,13 +301,13 @@ export function schema(container, dataset, onInsert = null) {
     if (onInsert) {
       const button = element('button', 'metadata-chip', name);
       button.type = 'button';
-      button.setAttribute('aria-label', `Insert column ${name}`);
+      button.setAttribute('aria-label', t('Insert column {name}', { name }));
       button.addEventListener('click', () => onInsert(name));
       row.append(button);
     } else row.append(element('span', 'schema-name', name));
     row.append(element('span', 'schema-type', type));
-    if (dataset.primary_key.includes(name)) row.append(element('span', 'schema-key', 'PK'));
-    if (dataset.units[name]) row.append(element('span', 'schema-unit', dataset.units[name]));
+    if (dataset.primary_key.includes(name)) row.append(element('span', 'schema-key', t('PK')));
+    if (dataset.units[name]) row.append(element('span', 'schema-unit', t(dataset.units[name])));
     container.append(row);
   }
 }

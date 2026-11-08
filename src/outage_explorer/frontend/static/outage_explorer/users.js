@@ -7,6 +7,7 @@
  * briefly in memory until a verified foreground session can display it; displayed
  * values are removed when the credential dialog closes or loses window focus.
  */
+import { t, getLocale } from './i18n.js';
 import { queryString } from './api.js';
 import { byId, element, setText, visible } from './dom.js';
 
@@ -29,11 +30,17 @@ function button(label, action, className = 'button button-secondary button-small
 /** Display a safe API failure in the supplied live error container. */
 function failure(node, error) {
   node.replaceChildren(
-    element('strong', '', 'Unable to complete this action'),
-    element('p', '', error.message || 'Please refresh the list and try again.'),
+    element('strong', '', t('Unable to complete this action')),
+    element('p', '', error.message || t('Please refresh the list and try again.')),
   );
   if (error.requestId)
-    node.append(element('p', 'request-reference', `Reference: ${error.requestId}`));
+    node.append(
+      element(
+        'p',
+        'request-reference',
+        t('Reference: {reference}', { reference: error.requestId }),
+      ),
+    );
   node.hidden = false;
 }
 
@@ -62,10 +69,10 @@ function displayName(user) {
 
 /** Format one server timestamp; absent sign-ins are explicitly distinguished. */
 function signInLabel(value) {
-  if (!value) return 'Never signed in';
+  if (!value) return t('Never signed in');
   const parsed = new Date(value);
-  if (!Number.isFinite(parsed.getTime())) return 'Unavailable';
-  return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' }).format(parsed);
+  if (!Number.isFinite(parsed.getTime())) return t('Unavailable');
+  return new Intl.DateTimeFormat(getLocale(), { dateStyle: 'medium' }).format(parsed);
 }
 
 /**
@@ -175,7 +182,7 @@ export class UsersController {
     visible('users-loading');
     visible('users-error', false);
     byId('users-prev').disabled = byId('users-next').disabled = true;
-    setText('users-status', 'Loading accounts…');
+    setText('users-status', t('Loading accounts…'));
     try {
       const packet = await this.context.client.request(
         `/users${queryString({ search: this.search, page_size: PAGE_SIZE, cursor: this.cursors[this.page] })}`,
@@ -187,15 +194,20 @@ export class UsersController {
       this.render(packet.users);
       setText(
         'users-status',
-        `${packet.users.length} ${packet.users.length === 1 ? 'account' : 'accounts'} on this page${this.search ? ' · Search applied' : ''}.`,
+        t(
+          packet.users.length === 1
+            ? '{count} account on this page{search}.'
+            : '{count} accounts on this page{search}.',
+          { count: packet.users.length, search: this.search ? t(' · Search applied') : '' },
+        ),
       );
-      setText('users-page', `Page ${this.page + 1}`);
+      setText('users-page', t('Page {page}', { page: this.page + 1 }));
       byId('users-prev').disabled = this.page === 0;
       byId('users-next').disabled = !packet.next_cursor;
     } catch (error) {
       if (!this.current(generation)) return;
       failure(byId('users-error'), error);
-      setText('users-status', 'The account list could not be loaded.');
+      setText('users-status', t('The account list could not be loaded.'));
     } finally {
       if (generation === this.generation) this.loading = false;
       if (this.current(generation)) {
@@ -220,7 +232,7 @@ export class UsersController {
       const account = element('td');
       const identity = element('div', 'user-identity');
       identity.append(element('strong', '', user.username));
-      if (user.is_self) identity.append(element('span', 'badge', 'You'));
+      if (user.is_self) identity.append(element('span', 'badge', t('You')));
       account.append(identity);
       const name = element('td', '', displayName(user));
       const role = element('td');
@@ -228,17 +240,21 @@ export class UsersController {
         element(
           'span',
           'user-role',
-          ROLES.find(([value]) => value === user.role)?.[1] || user.role,
+          t(ROLES.find(([value]) => value === user.role)?.[1] || user.role),
         ),
       );
       const status = element('td');
-      const badge = element('span', 'badge user-status', user.is_active ? 'Active' : 'Inactive');
+      const badge = element(
+        'span',
+        'badge user-status',
+        user.is_active ? t('Active') : t('Inactive'),
+      );
       badge.dataset.active = String(user.is_active);
       status.append(badge);
       const lastSignIn = element('td', 'user-last-sign-in', signInLabel(user.last_login));
       const actions = element('td', 'user-row-actions');
-      const edit = button('Manage user', () => this.openEditor(user));
-      edit.setAttribute('aria-label', `Manage user ${user.username}`);
+      const edit = button(t('Manage user'), () => this.openEditor(user));
+      edit.setAttribute('aria-label', t('Manage user {username}', { username: user.username }));
       actions.append(edit);
       row.append(account, name, role, status, lastSignIn, actions);
       tbody.append(row);
@@ -262,40 +278,44 @@ export class UsersController {
     this.returnFocus = document.activeElement;
     const dialogGeneration = ++this.dialogGeneration;
     const form = element('form', 'user-editor-form');
-    const title = element('h2', '', user ? 'Manage user' : 'Create user');
+    const title = element('h2', '', user ? t('Manage user') : t('Create user'));
     title.id = 'user-dialog-title';
     const description = element(
       'p',
       'user-dialog-description',
       user
-        ? `Manage the account “${user.username}”. Role and status changes take effect immediately.`
-        : 'Choose an account name and access level. A secure random password will be generated when the account is created.',
+        ? t('Manage the account “{username}”. Role and status changes take effect immediately.', {
+            username: user.username,
+          })
+        : t(
+            'Choose an account name and access level. A secure random password will be generated when the account is created.',
+          ),
     );
     const error = element('div', 'notice notice-error');
     error.setAttribute('role', 'alert');
     error.hidden = true;
     const fields = element('div', 'user-editor-fields');
-    const username = textField('Username', 'username', user?.username || '', { required: true });
+    const username = textField(t('Username'), 'username', user?.username || '', { required: true });
     username.input.autocapitalize = 'none';
     username.input.setAttribute('aria-describedby', 'user-username-help');
     const usernameHelp = element(
       'p',
       'user-field-help',
-      'Used to sign in. Up to 150 characters; letters, numbers and @ . + - _ are supported.',
+      t('Used to sign in. Up to 150 characters; letters, numbers and @ . + - _ are supported.'),
     );
     usernameHelp.id = 'user-username-help';
     username.wrapper.append(usernameHelp);
     username.wrapper.classList.add('user-field-wide');
-    const firstName = textField('First name (optional)', 'first_name', user?.first_name || '');
-    const lastName = textField('Last name (optional)', 'last_name', user?.last_name || '');
+    const firstName = textField(t('First name (optional)'), 'first_name', user?.first_name || '');
+    const lastName = textField(t('Last name (optional)'), 'last_name', user?.last_name || '');
     const roleField = element('div', 'field');
-    const roleLabel = element('label', '', 'Access level');
+    const roleLabel = element('label', '', t('Access level'));
     const role = element('select');
     role.id = 'user-role';
     roleLabel.htmlFor = role.id;
     role.name = 'role';
     for (const [value, label] of ROLES) {
-      const option = element('option', '', label);
+      const option = element('option', '', t(label));
       option.value = value;
       role.append(option);
     }
@@ -303,16 +323,16 @@ export class UsersController {
     role.disabled = !!user?.is_self;
     roleField.append(roleLabel, role);
     const statusField = element('div', 'field');
-    const statusLabel = element('label', '', 'Account status');
+    const statusLabel = element('label', '', t('Account status'));
     const status = element('select');
     status.id = 'user-active';
     statusLabel.htmlFor = status.id;
     status.name = 'is_active';
     for (const [value, label] of [
-      ['true', 'Active'],
-      ['false', 'Inactive'],
+      ['true', t('Active')],
+      ['false', t('Inactive')],
     ]) {
-      const option = element('option', '', label);
+      const option = element('option', '', t(label));
       option.value = value;
       status.append(option);
     }
@@ -323,7 +343,9 @@ export class UsersController {
     const roleHelp = element(
       'p',
       'user-field-help user-field-wide',
-      'Viewers explore national data and permitted shared views. Analysts create queries and saved views. Admins also manage accounts and refresh data.',
+      t(
+        'Viewers explore national data and permitted shared views. Analysts create queries and saved views. Admins also manage accounts and refresh data.',
+      ),
     );
     fields.append(roleHelp);
     if (user?.is_self)
@@ -331,12 +353,14 @@ export class UsersController {
         element(
           'p',
           'user-field-help user-field-wide',
-          'Your own access level and active status are protected. Another Admin can change them.',
+          t(
+            'Your own access level and active status are protected. Another Admin can change them.',
+          ),
         ),
       );
     const controls = element('div', 'user-dialog-actions');
-    const cancel = button('Cancel', () => this.closeDialog());
-    const save = element('button', 'button', user ? 'Save changes' : 'Create user');
+    const cancel = button(t('Cancel'), () => this.closeDialog());
+    const save = element('button', 'button', user ? t('Save changes') : t('Create user'));
     save.type = 'submit';
     controls.append(cancel, save);
     form.append(title, description, error, fields, controls);
@@ -365,7 +389,10 @@ export class UsersController {
         this.closeDialog();
         if (packet.user.is_self) this.context.onSelfUserUpdated?.(packet.user);
         if (packet.generated_password) this.showCredentials(packet);
-        else this.context.notice?.(`Account “${packet.user.username}” updated.`);
+        else
+          this.context.notice?.(
+            t('Account “{username}” updated.', { username: packet.user.username }),
+          );
         this.cursors = [null];
         this.page = 0;
         this.load();
@@ -382,29 +409,31 @@ export class UsersController {
   /** Keep password resets and permanent deletion separate from profile edits. */
   addAccountActions(user, dialogGeneration) {
     const section = element('section', 'user-account-actions');
-    const heading = element('h3', '', 'Account actions');
+    const heading = element('h3', '', t('Account actions'));
     section.append(
       heading,
       element(
         'p',
         'user-field-help',
-        'Password resets sign this account out of existing sessions. Deletion also removes its saved views and cached results; refresh history is retained.',
+        t(
+          'Password resets sign this account out of existing sessions. Deletion also removes its saved views and cached results; refresh history is retained.',
+        ),
       ),
     );
     const actions = element('div', 'user-account-action-buttons');
     const confirmation = element('div', 'user-action-confirm');
     confirmation.hidden = true;
     confirmation.setAttribute('role', 'group');
-    const reset = button('Reset password', () =>
+    const reset = button(t('Reset password'), () =>
       this.confirmAction('password', user, confirmation, dialogGeneration),
     );
     const remove = button(
-      'Delete user',
+      t('Delete user'),
       () => this.confirmAction('delete', user, confirmation, dialogGeneration),
       'button button-danger button-small',
     );
     remove.disabled = !!user.is_self;
-    if (user.is_self) remove.title = 'You cannot delete the account you are signed in with.';
+    if (user.is_self) remove.title = t('You cannot delete the account you are signed in with.');
     actions.append(reset, remove);
     section.append(actions, confirmation);
     this.dialog.append(section);
@@ -419,26 +448,39 @@ export class UsersController {
     container.hidden = false;
     container.setAttribute(
       'aria-label',
-      deleting ? 'Confirm user deletion' : 'Confirm password reset',
+      deleting ? t('Confirm user deletion') : t('Confirm password reset'),
     );
     const summary = element(
       'p',
       '',
       deleting
-        ? `Permanently delete “${user.username}”? This action cannot be undone. Accounts with an active refresh job cannot be deleted until the job finishes.`
-        : `Generate a new password for “${user.username}”? The current password will stop working.${user.is_self ? ' Copy the new password before closing the next dialog; you will need to sign in again.' : ''}`,
+        ? t(
+            'Permanently delete “{username}”? This action cannot be undone. Accounts with an active refresh job cannot be deleted until the job finishes.',
+            { username: user.username },
+          )
+        : t(
+            'Generate a new password for “{username}”? The current password will stop working.{selfNotice}',
+            {
+              username: user.username,
+              selfNotice: user.is_self
+                ? t(
+                    ' Copy the new password before closing the next dialog; you will need to sign in again.',
+                  )
+                : '',
+            },
+          ),
     );
     const error = element('div', 'notice notice-error');
     error.setAttribute('role', 'alert');
     error.hidden = true;
     const actions = element('div', 'user-dialog-actions');
-    const cancel = button('Keep account unchanged', () => {
+    const cancel = button(t('Keep account unchanged'), () => {
       container.hidden = true;
       container.replaceChildren();
       if (returnFocus?.isConnected) returnFocus.focus();
     });
     const confirm = button(
-      deleting ? 'Permanently delete user' : 'Generate new password',
+      deleting ? t('Permanently delete user') : t('Generate new password'),
       async () => {
         if (this.busy || !this.current() || dialogGeneration !== this.dialogGeneration) return;
         this.setBusy(true);
@@ -457,7 +499,8 @@ export class UsersController {
           // Retain the self-reset marker until the one-time credentials are acknowledged.
           this.closeDialog({ acknowledge: false });
           if (!deleting) this.showCredentials(packet);
-          else this.context.notice?.(`Account “${user.username}” deleted.`);
+          else
+            this.context.notice?.(t('Account “{username}” deleted.', { username: user.username }));
           if (!this.awaitingSelfPasswordReset) {
             this.cursors = [null];
             this.page = 0;
@@ -512,7 +555,7 @@ export class UsersController {
     );
     this.pendingCredentialTimer.unref?.();
     this.context.notice?.(
-      'A generated password is ready. Return to this window within five minutes to copy it.',
+      t('A generated password is ready. Return to this window within five minutes to copy it.'),
     );
   }
 
@@ -572,11 +615,13 @@ export class UsersController {
       } catch {
         if (this.pendingCredentials !== pending || !this.current()) return;
         this.context.notice?.(
-          'The generated password is waiting, but your Admin session could not be verified. Try again before it expires.',
+          t(
+            'The generated password is waiting, but your Admin session could not be verified. Try again before it expires.',
+          ),
         );
         if (this.isForeground()) {
           this.pendingCredentialRetry?.remove();
-          this.pendingCredentialRetry = button('Show generated password', () =>
+          this.pendingCredentialRetry = button(t('Show generated password'), () =>
             this.resumeCredentials(),
           );
           byId('users-status')?.append(' ', this.pendingCredentialRetry);
@@ -596,7 +641,9 @@ export class UsersController {
     this.closeDialog();
     if (!selfReset && this.current()) {
       this.context.notice?.(
-        'The one-time password expired before it was copied. Reset that account’s password to generate another.',
+        t(
+          'The one-time password expired before it was copied. Reset that account’s password to generate another.',
+        ),
       );
     }
   }
@@ -608,14 +655,21 @@ export class UsersController {
     this.credentialOpen = true;
     this.awaitingSelfPasswordReset = packet.reauthenticate === true;
     const dialogGeneration = ++this.dialogGeneration;
-    const title = element('h2', '', 'Copy the new password');
+    const title = element('h2', '', t('Copy the new password'));
     title.id = 'user-dialog-title';
     const description = element(
       'p',
       'user-dialog-description',
-      `A new password was generated for “${packet.user.username}”. Store it securely before closing this dialog. It will not be shown again.`,
+      t(
+        'A new password was generated for “{username}”. Store it securely before closing this dialog. It will not be shown again.',
+        { username: packet.user.username },
+      ),
     );
-    const account = element('p', 'user-credentials-account', `Username: ${packet.user.username}`);
+    const account = element(
+      'p',
+      'user-credentials-account',
+      t('Username: {username}', { username: packet.user.username }),
+    );
     const label = element('label', 'field');
     const input = element('input', 'user-generated-password');
     input.type = 'password';
@@ -624,33 +678,34 @@ export class UsersController {
     input.autocomplete = 'new-password';
     input.spellcheck = false;
     input.autocapitalize = 'none';
-    label.append(element('span', '', 'Generated password'), input);
+    label.append(element('span', '', t('Generated password')), input);
     const status = element('p', 'user-field-help');
     status.setAttribute('role', 'status');
     const passwordActions = element('div', 'user-credential-actions');
-    const toggle = button('Show password', () => {
+    const toggle = button(t('Show password'), () => {
       const reveal = input.type === 'password';
       input.type = reveal ? 'text' : 'password';
-      toggle.textContent = reveal ? 'Hide password' : 'Show password';
+      toggle.textContent = reveal ? t('Hide password') : t('Show password');
       toggle.setAttribute('aria-pressed', String(reveal));
     });
     toggle.setAttribute('aria-pressed', 'false');
-    const copy = button('Copy password', async () => {
+    const copy = button(t('Copy password'), async () => {
       if (!this.credentialOpen || dialogGeneration !== this.dialogGeneration) return;
       try {
         if (!navigator.clipboard?.writeText) throw new Error('unavailable');
         await navigator.clipboard.writeText(input.value);
         if (this.credentialOpen && dialogGeneration === this.dialogGeneration)
-          status.textContent = 'Password copied. Clear the clipboard after storing it securely.';
+          status.textContent = t('Password copied. Clear the clipboard after storing it securely.');
       } catch {
         if (this.credentialOpen && dialogGeneration === this.dialogGeneration) {
           input.type = 'text';
           input.focus();
           input.select();
-          toggle.textContent = 'Hide password';
+          toggle.textContent = t('Hide password');
           toggle.setAttribute('aria-pressed', 'true');
-          status.textContent =
-            'Select and copy the password manually; clipboard access is unavailable.';
+          status.textContent = t(
+            'Select and copy the password manually; clipboard access is unavailable.',
+          );
         }
       }
     });
@@ -658,11 +713,11 @@ export class UsersController {
     const note = element(
       'p',
       'user-field-help',
-      'This dialog clears when you close it, leave the page, or switch away from this window.',
+      t('This dialog clears when you close it, leave the page, or switch away from this window.'),
     );
     const actions = element('div', 'user-dialog-actions');
     const done = button(
-      this.awaitingSelfPasswordReset ? 'I saved it · Sign in again' : 'I saved the password',
+      this.awaitingSelfPasswordReset ? t('I saved it · Sign in again') : t('I saved the password'),
       () => this.closeDialog(),
       'button',
     );

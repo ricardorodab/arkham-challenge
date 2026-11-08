@@ -6,6 +6,7 @@
  * Chart coordinates use approximate Numbers; exact original scalars remain in
  * point metadata and the caller's semantic table. No aggregation is inferred.
  */
+import { t, getLocale } from './i18n.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const DAY = 86400000;
@@ -112,14 +113,18 @@ function coordinate(value) {
   if (!['number', 'string'].includes(typeof value) || !NUMBER.test(String(value)))
     throw new QueryChartError(
       'invalid_value',
-      'The selected value column contains an invalid numeric value. Choose another column or refine the query.',
+      t(
+        'The selected value column contains an invalid numeric value. Choose another column or refine the query.',
+      ),
     );
   const number = Number(value);
   const nonzero = /[1-9]/.test(String(value).split(/[eE]/)[0]);
   if (!Number.isFinite(number) || (number === 0 && nonzero))
     throw new QueryChartError(
       'unrepresentable_value',
-      'A selected value is outside the chart’s numeric range. Exact values remain available in the table.',
+      t(
+        'A selected value is outside the chart’s numeric range. Exact values remain available in the table.',
+      ),
     );
   return number;
 }
@@ -127,11 +132,13 @@ function coordinate(value) {
 /** Validate that the supplied rows represent the complete retained query result. */
 function completePacket(packet) {
   if (!packet || !Array.isArray(packet.columns) || !Array.isArray(packet.rows))
-    throw new QueryChartError('invalid_result', 'Run a query before configuring its chart.');
+    throw new QueryChartError('invalid_result', t('Run a query before configuring its chart.'));
   if (packet.rows.length > MAX_CHART_ROWS)
     throw new QueryChartError(
       'row_limit',
-      `Charts support at most ${MAX_CHART_ROWS.toLocaleString('en-US')} retained rows. Refine the query.`,
+      t('Charts support at most {count} retained rows. Refine the query.', {
+        count: MAX_CHART_ROWS.toLocaleString(getLocale()),
+      }),
     );
   if (
     (packet.result_rows !== undefined &&
@@ -141,7 +148,7 @@ function completePacket(packet) {
   )
     throw new QueryChartError(
       'invalid_result',
-      'The result row counts cannot be verified. Run the query again.',
+      t('The result row counts cannot be verified. Run the query again.'),
     );
   if (
     packet.next_cursor ||
@@ -150,17 +157,19 @@ function completePacket(packet) {
   )
     throw new QueryChartError(
       'incomplete_result',
-      'Load all retained result pages before charting. A single page is not the complete query result.',
+      t(
+        'Load all retained result pages before charting. A single page is not the complete query result.',
+      ),
     );
   if (!packet.rows.length)
     throw new QueryChartError(
       'empty_result',
-      'This query returned no rows to chart. Adjust its filters or show the table.',
+      t('This query returned no rows to chart. Adjust its filters or show the table.'),
     );
   if (packet.rows.some((row) => !Array.isArray(row) || row.length !== packet.columns.length))
     throw new QueryChartError(
       'invalid_result',
-      'The result shape cannot be charted. Run the query again.',
+      t('The result shape cannot be charted. Run the query again.'),
     );
 }
 
@@ -196,12 +205,16 @@ export function validateChart(packet, config) {
   if (!date)
     throw new QueryChartError(
       'date_column_required',
-      'Choose a DATE or TIMESTAMP result column for the time axis. Queries without a time column can be saved as tables.',
+      t(
+        'Choose a DATE or TIMESTAMP result column for the time axis. Queries without a time column can be saved as tables.',
+      ),
     );
   if (!value)
     throw new QueryChartError(
       'value_column_required',
-      'Choose a numeric result column for the value axis. Text identifiers are not chart measures.',
+      t(
+        'Choose a numeric result column for the value axis. Text identifiers are not chart measures.',
+      ),
     );
   const seriesName = config?.series_column || null;
   if (
@@ -212,7 +225,7 @@ export function validateChart(packet, config) {
   )
     throw new QueryChartError(
       'invalid_series',
-      'Choose a different result column to identify the series, or select no series.',
+      t('Choose a different result column to identify the series, or select no series.'),
     );
   const dateIndex = packet.columns.findIndex((column) => column.name === date.name);
   const valueIndex = packet.columns.findIndex((column) => column.name === value.name);
@@ -233,17 +246,22 @@ export function validateChart(packet, config) {
     if (!time)
       throw new QueryChartError(
         'invalid_date',
-        `Row ${rowIndex + 1} has an invalid time value. Refine the query or choose a different time column.`,
+        t(
+          'Row {row} has an invalid time value. Refine the query or choose a different time column.',
+          { row: rowIndex + 1 },
+        ),
       );
     const rawSeries = seriesIndex === -1 ? null : row[seriesIndex];
     if (rawSeries !== null && !['string', 'number', 'boolean'].includes(typeof rawSeries))
-      throw new QueryChartError('invalid_series', 'Series values must be scalar result values.');
+      throw new QueryChartError('invalid_series', t('Series values must be scalar result values.'));
     const key = seriesIndex === -1 ? 'single' : JSON.stringify([typeof rawSeries, rawSeries]);
     if (!groups.has(key)) {
       if (groups.size >= MAX_CHART_SERIES)
         throw new QueryChartError(
           'series_limit',
-          `Choose at most ${MAX_CHART_SERIES} series. Filter or summarize the query first.`,
+          t('Choose at most {count} series. Filter or summarize the query first.', {
+            count: MAX_CHART_SERIES,
+          }),
         );
       groups.set(key, {
         key,
@@ -264,8 +282,12 @@ export function validateChart(packet, config) {
       throw new QueryChartError(
         'duplicate_time',
         seriesName
-          ? 'More than one row has the same time and series. Aggregate those rows in SQL or choose a more specific series.'
-          : 'More than one row has the same time. Choose a series column, or aggregate the rows by time in SQL.',
+          ? t(
+              'More than one row has the same time and series. Aggregate those rows in SQL or choose a more specific series.',
+            )
+          : t(
+              'More than one row has the same time. Choose a series column, or aggregate the rows by time in SQL.',
+            ),
       );
     group.seen.add(time.key);
     const numeric = coordinate(row[valueIndex]);
@@ -283,12 +305,14 @@ export function validateChart(packet, config) {
   if (!groups.size)
     throw new QueryChartError(
       'no_dated_rows',
-      'No rows have a defined time value. Filter missing dates or show the table.',
+      t('No rows have a defined time value. Filter missing dates or show the table.'),
     );
   if (!defined)
     throw new QueryChartError(
       'no_defined_values',
-      'The selected value column has no defined numeric observations. Missing values are not zero.',
+      t(
+        'The selected value column has no defined numeric observations. Missing values are not zero.',
+      ),
     );
   const output = [...groups.values()]
     .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
@@ -307,11 +331,19 @@ export function validateChart(packet, config) {
   const numeric = points.filter((point) => point.value !== null).map((point) => point.value);
   if (packet.truncated)
     warnings.push(
-      `Capped query result: this chart shows all ${packet.rows.length.toLocaleString('en-US')} retained rows, not every matching row in the dataset. Refine the query for complete coverage.`,
+      t(
+        'Capped query result: this chart shows all {count} retained rows, not every matching row in the dataset. Refine the query for complete coverage.',
+        { count: packet.rows.length.toLocaleString(getLocale()) },
+      ),
     );
   if (missingDates)
     warnings.push(
-      `${missingDates.toLocaleString('en-US')} row${missingDates === 1 ? '' : 's'} without a time value ${missingDates === 1 ? 'is' : 'are'} excluded from the chart; the exact table retains them.`,
+      t(
+        missingDates === 1
+          ? '{count} row without a time value is excluded from the chart; the exact table retains them.'
+          : '{count} rows without a time value are excluded from the chart; the exact table retains them.',
+        { count: missingDates.toLocaleString(getLocale()) },
+      ),
     );
   return {
     config: { date_column: date.name, value_column: value.name, series_column: seriesName },
@@ -348,8 +380,8 @@ function svgNode(document, tag, attrs = {}, text = null) {
 function axisNumber(value) {
   if (value === 0) return '0';
   return Math.abs(value) >= 1e7 || Math.abs(value) < 0.001
-    ? value.toExponential(2)
-    : new Intl.NumberFormat('en-US', { maximumSignificantDigits: 5 }).format(value);
+    ? value.toExponential(2).replace('.', getLocale().startsWith('es') ? ',' : '.')
+    : new Intl.NumberFormat(getLocale(), { maximumSignificantDigits: 5 }).format(value);
 }
 
 /** Format UTC positions for the axis, including the year when the range crosses years. */
@@ -359,7 +391,9 @@ function axisTime(value, type, includeYear) {
       ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }
       : { month: 'short', day: 'numeric' };
   if (includeYear) options.year = 'numeric';
-  return new Intl.DateTimeFormat('en-US', { ...options, timeZone: 'UTC' }).format(new Date(value));
+  return new Intl.DateTimeFormat(getLocale(), { ...options, timeZone: 'UTC' }).format(
+    new Date(value),
+  );
 }
 
 /**
@@ -374,7 +408,7 @@ export function renderQueryChart(
   container,
   packet,
   config,
-  { title = 'Query results over time', tableId = null } = {},
+  { title = t('Query results over time'), tableId = null } = {},
 ) {
   const model = validateChart(packet, config);
   const document = container.ownerDocument;
@@ -403,7 +437,18 @@ export function renderQueryChart(
       : (time - model.extent.start) / (model.extent.end - model.extent.start)) *
       innerWidth;
   const y = (value) => margin.top + innerHeight * (1 - (value / scale - lower) / (upper - lower));
-  const description = `${model.coverage.defined_points} defined observations in ${model.coverage.series_count} series. ${model.time_type === 'date' ? 'Missing calendar days and undefined values break lines.' : 'Undefined values break lines; irregular time spacing is preserved.'} Coordinates are approximate; exact values are available in the result table.${model.warnings.length ? ` ${model.warnings.join(' ')}` : ''}`;
+  const description = t(
+    '{points} defined observations in {series} series. {gaps} Coordinates are approximate; exact values are available in the result table.{warnings}',
+    {
+      points: model.coverage.defined_points,
+      series: model.coverage.series_count,
+      gaps:
+        model.time_type === 'date'
+          ? t('Missing calendar days and undefined values break lines.')
+          : t('Undefined values break lines; irregular time spacing is preserved.'),
+      warnings: model.warnings.length ? ` ${model.warnings.join(' ')}` : '',
+    },
+  );
   const svg = svgNode(document, 'svg', {
     width: '100%',
     viewBox: `0 0 ${width} ${height}`,
@@ -461,7 +506,7 @@ export function renderQueryChart(
   }
   const legend = document.createElement('ul');
   legend.className = 'query-chart-legend';
-  legend.setAttribute('aria-label', 'Chart series');
+  legend.setAttribute('aria-label', t('Chart series'));
   model.series.forEach((group, index) => {
     const color = COLORS[index];
     for (const segment of group.segments) {
@@ -523,12 +568,20 @@ export function renderQueryChart(
   });
   const caption = document.createElement('figcaption');
   caption.className = 'query-chart-caption';
-  caption.textContent = `${model.config.value_column} by ${model.config.date_column}${model.time_type === 'timestamp' ? ' (UTC)' : ''}. Chart coordinates are approximate. ${model.time_type === 'date' ? 'Missing days and null values break lines.' : 'Null values break lines; irregular time spacing is preserved.'}`;
+  caption.textContent = t('{value} by {date}{utc}. Chart coordinates are approximate. {gaps}', {
+    value: model.config.value_column,
+    date: model.config.date_column,
+    utc: model.time_type === 'timestamp' ? ' (UTC)' : '',
+    gaps:
+      model.time_type === 'date'
+        ? t('Missing days and null values break lines.')
+        : t('Null values break lines; irregular time spacing is preserved.'),
+  });
   if (tableId) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'button button-quiet button-small';
-    button.textContent = 'View exact chart data';
+    button.textContent = t('View exact chart data');
     button.addEventListener('click', () => {
       const table = document.getElementById(String(tableId));
       if (!table) return;

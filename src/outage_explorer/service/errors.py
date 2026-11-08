@@ -7,6 +7,9 @@ credentials or raw engine exceptions to a browser.
 from __future__ import annotations
 
 from django.http import JsonResponse
+from django.utils.translation import get_language, gettext
+
+from .localization import public_message
 
 
 class APIError(Exception):
@@ -25,12 +28,16 @@ def problem(request, error: APIError):
     Include Retry-After when supplied. The middleware attaches cache/security headers later;
     request_id is in-memory request context, not an automatic database record.
     """
+    source_title = error.code.replace("_", " ")
+    title = gettext(source_title)
+    if (get_language() or "en").startswith("es") and title == source_title:
+        title = gettext("Request failed")
     response = JsonResponse(
         {
             "type": f"urn:outage-explorer:error:{error.code}",
-            "title": error.code.replace("_", " "),
+            "title": title,
             "status": error.status,
-            "detail": error.detail,
+            "detail": public_message(error.detail),
             "code": error.code,
             "request_id": getattr(request, "request_id", ""),
         },

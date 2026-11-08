@@ -7,6 +7,7 @@
  * protect against stale history and polling replies. Worker events describe actual
  * stages/counts; only the fixed model-export step has a percentage.
  */
+import { t, getLocale } from './i18n.js';
 import { StaleRequest } from './api.js';
 import { byId, setText, visible, showError, element } from './dom.js';
 
@@ -40,11 +41,15 @@ function sourceCounts(value) {
   const parts = [];
   if (count(value?.rows_received))
     parts.push(
-      `${value.rows_received.toLocaleString('en-US')} ${value.rows_received === 1 ? 'row' : 'rows'} received`,
+      t(value.rows_received === 1 ? '{count} row received' : '{count} rows received', {
+        count: value.rows_received.toLocaleString(getLocale()),
+      }),
     );
   if (count(value?.pages_fetched))
     parts.push(
-      `${value.pages_fetched.toLocaleString('en-US')} ${value.pages_fetched === 1 ? 'page' : 'pages'} fetched`,
+      t(value.pages_fetched === 1 ? '{count} page fetched' : '{count} pages fetched', {
+        count: value.pages_fetched.toLocaleString(getLocale()),
+      }),
     );
   return parts.join(' · ');
 }
@@ -64,10 +69,10 @@ export function refreshProgress(job) {
     Object.hasOwn(STAGES, value.stage)
       ? value
       : {};
-  const stage = STAGES[progress.stage] || '';
+  const stage = t(STAGES[progress.stage] || '');
   const route =
     typeof progress.route === 'string' && Object.hasOwn(ROUTES, progress.route)
-      ? ROUTES[progress.route]
+      ? t(ROUTES[progress.route])
       : '';
   const stageText =
     stage +
@@ -79,7 +84,7 @@ export function refreshProgress(job) {
     for (const [id, label] of Object.entries(ROUTES)) {
       if (!Object.hasOwn(progress.routes, id)) continue;
       const text = sourceCounts(progress.routes[id]);
-      if (text) routes.push(`${label}: ${text}`);
+      if (text) routes.push(`${t(label)}: ${text}`);
     }
   // This denominator describes a small fixed export list, never overall work.
   const determinate =
@@ -97,7 +102,9 @@ export function refreshProgress(job) {
     completed: determinate ? progress.completed : null,
     total: determinate ? progress.total : null,
     exportLabel: determinate
-      ? `Model export ${Math.floor((progress.completed / progress.total) * 100)}%`
+      ? t('Model export {percent}%', {
+          percent: Math.floor((progress.completed / progress.total) * 100),
+        })
       : '',
     updatedAt:
       typeof progress.updated_at === 'string' && Number.isFinite(Date.parse(progress.updated_at))
@@ -136,8 +143,8 @@ export function refreshTimes(job, now = Date.now()) {
       : '';
   const updated = progress.updatedAt
     ? job.status === 'running'
-      ? `${duration(now - Date.parse(progress.updatedAt))} ago`
-      : new Date(progress.updatedAt).toLocaleString('en-US')
+      ? t('{duration} ago', { duration: duration(now - Date.parse(progress.updatedAt)) })
+      : new Date(progress.updatedAt).toLocaleString(getLocale())
     : '';
   return { elapsed, updated, updatedAt: progress.updatedAt };
 }
@@ -297,26 +304,29 @@ export class RefreshController {
     visible('refresh-use-latest', job.status === 'succeeded' && this.context.hasUpdate());
     visible('refresh-status');
     const messages = {
-      queued: 'Refresh queued. Waiting for the refresh worker.',
-      running: 'Refresh is running.',
-      succeeded: 'Refresh completed. A verified data version is ready.',
-      failed: job.message || 'Refresh failed. Review the outcome before trying again.',
+      queued: t('Refresh queued. Waiting for the refresh worker.'),
+      running: t('Refresh is running.'),
+      succeeded: t('Refresh completed. A verified data version is ready.'),
+      failed: job.message || t('Refresh failed. Review the outcome before trying again.'),
       interrupted:
-        job.message || 'Refresh was interrupted. Review publication status before retrying.',
+        job.message || t('Refresh was interrupted. Review publication status before retrying.'),
     };
-    const message = messages[job.status] || 'Refresh status is unavailable.';
-    const announcement = `${message}${detail.stageKey ? ` ${STAGES[detail.stageKey]}.` : ''}`;
+    const message = t(messages[job.status] || 'Refresh status is unavailable.');
+    const announcement = `${message}${detail.stageKey ? ` ${t(STAGES[detail.stageKey])}.` : ''}`;
     const signature = JSON.stringify([job.id, job.status, message, detail.stageKey]);
     if (signature !== this.announcementSignature) {
       setText('refresh-announcement', announcement);
       this.announcementSignature = signature;
     }
     setText('refresh-message', message);
-    setText('refresh-job-id', `Job ${job.id}`);
-    setText('refresh-step-label', ACTIVE.has(job.status) ? 'Current step' : 'Last reported step');
+    setText('refresh-job-id', t('Job {id}', { id: job.id }));
+    setText(
+      'refresh-step-label',
+      ACTIVE.has(job.status) ? t('Current step') : t('Last reported step'),
+    );
     setText(
       'refresh-step',
-      detail.stage || (job.status === 'queued' ? 'Not started' : 'No step details reported'),
+      detail.stage || (job.status === 'queued' ? t('Not started') : t('No step details reported')),
     );
     setText('refresh-counts', detail.counts);
     visible('refresh-counts', !!detail.counts);
@@ -333,17 +343,17 @@ export class RefreshController {
     progress.max = detail.total || 1;
     if (detail.total) progress.value = detail.completed;
     else progress.removeAttribute('value');
-    progress.setAttribute('aria-label', detail.total ? 'Model export' : 'Refresh activity');
+    progress.setAttribute('aria-label', detail.total ? t('Model export') : t('Refresh activity'));
     progress.setAttribute(
       'aria-valuetext',
-      detail.exportLabel || 'Total refresh work is not known.',
+      detail.exportLabel || t('Total refresh work is not known.'),
     );
     visible(progress, job.status === 'running' || !!detail.total);
     setText(
       'refresh-progress-note',
       detail.total
-        ? 'Dataset export only; this is not overall refresh progress.'
-        : 'The total amount of work is not known.',
+        ? t('Dataset export only; this is not overall refresh progress.')
+        : t('The total amount of work is not known.'),
     );
     visible('refresh-progress-note', job.status === 'running' || !!detail.total);
     byId('refresh-status').dataset.status = job.status;
@@ -384,7 +394,7 @@ export class RefreshController {
     const container = byId('refresh-jobs');
     container.replaceChildren();
     if (!jobs.length) {
-      container.append(element('p', 'empty-state', 'No refresh jobs yet.'));
+      container.append(element('p', 'empty-state', t('No refresh jobs yet.')));
       return;
     }
     for (const job of current) {
@@ -392,13 +402,17 @@ export class RefreshController {
       const row = element('div', 'refresh-job');
       const detail = element('div', 'refresh-job-detail');
       detail.append(
-        element('strong', '', job.mode === 'full' ? 'Full history refresh' : 'Recent data refresh'),
+        element(
+          'strong',
+          '',
+          job.mode === 'full' ? t('Full history refresh') : t('Recent data refresh'),
+        ),
       );
       const time = new Date(job.created_at);
       const stamp = element(
         'time',
         '',
-        Number.isFinite(time.getTime()) ? time.toLocaleString('en-US') : job.created_at,
+        Number.isFinite(time.getTime()) ? time.toLocaleString(getLocale()) : job.created_at,
       );
       stamp.dateTime = job.created_at;
       detail.append(stamp);
@@ -407,7 +421,7 @@ export class RefreshController {
         .filter(Boolean)
         .join(' · ');
       if (summary) detail.append(element('p', 'refresh-job-progress', summary));
-      const status = element('span', 'badge', job.status);
+      const status = element('span', 'badge', t(job.status));
       status.dataset.status = job.status;
       row.append(detail, status);
       container.append(row);
