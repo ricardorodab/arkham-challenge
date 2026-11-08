@@ -81,6 +81,29 @@ def test_enqueue_denies_deactivated_admin_even_with_cached_user(refresh_admin):
         enqueue_refresh(refresh_admin, "recent")
 
 
+@pytest.mark.django_db(transaction=True)
+def test_account_deleted_after_permission_read_cannot_enqueue_an_orphan_job(
+    refresh_admin, monkeypatch
+):
+    """Delete at the read/INSERT boundary and translate the real deferred FK failure."""
+    original = refresh._active_admin
+    removed = False
+
+    def permission_then_delete(user_id):
+        nonlocal removed
+        allowed = original(user_id)
+        if allowed and not removed:
+            get_user_model().objects.filter(pk=user_id).delete()
+            removed = True
+        return allowed
+
+    monkeypatch.setattr(refresh, "_active_admin", permission_then_delete)
+    with pytest.raises(RefreshPermissionError):
+        enqueue_refresh(refresh_admin, "recent")
+    assert removed and not RefreshJob.objects.exists()
+    assert not get_user_model().objects.filter(pk=refresh_admin.pk).exists()
+
+
 @pytest.mark.parametrize(
     "mode,key",
     [("arbitrary", None), ("full", ""), ("recent", "x" * 129), ("recent", "contains spaces")],

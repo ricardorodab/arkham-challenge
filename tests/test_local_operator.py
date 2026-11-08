@@ -27,6 +27,7 @@ def test_fresh_operator_init_is_private_repeatable_and_uses_real_password_hashes
         command, cwd=project, env=environment, capture_output=True, text=True, timeout=30
     )
     assert first.returncode == 0, first.stderr
+    assert json.loads(first.stdout.splitlines()[-1])["seeded"] is True
     path = state / "local-config.json"
     original = path.read_bytes()
     values = json.loads(original)
@@ -63,6 +64,8 @@ print(json.dumps({u.username:u.password for u in users}))
         command, cwd=project, env=environment, capture_output=True, text=True, timeout=30
     )
     assert again.returncode == 0, again.stderr
+    assert json.loads(again.stdout.splitlines()[-1])["seeded"] is False
+    assert json.loads(again.stdout.splitlines()[-1])["users"] == []
     assert path.read_bytes() == original
     verify = subprocess.run(
         [sys.executable, "-c", script],
@@ -75,6 +78,91 @@ print(json.dumps({u.username:u.password for u in users}))
     assert verify.returncode == 0 and json.loads(verify.stdout) == original_hashes
     if os.name != "nt":
         assert path.stat().st_mode & 0o077 == 0
+
+
+def test_repeat_init_preserves_admin_managed_accounts_and_explicit_reset_is_opt_in(tmp_path):
+    """Reinitialization must not recreate deleted/renamed defaults or restore old passwords."""
+    project = Path(__file__).resolve().parents[1]
+    state = tmp_path / "managed-service"
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"DJANGO_SETTINGS_MODULE", "OUTAGE_DJANGO_SECRET_KEY", "EIA_API_KEY"}
+    }
+    environment.update(
+        OUTAGE_STATE_DIR=str(state),
+        OUTAGE_DATA_DIR=str(tmp_path / "no-analytical-data"),
+        OUTAGE_PROJECT_DIR=str(project),
+        OUTAGE_LOCAL_HTTP="1",
+    )
+    command = [sys.executable, "-m", "outage_explorer.web.local", "init"]
+
+    def child(arguments):
+        result = subprocess.run(
+            arguments, cwd=project, env=environment, capture_output=True, text=True, timeout=30
+        )
+        assert result.returncode == 0, result.stderr
+        return result
+
+    first = child(command)
+    assert json.loads(first.stdout.splitlines()[-1])["seeded"] is True
+    configuration = (state / "local-config.json").read_bytes()
+    bootstrap = """
+import django,json,os
+from pathlib import Path
+config=json.loads(Path(os.environ['OUTAGE_STATE_DIR'],'local-config.json').read_text())
+os.environ['OUTAGE_DJANGO_SECRET_KEY']=config['OUTAGE_DJANGO_SECRET_KEY']
+os.environ['DJANGO_SETTINGS_MODULE']='outage_explorer.web.settings'
+django.setup()
+from django.contrib.auth import get_user_model
+from outage_explorer.service.models import Persona
+def snapshot():
+    return {'users':list(get_user_model().objects.order_by('id').values()),
+            'personas':list(Persona.objects.order_by('id').values())}
+"""
+    mutation = """
+from django.test import Client
+client=Client(enforce_csrf_checks=True,HTTP_HOST='127.0.0.1')
+token=client.get('/api/v1/auth/csrf').json()['csrf_token']
+result=client.post('/api/v1/auth/login', json.dumps({'username':'admin','password':config['OUTAGE_ADMIN_PASSWORD']}),content_type='application/json',HTTP_X_CSRFTOKEN=token)
+assert result.status_code==200
+client.defaults['HTTP_X_CSRFTOKEN']=result.json()['csrf_token']
+def send(method,identifier,payload,suffix=''):
+    response=getattr(client,method)('/api/v1/users/'+str(identifier)+suffix,json.dumps(payload),content_type='application/json')
+    assert response.status_code==200
+    return response.json()
+users={row['username']:row for row in client.get('/api/v1/users').json()['users']}
+target=users['analyst']
+target=send('put',target['id'],{'version':target['version'],'username':'team.analysis','role':'viewer','is_active':False,'first_name':'Grace','last_name':'Hopper'})['user']
+send('post',target['id'],{'version':target['version']},'/password')
+viewer=users['viewer']
+send('delete',viewer['id'],{'version':viewer['version']})
+admin=users['admin']
+admin=send('put',admin['id'],{'version':admin['version'],'username':'team.admin'})['user']
+send('post',admin['id'],{'version':admin['version']},'/password')
+assert not get_user_model().objects.filter(username__in=['viewer','analyst','admin']).exists()
+print(json.dumps(snapshot(),default=str))
+"""
+    modified = json.loads(
+        child([sys.executable, "-c", bootstrap + mutation]).stdout.splitlines()[-1]
+    )
+    repeated = child(command)
+    report = json.loads(repeated.stdout.splitlines()[-1])
+    assert report["initialized"] and report["seeded"] is False and report["users"] == []
+    observed = child(
+        [sys.executable, "-c", bootstrap + "\nprint(json.dumps(snapshot(),default=str))"]
+    )
+    assert json.loads(observed.stdout.splitlines()[-1]) == modified
+    assert (state / "local-config.json").read_bytes() == configuration
+    explicit = child(command + ["--reset-passwords"])
+    assert json.loads(explicit.stdout.splitlines()[-1])["seeded"] is True
+    verify = """
+for role in ('viewer','analyst','admin'):
+    user=get_user_model().objects.get(username=role)
+    assert user.check_password(config['OUTAGE_'+role.upper()+'_PASSWORD'])
+assert get_user_model().objects.filter(username__in=['team.admin','team.analysis']).count()==2
+"""
+    child([sys.executable, "-c", bootstrap + verify])
 
 
 @pytest.mark.parametrize(

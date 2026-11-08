@@ -1,18 +1,19 @@
 # How the browser workspace keeps an investigation consistent
 
-Outage Explorer turns published EIA observations into a focused workspace for following the U.S. nuclear fleet. Viewer follows national trends; Analyst explores all analytical datasets and writes SQL; Admin also refreshes the publication. Analytical retrieval uses the authenticated Django API; Explore can also narrow its already loaded page in memory. The browser never opens Parquet files or runs a second analytical engine.
+Outage Explorer turns published EIA observations into a focused workspace for following the U.S. nuclear fleet. Viewer follows national trends; Analyst explores all analytical datasets and writes SQL; Admin also manages product accounts and refreshes the publication. Analytical retrieval uses the authenticated Django API; Explore can also narrow its already loaded page in memory. The browser never opens Parquet files or runs a second analytical engine.
 
 The central product choice is to keep the chart, table and SQL on **one immutable publication** while an investigation is in progress. A refresh can finish in the background, but the user explicitly chooses **Use latest** before moving to its results. This makes empty results, errors, delayed responses and new data easier to interpret: old rows must not masquerade as a newly answered question.
 
 Read [PROJECT_TOUR.md](PROJECT_TOUR.md) for the basic system and [LOCAL_OPERATIONS.md](LOCAL_OPERATIONS.md) for setup. This guide moves from the user tasks to state/lifecycle rules, implementation, tradeoffs and practice. The exact [API contract](API_CONTRACT.md), [query security boundaries](QUERY_SECURITY.md) and dated [verification record](NOTES.md) provide the references behind it.
 
-## Four views, one authorized catalog
+## Five views with server-owned permissions
 
 | View | Task and behavior |
 | --- | --- |
 | Fleet overview | Follow the stored US-08 metric, its same-day MW numerator/denominator and observation date; select up to 366 days; inspect an SVG chart and exact table |
 | Explore data | Build typed dataset queries, immediately filter loaded rows, sort/page through applied backend results and export visible rows; inspect schema/units separately |
 | SQL workspace | Select one permitted source, enter bounded SELECT SQL, insert schema identifiers, inspect errors/results/pages and reuse recent session queries |
+| Users | Admin creates accounts, edits names/access, generates replacement passwords and deletes accounts with explicit confirmation |
 | Data refresh | Admin queues work, sees only owned job history, follows explicit queued/running/outcome states and chooses whether to adopt a new publication |
 
 Viewer sees exactly `national_daily` and `fleet_daily`. Analyst and Admin see all ten analytical datasets. Admin navigation and pane markup are omitted from other personas' HTML. Dataset choices and schema suggestions come from the authorized catalog rather than a second client-side role matrix. The server still authorizes every request; editing JavaScript or revealing hidden controls grants no access.
@@ -75,6 +76,14 @@ Charts collect the complete retained SQL result (up to 1,000 rows and an 8 MiB c
 
 Saved-view metadata is paged, with at most 50 definitions per owner and eight loaded previews retained in memory. Loading is explicit so opening Overview does not launch every saved SQL query. The API rechecks ownership/audience, dataset permissions, session and definition revision; concurrent changes return a conflict instead of silently overwriting settings.
 
+### Manage product accounts as Admin
+
+Open **Users** under Administration to search the account directory or page through its bounded results. **Create user** collects username, optional first/last names, product role and active state. The server creates a random password and displays it once in a dedicated credentials dialog. Passwords are initially masked. Copy or retain the credential privately before closing or switching away; displayed credentials are cleared on dismissal, navigation, visibility loss and session disposal. A reply arriving in an already-background tab is held only in private memory for at most five minutes and displayed masked on return, with a fresh session check before displaying another account's credential. A clipboard failure leaves a selectable credential instead of claiming that copying succeeded.
+
+**Edit user** changes profile fields, role or active state. Names and usernames do not reset a password. Role/active-state changes revoke existing sessions, including when a later edit restores the old value. **Reset password** explicitly replaces the password and displays a new one-time credential. Resetting the current Admin's own password ends that session after acknowledgment, so the new password must be retained first. None of these operations updates the initialization passwords in the private local configuration.
+
+**Delete user** requires confirmation identifying the account and explains that saved views and cached results will be removed. Refresh history remains. The server rejects self-deletion, self-deactivation, self-demotion, removal of the last active Admin and deletion while the account owns queued/running refresh work. Infrastructure staff/superuser accounts are outside this directory. Concurrent account edits return a version conflict and require a fresh record rather than silently overwriting each other. These controls remain Admin-only even if browser markup is modified; see the [account API](API_CONTRACT.md#admin-account-management).
+
 ### Ask Admin to refresh data
 
 Admin enqueue creates a `crypto.randomUUID` idempotency key. On an uncertain network outcome the controller keeps that key for a same-mode retry, so a lost response does not require blindly creating another job. Server constraints, not a disabled button, enforce idempotency and global job capacity.
@@ -135,7 +144,7 @@ Automated scans, keyboard checks and visual review cover basics. They do not rep
 
 | Choice | Reason and cost |
 | --- | --- |
-| Native modules rather than React | Four focused views use native modules and manual DOM/lifecycle management. The specialized CodeMirror editor has one reproducible local bundle; the surrounding UI needs no framework build. That keeps the runtime surface small, with manual race management as a maintenance cost. A framework becomes useful with more reusable components, navigation/collaboration complexity or team needs. |
+| Native modules rather than React | Five focused views use native modules and manual DOM/lifecycle management. The specialized CodeMirror editor has one reproducible local bundle; the surrounding UI needs no framework build. That keeps the runtime surface small, with manual race management as a maintenance cost. A framework becomes useful with more reusable components, navigation/collaboration complexity or team needs. |
 | Server role policy plus omitted Admin markup | The interface shows truthful capabilities while the server enforces them. Removing markup restrictions must still fail at the API. |
 | Pinned model rather than automatic freshness | Chart, preview and SQL answer one reproducible investigation. New data is visible and explicitly adopted. Older versions need backend retention/expiry policy, and users can deliberately remain on old data. |
 | Bounded native tables rather than a virtualized grid | Typical pages are 25–100 rows and schemas are small; native semantics help keyboard/screen-reader use. Very wide or much larger pages would make DOM work costly and need another design. |
@@ -158,11 +167,12 @@ The Python package ships templates, native scripts, CSS, SVG and the prebuilt Co
 | [overview.js](../src/outage_explorer/frontend/static/outage_explorer/overview.js), [chart.js](../src/outage_explorer/frontend/static/outage_explorer/chart.js) | Stored metric, period selection, gap/null/zero semantics and native SVG |
 | [explore.js](../src/outage_explorer/frontend/static/outage_explorer/explore.js) | Dataset/schema/default filters, applied-versus-draft state and pinned keyset pages |
 | [sql.js](../src/outage_explorer/frontend/static/outage_explorer/sql.js) | Executed-versus-draft SQL, caps/paging, identifier insertion and scoped history |
+| [users.js](../src/outage_explorer/frontend/static/outage_explorer/users.js) | Admin account directory, versioned edits/deletion and transient one-time credentials |
 | [refresh.js](../src/outage_explorer/frontend/static/outage_explorer/refresh.js) | Mode-bound retry key, owned-job polling, generation guards and outcomes |
 | [table.js](../src/outage_explorer/frontend/static/outage_explorer/table.js), [dom.js](../src/outage_explorer/frontend/static/outage_explorer/dom.js) | Safe text, exact scalar/date formatting, state messages and guarded page export |
 | [login.js](../src/outage_explorer/frontend/static/outage_explorer/login.js) | CSRF bootstrap, JSON login and safe session transition |
 
-The implementation path runs from server shell/bootstrap to app composition and transport, then the overview, Explore, SQL and refresh controllers. Their regression tests establish state ownership, identity/model binding and behavior when responses arrive out of order.
+The implementation path runs from server shell/bootstrap to app composition and transport, then the overview, Explore, SQL, user-management and refresh controllers. Their regression tests establish state ownership, identity/model binding and behavior when responses arrive out of order.
 
 Concrete future maintenance constraints include the first-page-only facility lookup, tab queue/cancellation latency, generic response checks relying on the trusted API contract, and custom rendering/large stylesheet cost as scope expands. Firefox/Safari, hosted Linux/Azure and real assistive-technology acceptance have no current recorded proof.
 

@@ -10,7 +10,7 @@ Read this guide first. Continue with [the data pipeline and model](DATA_PIPELINE
 | --- | --- | --- |
 | Viewer | Follow national trends; preview/query only `national_daily` and `fleet_daily` | US-02, US-04, US-05 |
 | Analyst | Discover all ten datasets, filter/preview them and write supported SQL | US-01 through US-05, US-07, US-08 |
-| Admin | Analyst capabilities plus request a refresh and inspect their own jobs | US-06 |
+| Admin | Analyst capabilities plus manage product accounts, request a refresh and inspect their own jobs | US-06 |
 
 The **EIA**, the U.S. Energy Information Administration, publishes the API data. An API is a programmatic interface: the connector requests pages of JSON observations rather than asking a person to export spreadsheets. Here all three routes are daily. Their **grain** means what one row represents: one national day, one facility on a day, or one generator within a facility on a day. A generator is an individual unit; its ID is only unique within its facility.
 
@@ -29,7 +29,7 @@ flowchart TD
     R --> C["data/catalog.sqlite3: one transaction publishes matching references"]
     A --> C
     C --> API["Django API: identity, permissions and pinned model"]
-    API --> B["Browser: overview, explorer, SQL, Admin refresh"]
+    API --> B["Browser: overview, explorer, SQL, Admin users/refresh"]
     API --> Q["Disposable compiler, then BUFFER-only Node / DuckDB-WASM"]
     Q --> API
     API --> S["Structured browse plan: bounded native DuckDB reader"]
@@ -49,7 +49,7 @@ Refresh has one additional boundary: after publishing data, the worker completes
 
 ## Follow one user query
 
-Django is the Python web framework handling login, sessions, CSRF protection and HTTP. CSRF checks browser tokens and request origin to help prevent another site causing unwanted actions, including at login before authentication. The server derives the persona; a browser field or Django staff flag cannot grant product access.
+Django is the Python web framework handling login, sessions, CSRF protection and HTTP. CSRF checks browser tokens and request origin to help prevent another site causing unwanted actions, including at login before authentication. The server derives the caller's persona; a browser field or Django staff flag cannot impersonate another role. Dedicated Admin account management assigns product roles without granting Django infrastructure privileges.
 
 The SQL service authorizes the selected dataset, then a bounded disposable Python compiler turns submitted SQL into checked/regenerated SQL. It discovers **every named table** and validates a deliberately small SELECT language. Each table is authorized before analytical I/O, even inside a query shape that will later be rejected. The engine receives only the selected checksummed Parquet bytes. A disposable Node process runs DuckDB-WASM with buffer-only capabilities, followed by a fresh persisted identity/session check before results are delivered or cached. Explore instead submits typed search/filter/order specifications to a separate bounded native reader. It applies them across the whole selected dataset and returns a seek page without buffering the full file in WASM or the browser. Both paths share admission, pinned versions and final authorization checks.
 
@@ -70,7 +70,7 @@ Python runs the connector, trusted model/report SQL, structured browse reader an
 | [`src/outage_explorer/analytics/`](../src/outage_explorer/analytics/) | Model definitions, transformations, version verification and trusted reports: `model_contracts.py`, `modeling.py`, `model_store.py`, `reports.py`. Its `contracts/` holds frozen model metadata and `sql/` holds report statements. |
 | [`src/outage_explorer/query/`](../src/outage_explorer/query/) | Submitted-SQL policy/compiler and isolated execution supervisors, plus the structured-browse plan/compiler/worker. The two query paths retain separate capability boundaries. |
 | [`src/outage_explorer/sandbox/`](../src/outage_explorer/sandbox/) | Packaged launchers, the Node worker, the pinned Parquet extension and its license/provenance. These assets support the Python supervisors in `query/`. |
-| [`src/outage_explorer/service/`](../src/outage_explorer/service/) | Django API, authentication/policy, admission, cache, refresh jobs, saved views and operational migrations. |
+| [`src/outage_explorer/service/`](../src/outage_explorer/service/) | Django API, authentication/policy, Admin account management, admission, cache, refresh jobs, saved views and operational migrations. |
 | [`src/outage_explorer/frontend/`](../src/outage_explorer/frontend/) | Django page routes/templates, native browser modules, styles and editor source/bundle. |
 | [`src/outage_explorer/web/`](../src/outage_explorer/web/) | Django project settings, WSGI/ASGI entry points and local init/server/worker launchers. |
 | `tests/` | Offline/synthetic tests, genuine partial recorded responses, JavaScript units and browser tests. Fixture READMEs explain scope. |
@@ -97,7 +97,7 @@ Generated caches such as `__pycache__`, `.pytest_cache`, `.ruff_cache`, build/eg
 | Location | What it owns |
 | --- | --- |
 | `data/catalog.sqlite3` | Raw/model run history, watermarks, versions and the current coherent raw/model publication references. Analytical rows remain in Parquet. |
-| `.service/web.sqlite3` | Django users, sessions, product personas, private query cache, durable refresh jobs, saved query/chart definitions and service coordination state. |
+| `.service/web.sqlite3` | Django users, sessions, product personas/session versions, private query cache, durable refresh jobs, saved query/chart definitions and service coordination state. |
 
 Opening `data.storage.Catalog` prepares `data/.staging/`, `.model-staging/`, `snapshots/`, `runs/` and `models/`. **Empty staging folders are reserved workspace, not missing datasets.** Extraction writes candidates beneath `.staging`; model building uses `.model-staging`; successful files move to immutable version directories before catalog publication. Interrupted/unreferenced candidates can remain; folder existence does not establish published success.
 
@@ -141,4 +141,4 @@ See [local.py](../src/outage_explorer/web/local.py), [query_sandbox.py](../src/o
 
 ## What is delivered, and what remains uncertain
 
-The four local parts are implemented; hosted deployment remains future work. Current limits include whole-file analytical transfer, single-host SQLite/locks, two admitted requests, a small SQL subset, no automatic retention or proven off-machine restore, and unverified equivalent POSIX runtime acceptance. Automated accessibility evidence does not replace assistive-technology user testing.
+The four challenge parts and Admin account management are implemented; hosted deployment remains future work. Current limits include whole-file analytical transfer, single-host SQLite/locks, two admitted requests, a small SQL subset, no automatic retention or proven off-machine restore, and unverified equivalent POSIX runtime acceptance. Automated accessibility evidence does not replace assistive-technology user testing.

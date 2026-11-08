@@ -159,6 +159,10 @@ def _enqueue_refresh(user, mode: str, idempotency_key: str | None):
             )
         return job, True
     except IntegrityError:
+        # Account deletion can commit after the permission read but before this
+        # INSERT. Its foreign-key failure is revoked access, not a server error.
+        if not _active_admin(user.pk):
+            raise RefreshPermissionError from None
         previous = replay()
         if previous is not None:
             return previous, False

@@ -319,6 +319,9 @@ test('saved names render as text, revisions detect concurrent edits, and restric
   const name = '<img src=x onerror="window.savedViewXss=1">';
   const created = await submitView(page, await saveDialog(page, name));
   await navigate(page, 'overview');
+  // The out-of-band writer models a second tab after the foreground analytic
+  // request releases this account's admission slot; the stale editor stays open.
+  await expect(page.locator('#overview-content')).toBeVisible();
   await expect(card(page, created.id)).toContainText(name);
   await expect(card(page, created.id).locator('img')).toHaveCount(0);
   expect(await page.evaluate(() => window.savedViewXss)).toBeUndefined();

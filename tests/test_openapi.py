@@ -110,11 +110,18 @@ def test_session_csrf_public_and_admin_security_requirements_are_explicit(specif
     for path in ("/api/v1/auth/csrf", "/api/v1/health/live"):
         assert specification["paths"][path]["get"]["security"] == []
     for path, item in specification["paths"].items():
-        for method in {"post", "put", "delete"} & item.keys():
+        for method in {"post", "put", "patch", "delete"} & item.keys():
             required = set(item[method]["security"][0])
             assert {"CSRFCookie", "CSRFHeader"} <= required
             assert ("SessionCookie" in required) is (path != "/api/v1/auth/login")
-    for path in ("/api/v1/refresh", "/api/v1/refresh/{job_id}", "/api/v1/health/ready"):
+    for path in (
+        "/api/v1/refresh",
+        "/api/v1/refresh/{job_id}",
+        "/api/v1/health/ready",
+        "/api/v1/users",
+        "/api/v1/users/{user_id}",
+        "/api/v1/users/{user_id}/password",
+    ):
         assert all(
             operation["x-allowed-personas"] == ["admin"]
             for operation in specification["paths"][path].values()
@@ -413,3 +420,56 @@ def test_available_runtime_status_matches_its_strict_public_schema(specification
             assert value in field["enum"]
         else:
             assert field["type"] == "string" and isinstance(value, str)
+
+
+@pytest.mark.django_db
+def test_account_directory_wire_shape_matches_the_private_admin_contract(
+    specification, authenticated_client, monkeypatch
+):
+    """Keep account metadata independent of analytical data and credential responses."""
+    client, _ = authenticated_client("admin")
+    monkeypatch.setattr(
+        api_services,
+        "_bundle",
+        lambda *_: pytest.fail("Account management must not resolve analytical data."),
+    )
+    response = client.get("/api/v1/users", {"page_size": 1})
+    assert response.status_code == 200
+    assert response["Cache-Control"] == "no-store"
+    payload = response.json()
+    schemas = specification["components"]["schemas"]
+    assert set(payload) == set(schemas["ManagedUserList"]["required"])
+    assert len(payload["users"]) == 1
+    account = payload["users"][0]
+    assert set(account) == set(schemas["ManagedUser"]["required"])
+    assert re.fullmatch(
+        schemas["ManagedUser"]["properties"]["version"]["pattern"], account["version"]
+    )
+    assert {"password", "generated_password", "session_version", "session_key"}.isdisjoint(account)
+
+
+@pytest.mark.django_db
+def test_generated_account_credentials_match_the_one_time_response_schema(
+    specification, authenticated_client
+):
+    """Creation returns the credential once while later directory pages omit it."""
+    client, _ = authenticated_client("admin")
+    response = client.post(
+        "/api/v1/users",
+        json.dumps({"username": "contract-created-user", "role": "viewer"}),
+        content_type="application/json",
+    )
+    assert response.status_code == 201
+    assert response["Cache-Control"] == "no-store"
+    payload = response.json()
+    schemas = specification["components"]["schemas"]
+    schema = schemas["UserCreateResponse"]
+    assert set(payload) == set(schema["required"])
+    assert payload["reauthenticate"] is schema["properties"]["reauthenticate"]["const"]
+    password = schema["properties"]["generated_password"]
+    assert re.fullmatch(password["pattern"], payload["generated_password"])
+    assert len(payload["generated_password"]) == password["minLength"] == password["maxLength"]
+    directory = client.get("/api/v1/users", {"search": payload["user"]["username"]})
+    assert directory.status_code == 200
+    assert payload["generated_password"] not in directory.content.decode()
+    assert directory.json()["users"] == [payload["user"]]

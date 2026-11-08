@@ -21,7 +21,7 @@ from django.http import JsonResponse
 from django.middleware.csrf import get_token
 from django.views.decorators.csrf import ensure_csrf_cookie
 
-from . import api_services, saved_views
+from . import api_services, saved_views, user_management
 from .authentication import limit_login
 from .errors import APIError, problem
 from .job_progress import public_progress
@@ -156,6 +156,7 @@ def login(request, actor):
     if user is None or role not in {"viewer", "analyst", "admin"}:
         raise APIError(401, "invalid_credentials", "The credentials are invalid.")
     django_login(request, user)
+    request.session["_outage_session_version"] = user.persona.session_version
     return response(
         {"user": {"username": user.username, "persona": role}, "csrf_token": get_token(request)}
     )
@@ -256,6 +257,48 @@ def saved_view_run(request, actor, view_id):
     parameters(request, set())
     payload = body(request, {"revision", "model_id", "page_size", "cursor"})
     return response(saved_views.run(request, actor, view_id, payload))
+
+
+@endpoint("GET", "POST")
+def user_collection(request, actor):
+    """List product accounts or create one with a server-generated initial password."""
+    require_admin(actor)
+    if request.method == "GET":
+        return response(
+            user_management.listing(
+                request, actor, parameters(request, {"search", "page_size", "cursor"})
+            )
+        )
+    parameters(request, set())
+    result = user_management.create(request, actor, body(request, user_management.EDIT_FIELDS))
+    recheck(request, actor)
+    return response(result, status=201)
+
+
+@endpoint("PUT", "PATCH", "DELETE")
+def user_detail(request, actor, user_id):
+    """Apply version-checked account edits or remove an eligible product account."""
+    require_admin(actor)
+    parameters(request, set())
+    if request.method == "DELETE":
+        result = user_management.delete(request, actor, user_id, body(request, {"version"}))
+    else:
+        result = user_management.update(
+            request, actor, user_id, body(request, user_management.EDIT_FIELDS | {"version"})
+        )
+    recheck(request, actor)
+    return response(result)
+
+
+@endpoint("POST")
+def user_password(request, actor, user_id):
+    """Reset one account password and reveal its replacement only in this response."""
+    require_admin(actor)
+    parameters(request, set())
+    result = user_management.reset_password(request, actor, user_id, body(request, {"version"}))
+    if not result["reauthenticate"]:
+        recheck(request, actor)
+    return response(result)
 
 
 def _job(job):

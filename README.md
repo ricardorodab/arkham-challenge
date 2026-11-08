@@ -62,13 +62,15 @@ Initialize local accounts and start the loopback service:
 .\.venv\Scripts\python.exe -m outage_explorer.web.local serve --port 8000
 ```
 
-Open [the local login page](http://127.0.0.1:8000/login/). Initialization creates independent random passwords for `viewer`, `analyst` and `admin` in private ignored `.service/local-config.json`; it does not print them or commit a shared default. Repeating init preserves passwords; `init --reset-passwords` explicitly resets them.
+Open [the local login page](http://127.0.0.1:8000/login/). Initialization creates independent random passwords for `viewer`, `analyst` and `admin` in private ignored `.service/local-config.json`; it does not print them or commit a shared default.
+
+Ordinary init applies migrations and preserves account edits, including renamed/deleted demo users. `init --reset-passwords` explicitly reseeds default identities for operator recovery, subject to conflict checks. Admins manage accounts through **Users**; generated passwords are shown once and do not update the initialization configuration.
 
 | Account | Access |
 | --- | --- |
 | Viewer | National overview and only `national_daily` / `fleet_daily`, including permitted SQL |
 | Analyst | All ten analytical datasets, filters, previews and supported SQL |
-| Admin | Analyst capabilities plus refresh and their own job outcomes |
+| Admin | Analyst capabilities plus user management, refresh and their own job outcomes |
 
 [.env.example](.env.example) documents variable names. The Python application does not load it or a renamed `.env`; Docker Compose can read `.env` for its own variable interpolation, as described in [the Docker guide](docs/DOCKER.md#ports-paths-and-persisted-state). Local JSON supplies only the generated Django key and three seed passwords; other settings come from the process environment or code defaults. See [configuration precedence](docs/PROJECT_TOUR.md#configuration-what-is-read-and-in-what-order).
 

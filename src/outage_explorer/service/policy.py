@@ -24,7 +24,8 @@ from .errors import APIError
 class Actor:
     """Immutable authorization snapshot for one user, product role and session.
 
-    binding is an HMAC of account ID, role, session key and authentication hash. It identifies
+    binding is an HMAC of account ID, role, session key, authentication hash and session epoch.
+    The initial epoch retains the legacy binding format. It identifies
     an authorization context without exposing the underlying session credential. Equality with
     a freshly derived Actor is required at recheck points.
     """
@@ -72,9 +73,21 @@ def identity(request) -> Actor:
     role = getattr(getattr(user, "persona", None), "role", None)
     if role not in {"viewer", "analyst", "admin"}:
         raise APIError(403, "persona_required", "This account has no valid product persona.")
-    binding = salted_hmac(
-        "outage-actor", f"{user.pk}:{role}:{request.session.session_key}:{session_hash}"
-    ).hexdigest()
+    version = request.session.get("_outage_session_version", 1)
+    persisted_version = session.get("_outage_session_version", 1)
+    if (
+        type(version) is not int
+        or type(persisted_version) is not int
+        or version != user.persona.session_version
+        or persisted_version != version
+    ):
+        raise APIError(401, "session_revoked", "Sign in again.")
+    context = f"{user.pk}:{role}:{request.session.session_key}:{session_hash}"
+    # Version one preserves the binding of sessions created before account
+    # management was introduced. Later epochs permanently retire those sessions.
+    if version != 1:
+        context += f":{version}"
+    binding = salted_hmac("outage-actor", context).hexdigest()
     return Actor(user.pk, role, binding)
 
 

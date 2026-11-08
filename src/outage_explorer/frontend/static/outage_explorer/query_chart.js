@@ -16,15 +16,16 @@ const NUMERIC_TYPE =
   /^(?:(?:U)?(?:TINYINT|SMALLINT|INTEGER|INT|BIGINT|HUGEINT)|FLOAT|DOUBLE(?: PRECISION)?|REAL|DECIMAL(?:\(\d+,\s*\d+\))?|NUMERIC(?:\(\d+,\s*\d+\))?)$/i;
 const DATE_TYPE = /^DATE$/i;
 const TIMESTAMP_TYPE = /^TIMESTAMP(?:$|_|\s)/i;
+// Dark strokes remain visible on white; repeated dash patterns supplement color.
 const COLORS = [
-  '#205b45',
-  '#185b85',
-  '#994b19',
-  '#713ea1',
-  '#006669',
-  '#9d3556',
-  '#45566e',
-  '#79512b',
+  '#2458c6',
+  '#007f73',
+  '#7c3fb0',
+  '#ab5300',
+  '#006c8e',
+  '#b33168',
+  '#4b6079',
+  '#6b6c1a',
 ];
 let sequence = 0;
 
@@ -424,13 +425,13 @@ export function renderQueryChart(
         x2: width - margin.right,
         y1: top,
         y2: top,
-        stroke: '#dfe5df',
+        stroke: '#dce3ee',
         'stroke-width': 1,
       }),
       svgNode(
         document,
         'text',
-        { x: margin.left - 9, y: top + 4, 'text-anchor': 'end', fill: '#46574b', 'font-size': 11 },
+        { x: margin.left - 9, y: top + 4, 'text-anchor': 'end', fill: '#52647b', 'font-size': 12 },
         axisNumber(value),
       ),
     );
@@ -451,8 +452,8 @@ export function renderQueryChart(
           y: height - (model.time_type === 'timestamp' ? 28 : 14),
           'text-anchor':
             ticks && index === 0 ? 'start' : ticks && index === ticks ? 'end' : 'middle',
-          fill: '#46574b',
-          'font-size': 11,
+          fill: '#52647b',
+          'font-size': 12,
         },
         axisTime(time, model.time_type, includeYear),
       ),

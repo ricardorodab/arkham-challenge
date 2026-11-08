@@ -31,7 +31,7 @@ docker compose up --build -d app
 docker compose ps
 ```
 
-The one-shot `init` service generates a private Django signing key and independent random passwords, runs migrations and creates `viewer`, `analyst` and `admin`. The app starts after initialization succeeds and its separate continuous refresh worker starts. The worker is a normal dependency, so the command above starts it without an optional profile. Repeated initialization preserves the signing key and account passwords; password reset is an explicit operator action.
+The one-shot `init` service generates a private Django signing key and independent random passwords, runs migrations and creates `viewer`, `analyst` and `admin`. The app starts after initialization succeeds and its separate continuous refresh worker starts. The worker is a normal dependency, so the command above starts it without an optional profile. Repeated initialization applies migrations and preserves the signing key plus Admin-managed usernames, deletions, roles and passwords. Demo accounts are seeded only when no product personas exist or an operator explicitly requests `init --reset-passwords` recovery, which may require account-conflict reconciliation.
 
 Open [the login page](http://127.0.0.1:8000/login/). To display the generated account passwords **only in your private terminal**, run this explicit operator command. It does not print the Django signing key:
 
@@ -39,7 +39,7 @@ Open [the login page](http://127.0.0.1:8000/login/). To display the generated ac
 docker compose exec -T app python -c "import json,os; from pathlib import Path; c=json.loads((Path(os.environ['OUTAGE_STATE_DIR'])/'local-config.json').read_text()); print('\n'.join(role+': '+c['OUTAGE_'+role.upper()+'_PASSWORD'] for role in ('viewer','analyst','admin')))"
 ```
 
-Do not include that output in shared logs or screenshots. The application does not print passwords during normal startup. [The API contract](API_CONTRACT.md) defines the three personas and their permissions.
+Do not include that output in shared logs or screenshots. These are initialization credentials; later Admin password resets do not update this file. The application does not print passwords during normal startup. [The API contract](API_CONTRACT.md) defines the three personas and their permissions.
 
 A new workspace has accounts but **no analytical publication**. Container startup does not enqueue an extraction. Login and process health can succeed before ingestion; analytical requests need data. The worker can consume previously queued jobs as soon as it starts. If a refresh is claimed without a key, it ends as `failed` with `refresh_not_configured` and configuration guidance; existing data remains unchanged.
 

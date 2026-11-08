@@ -50,13 +50,15 @@ class Browser:
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
         )
 
-    def request(self, path, payload=None, *, expected=200):
+    def request(self, path, payload=None, *, expected=200, method=None):
         headers = {"Origin": self.base}
         data = None
         if payload is not None:
             data = json.dumps(payload).encode()
             headers.update({"Content-Type": "application/json", "X-CSRFToken": self.csrf or ""})
-        request = urllib.request.Request(self.base + path, data=data, headers=headers)
+        request = urllib.request.Request(
+            self.base + path, data=data, headers=headers, method=method
+        )
         try:
             response = self.opener.open(request, timeout=20)
         except urllib.error.HTTPError as error:
@@ -67,13 +69,15 @@ class Browser:
             content_type = response.headers.get("Content-Type", "")
         return json.loads(body) if "json" in content_type else body
 
-    def login(self, role, password):
+    def login(self, username, password, *, role=None):
         self.csrf = self.request("/api/v1/auth/csrf")["csrf_token"]
         prior = self.csrf
-        result = self.request("/api/v1/auth/login", {"username": role, "password": password})
+        result = self.request("/api/v1/auth/login", {"username": username, "password": password})
         self.csrf = result["csrf_token"]
         require(bool(self.csrf) and self.csrf != prior, "Login must rotate the CSRF token.")
-        require(result["user"]["persona"] == role, "Login returned the wrong persona.")
+        require(
+            result["user"]["persona"] == (role or username), "Login returned the wrong persona."
+        )
 
 
 class Acceptance:
@@ -422,6 +426,62 @@ class Acceptance:
         )
         require(literal["rows"] == [], "Structured search interpreted literal wildcard text.")
 
+    def check_accounts(self, clients):
+        """Exercise account lifecycle and reinitialization in this empty synthetic workspace."""
+        self.stage = "Admin account lifecycle and initialization persistence"
+        admin = clients["admin"]
+        clients["viewer"].request("/api/v1/users", expected=403)
+        created = admin.request(
+            "/api/v1/users",
+            {"username": "docker.account", "role": "viewer", "first_name": "Container"},
+            expected=201,
+        )
+        require(
+            re.fullmatch(r"[A-Za-z0-9_-]{32}", created["generated_password"]),
+            "Account creation must return a generated password exactly once.",
+        )
+        account = created["user"]
+        reader = Browser(admin.base)
+        reader.login(account["username"], created["generated_password"], role="viewer")
+        endpoint = f"/api/v1/users/{account['id']}"
+        changed = admin.request(
+            endpoint,
+            {
+                "version": account["version"],
+                "username": "docker.account.renamed",
+                "role": "analyst",
+            },
+            method="PUT",
+        )["user"]
+        reader.request("/api/v1/auth/session", expected=401)
+        directory = admin.request("/api/v1/users?search=docker.account")
+        require(
+            len(directory["users"]) == 1
+            and directory["users"][0]["username"] == "docker.account.renamed"
+            and "generated_password" not in directory,
+            "The user directory must reflect the edit without returning passwords.",
+        )
+        # Normal Compose initialization must not recreate or overwrite managed identities.
+        self.command(["run", "--rm", "--no-deps", "init"], compose=True)
+        require(
+            admin.request("/api/v1/users?search=docker.account")["users"] == directory["users"],
+            "Repeated initialization changed a managed account.",
+        )
+        reset = admin.request(endpoint + "/password", {"version": changed["version"]})
+        require(
+            reset["generated_password"] != created["generated_password"]
+            and not reset["reauthenticate"],
+            "Password reset must replace the password without ending the acting Admin session.",
+        )
+        reader.login(changed["username"], reset["generated_password"], role="analyst")
+        admin.request(endpoint, {"version": reset["user"]["version"]}, method="DELETE")
+        reader.request("/api/v1/auth/session", expected=401)
+        require(
+            admin.request("/api/v1/users?search=docker.account")["users"] == [],
+            "Deleted accounts must disappear from the directory.",
+        )
+        self.completed.append(self.stage)
+
     def run(self):
         self.command(["compose", "version"])
         existing_containers = self.command(
@@ -483,6 +543,8 @@ class Acceptance:
             "Empty data must not report analytical readiness.",
         )
         self.completed.append(self.stage)
+
+        self.check_accounts(clients)
 
         self.stage = "automatic worker reports missing configuration"
         worker_id = self.command(["ps", "-q", "worker"], compose=True)

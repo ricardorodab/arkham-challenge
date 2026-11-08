@@ -4,7 +4,7 @@
   "info": {
     "title": "Outage Explorer API",
     "version": "1.0.0",
-    "description": "Same-origin analytical API over immutable model publications. Sessions and product personas are server-owned: Viewer may read national data, Analyst may also read detail data, and Admin additionally queues refreshes and inspects readiness. Unknown/unauthorized dataset IDs have the same default-deny response. Request JSON is strict (no duplicate keys/unknown fields/non-finite constants); query parameters reject duplicates and unknown names. All responses use no-store browser cache policy. Private engine diagnostics, generated SQL, source credentials and physical paths are never returned or logged. Rows use column-described exact scalar encoding; see DecimalString and BigIntegerString. Local HTTP mode is loopback-only; HTTPS deployment uses Secure session/CSRF cookies. Cookies are SameSite=Lax; session cookies are HttpOnly. Cross-origin mutations require valid same-origin CSRF checks. The source API key belongs only to the refresh worker environment. Authorized saved-view responses include the saved query definition after owner/audience and dataset checks."
+    "description": "Same-origin analytical API over immutable model publications. Sessions and product personas are server-owned: Viewer may read national data, Analyst may also read detail data, and Admin additionally manages product accounts, queues refreshes and inspects readiness. Unknown/unauthorized dataset IDs have the same default-deny response. Request JSON is strict (no duplicate keys/unknown fields/non-finite constants); query parameters reject duplicates and unknown names. All responses use no-store browser cache policy. Private engine diagnostics, generated SQL, source credentials and physical paths are never returned or logged. Rows use column-described exact scalar encoding; see DecimalString and BigIntegerString. Local HTTP mode is loopback-only; HTTPS deployment uses Secure session/CSRF cookies. Cookies are SameSite=Lax; session cookies are HttpOnly. Cross-origin mutations require valid same-origin CSRF checks. The source API key belongs only to the refresh worker environment. Authorized saved-view responses include the saved query definition after owner/audience and dataset checks."
   },
   "servers": [
     {
@@ -1587,6 +1587,506 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/users": {
+      "get": {
+        "operationId": "listUsers",
+        "summary": "List manageable product accounts",
+        "description": "Requires a fresh active product Admin session. Django staff/superuser accounts are excluded; product roles never grant infrastructure privileges. Returns bounded ID-ordered pages. Search is a literal case-insensitive substring across username and names. Cursors bind the actor/session, search and page size; they do not authenticate the caller. No passwords, hashes or session fields are returned.",
+        "x-allowed-personas": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagedUserList"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          }
+        },
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 150
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "description": "Use the preceding next_cursor with the same effective search/page size. Expires after 15 minutes."
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createUser",
+        "summary": "Create a product account with a random password",
+        "description": "Requires a fresh active product Admin session. Django staff/superuser accounts are excluded; product roles never grant infrastructure privileges. Creates the Django user and product persona atomically. Accepts no caller-supplied password, staff flag or superuser flag. The generated password is returned once; retain and deliver it privately. This does not update the seed-password configuration.",
+        "x-allowed-personas": [
+          "admin"
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserCreateResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "415": {
+            "$ref": "#/components/responses/415"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserCreateRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CSRFCookie": [],
+            "CSRFHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/users/{user_id}": {
+      "put": {
+        "operationId": "updateUser",
+        "summary": "Edit a product account",
+        "description": "Requires a fresh active product Admin session. Django staff/superuser accounts are excluded; product roles never grant infrastructure privileges. Only supplied profile/access fields change. The current opaque version is required. Username/name changes preserve sessions; role or active-state changes permanently revoke existing sessions. Self-deactivation and self-demotion are rejected, and the last active Admin is protected.",
+        "x-allowed-personas": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagedUserResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "415": {
+            "$ref": "#/components/responses/415"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserUpdateRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CSRFCookie": [],
+            "CSRFHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "patchUser",
+        "summary": "Edit a product account",
+        "description": "Requires a fresh active product Admin session. Django staff/superuser accounts are excluded; product roles never grant infrastructure privileges. Only supplied profile/access fields change. The current opaque version is required. Username/name changes preserve sessions; role or active-state changes permanently revoke existing sessions. Self-deactivation and self-demotion are rejected, and the last active Admin is protected.",
+        "x-allowed-personas": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagedUserResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "415": {
+            "$ref": "#/components/responses/415"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserUpdateRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CSRFCookie": [],
+            "CSRFHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "deleteUser",
+        "summary": "Delete a product account",
+        "description": "Requires a fresh active product Admin session. Django staff/superuser accounts are excluded; product roles never grant infrastructure privileges. Requires the current opaque version. Self-deletion, deletion of the last active Admin and deletion while the account owns queued/running refresh work are rejected. Saved views and cached results are removed; completed refresh history is retained without its deleted owner.",
+        "x-allowed-personas": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserDeleted"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "415": {
+            "$ref": "#/components/responses/415"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserVersionRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CSRFCookie": [],
+            "CSRFHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/users/{user_id}/password": {
+      "post": {
+        "operationId": "resetUserPassword",
+        "summary": "Generate and set a new account password",
+        "description": "Requires a fresh active product Admin session. Django staff/superuser accounts are excluded; product roles never grant infrastructure privileges. Replaces the password hash and permanently revokes existing sessions. Returns the newly generated plaintext only in this no-store response. No previous password can be retrieved. When resetting the caller account, reauthenticate is true; copy the credential before closing the dialog and signing in again.",
+        "x-allowed-personas": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedUserCredentials"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "415": {
+            "$ref": "#/components/responses/415"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserVersionRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CSRFCookie": [],
+            "CSRFHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
             }
           }
         ]
@@ -3315,6 +3815,265 @@
           "deleted"
         ],
         "additionalProperties": false
+      },
+      "ManagedUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "username": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150,
+            "description": "Django Unicode username, normalized using NFKC. Uniqueness is reserved case-insensitively across all accounts, including infrastructure accounts."
+          },
+          "first_name": {
+            "type": "string",
+            "maxLength": 150
+          },
+          "last_name": {
+            "type": "string",
+            "maxLength": 150
+          },
+          "role": {
+            "$ref": "#/components/schemas/Persona"
+          },
+          "is_active": {
+            "type": "boolean"
+          },
+          "is_self": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Opaque server-issued account version. Repeat the current version for every edit, password reset or deletion; stale versions return 409."
+          },
+          "date_joined": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_login": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "first_name",
+          "last_name",
+          "role",
+          "is_active",
+          "is_self",
+          "version",
+          "date_joined",
+          "last_login"
+        ],
+        "additionalProperties": false
+      },
+      "ManagedUserList": {
+        "type": "object",
+        "properties": {
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManagedUser"
+            },
+            "maxItems": 100
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque next-page token, or null when no continuation remains."
+          }
+        },
+        "required": [
+          "users",
+          "next_cursor"
+        ],
+        "additionalProperties": false
+      },
+      "UserCreateRequest": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150,
+            "description": "Django Unicode username, normalized using NFKC. Uniqueness is reserved case-insensitively across all accounts, including infrastructure accounts."
+          },
+          "first_name": {
+            "type": "string",
+            "maxLength": 150,
+            "description": "Optional printable name, trimmed before storage; defaults to an empty string."
+          },
+          "last_name": {
+            "type": "string",
+            "maxLength": 150,
+            "description": "Optional printable name, trimmed before storage; defaults to an empty string."
+          },
+          "role": {
+            "$ref": "#/components/schemas/Persona"
+          },
+          "is_active": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "username",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "UserUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Opaque server-issued account version. Repeat the current version for every edit, password reset or deletion; stale versions return 409."
+          },
+          "username": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150,
+            "description": "Django Unicode username, normalized using NFKC. Uniqueness is reserved case-insensitively across all accounts, including infrastructure accounts."
+          },
+          "first_name": {
+            "type": "string",
+            "maxLength": 150
+          },
+          "last_name": {
+            "type": "string",
+            "maxLength": 150
+          },
+          "role": {
+            "$ref": "#/components/schemas/Persona"
+          },
+          "is_active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "additionalProperties": false,
+        "minProperties": 2,
+        "description": "Supply the current version and at least one editable account field. PUT and PATCH both preserve omitted fields."
+      },
+      "UserVersionRequest": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Opaque server-issued account version. Repeat the current version for every edit, password reset or deletion; stale versions return 409."
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "additionalProperties": false
+      },
+      "ManagedUserResponse": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/ManagedUser"
+          },
+          "reauthenticate": {
+            "type": "boolean",
+            "const": false
+          }
+        },
+        "required": [
+          "user",
+          "reauthenticate"
+        ],
+        "additionalProperties": false
+      },
+      "GeneratedUserCredentials": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/ManagedUser"
+          },
+          "generated_password": {
+            "type": "string",
+            "minLength": 32,
+            "format": "password",
+            "readOnly": true,
+            "description": "Cryptographically generated password returned only by creation/reset. The application persists its hash, not this plaintext, and the response must not be cached or logged.",
+            "maxLength": 32,
+            "pattern": "^[A-Za-z0-9_-]{32}$"
+          },
+          "reauthenticate": {
+            "type": "boolean",
+            "description": "True when an Admin resets their own password. Copy the credential before acknowledging the dialog and signing in again."
+          }
+        },
+        "required": [
+          "user",
+          "generated_password",
+          "reauthenticate"
+        ],
+        "additionalProperties": false
+      },
+      "UserDeleted": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "additionalProperties": false
+      },
+      "UserCreateResponse": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/ManagedUser"
+          },
+          "generated_password": {
+            "type": "string",
+            "minLength": 32,
+            "format": "password",
+            "readOnly": true,
+            "description": "Cryptographically generated password returned only by creation/reset. The application persists its hash, not this plaintext, and the response must not be cached or logged.",
+            "maxLength": 32,
+            "pattern": "^[A-Za-z0-9_-]{32}$"
+          },
+          "reauthenticate": {
+            "type": "boolean",
+            "description": "True when an Admin resets their own password. Copy the credential before acknowledging the dialog and signing in again.",
+            "const": false
+          }
+        },
+        "required": [
+          "user",
+          "generated_password",
+          "reauthenticate"
+        ],
+        "additionalProperties": false
       }
     },
     "responses": {
@@ -3373,7 +4132,7 @@
         }
       },
       "404": {
-        "description": "Endpoint or refresh job is unavailable. A job owned by another Admin receives the same job_not_found response as an unknown job.",
+        "description": "Endpoint, owned refresh job, visible saved view or manageable product account is unavailable. Unknown and inaccessible resources share the same resource-specific unavailable response; infrastructure accounts are outside product account management.",
         "headers": {
           "X-Request-ID": {
             "$ref": "#/components/headers/RequestId"
@@ -3415,7 +4174,7 @@
         }
       },
       "409": {
-        "description": "refresh_busy: another refresh is queued/running; or idempotency_conflict: this owner previously used the key with a different mode. Busy responses advise retry after 5 seconds.",
+        "description": "Concurrent-state conflict: an active refresh or incompatible idempotency replay; stale saved-view/account version; duplicate username; protected self/last-Admin change; or account deletion while owned refresh work is active. Reload stale records before editing. refresh_busy advises retry after 5 seconds.",
         "headers": {
           "X-Request-ID": {
             "$ref": "#/components/headers/RequestId"
@@ -3537,13 +4296,20 @@
         }
       },
       "503": {
-        "description": "No model is published, the selected immutable version/file fails integrity, or the isolated runtime is unavailable. Existing publication remains usable when refresh fails. compiler_unavailable means the separate bounded SQL compiler could not start or satisfy its protocol; no in-process fallback executes.",
+        "description": "No model is published, the selected immutable version/file fails integrity, or the isolated runtime is unavailable. Existing publication remains usable when refresh fails. compiler_unavailable means the separate bounded SQL compiler could not start or satisfy its protocol; no in-process fallback executes. Account-management contention returns users_busy with Retry-After: 1; no account mutation is applied by that rejected request.",
         "headers": {
           "X-Request-ID": {
             "$ref": "#/components/headers/RequestId"
           },
           "Cache-Control": {
             "$ref": "#/components/headers/NoStore"
+          },
+          "Retry-After": {
+            "description": "For users_busy, wait 1 second before retrying the unchanged request. Other unavailability responses may omit this header.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         },
         "content": {

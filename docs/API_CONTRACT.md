@@ -4,7 +4,7 @@ The API is the contract between the browser workspace and Django: a client asks 
 
 Every path below is under `/api/v1` without a trailing slash. A same-origin client uses the same scheme, host and port as the application. The executable schema is [OpenAPI 3.1](../src/outage_explorer/service/openapi.json), also available after login at `GET /api/v1/openapi.json`. The [query security guide](QUERY_SECURITY.md) explains enforcement boundaries; the [data pipeline and model guide](DATA_PIPELINE_AND_MODEL.md) defines the datasets and metric.
 
-Use the [local operations guide](LOCAL_OPERATIONS.md) for installation and the local operator commands. No endpoint accepts an EIA key, filesystem path, caller-selected persona, or arbitrary connection string. Browser authentication uses Django's `sessionid` cookie.
+Use the [local operations guide](LOCAL_OPERATIONS.md) for installation and the local operator commands. No endpoint accepts an EIA key, filesystem path, caller identity override, or arbitrary connection string. Dedicated Admin account-management endpoints may assign another account a product persona; analytical requests cannot choose their own permissions. Browser authentication uses Django's `sessionid` cookie.
 
 ## Capabilities
 
@@ -18,6 +18,11 @@ Use the [local operations guide](LOCAL_OPERATIONS.md) for installation and the l
 | `GET /data/{dataset_id}` | Dataset permission | `200`, filtered, ordered preview page |
 | `POST /data/{dataset_id}` | Dataset permission, valid CSRF | `200`, structured full-dataset search/filter/sort seek page |
 | `POST /query` | Dataset permission, valid CSRF | `200`, one page of a bounded SQL result |
+| `GET /users` | Active Admin | `200`, searchable account page without credentials |
+| `POST /users` | Active Admin, valid CSRF | `201`, new account and one-time generated password |
+| `PUT/PATCH /users/{user_id}` | Active Admin, valid CSRF | `200`, updated profile/access fields |
+| `POST /users/{user_id}/password` | Active Admin, valid CSRF | `200`, one-time generated replacement password |
+| `DELETE /users/{user_id}` | Active Admin, valid CSRF | `200`, confirmed deletion |
 | `GET /refresh` | Active Admin | `200`, that Admin's own recent jobs |
 | `POST /refresh` | Active Admin, valid CSRF | `202` new job; `200` idempotent replay |
 | `GET /refresh/{job_id}` | Active Admin who owns the job | `200`, durable job state |
@@ -25,20 +30,32 @@ Use the [local operations guide](LOCAL_OPERATIONS.md) for installation and the l
 | `GET /health/ready` | Active Admin | `200`, published model/runtime availability |
 | `GET /openapi.json` | Signed in | `200`, static API schema |
 
-Paths in the table are relative to `/api/v1`. Viewer may access **`national_daily` and `fleet_daily` only**. Analyst and Admin may access all ten registered analytical datasets. Admin additionally owns refresh and readiness capabilities; it does not receive another Admin's jobs. Unknown and forbidden dataset IDs receive the same `403 dataset_forbidden` response before analytical file access. The catalog omits unauthorized datasets and foreign-key references to hidden datasets. The static OpenAPI document describes the whole API; it does not grant permission or reveal another persona's runtime rows/catalog metadata.
+Paths in the table are relative to `/api/v1`. Viewer may access **`national_daily` and `fleet_daily` only**. Analyst and Admin may access all ten registered analytical datasets. Admin additionally manages product accounts and owns refresh and readiness capabilities; it does not receive another Admin's jobs. Unknown and forbidden dataset IDs receive the same `403 dataset_forbidden` response before analytical file access. The catalog omits unauthorized datasets and foreign-key references to hidden datasets. The static OpenAPI document describes the whole API; it does not grant permission or reveal another persona's runtime rows/catalog metadata.
 
 ## Browser session and CSRF
 
 1. `GET /api/v1/auth/csrf`; retain browser cookies and the JSON `csrf_token`.
 2. `POST /api/v1/auth/login` with `Content-Type: application/json`, `X-CSRFToken: <bootstrap token>`, and `{"username":"analyst","password":"<operator-generated password>"}`.
 3. Keep the returned session cookie and replace the header token with the **new** `csrf_token` returned after login.
-4. Send that header and the browser cookies on **every POST**, including `/query`, `/refresh`, `/auth/logout`, and subsequent login attempts. Logout's JSON body is `{}`.
+4. Send that header and the browser cookies on **every POST, PUT, PATCH and DELETE**, including `/query`, `/refresh`, `/auth/logout`, and subsequent login attempts. Logout's JSON body is `{}`.
 
-For `fetch`, use same-origin credentials. The CSRF response token is a Django token; do not assume it is textually identical to the cookie. Session cookies are HttpOnly and SameSite=Lax. Sessions expire after 1,800 seconds and at browser close. Changing a password, deleting the persisted session, disabling the user or changing the persona is checked against current server state. Refresh or query cursors are not authentication credentials.
+For `fetch`, use same-origin credentials. The CSRF response token is a Django token; do not assume it is textually identical to the cookie. Session cookies are HttpOnly and SameSite=Lax. Sessions expire after 1,800 seconds and at browser close. Changing a password, deleting the persisted session, disabling the user or changing the persona is checked against current server state. Account-management access changes increment a persisted session version, so reversing a role/active-state change does not restore a previously revoked session. Refresh or query cursors are not authentication credentials.
 
 `GET /api/v1/auth/session` also returns top-level `session_scope`: an opaque 64-character lowercase hexadecimal HMAC shared with the protected HTML bootstrap. It binds browser state to the current persisted session/authentication/persona, so a new session for the same username and role is distinguishable. It stays stable when analytical data is refreshed. The browser uses it to retire old query-history scopes and revalidate restored pages. It is neither a credential nor a cursor: authentication still requires the valid session cookie, and sending this value does not grant access. The exact response is defined by OpenAPI's `SessionResponse`; see [browser workspace](BROWSER_WORKSPACE.md) for its client use.
 
 An incorrect username/password returns the same `401 invalid_credentials`. Shared login throttles allow 10 attempts per username and 30 per client address in a five-minute window; successful attempts count too. A limit returns `429` with `Retry-After`. Raw usernames and addresses are not stored in rate-limit bucket keys.
+
+## Admin account management
+
+User management is a product Admin capability, separate from Django's staff/superuser administration. It is available even before an analytical model has been published. `GET /api/v1/users` searches manageable accounts by username and names, returning ID-ordered pages with default `page_size=25` and maximum 100. `next_cursor` is null at the end; otherwise repeat the same search and page size with that token. Tokens expire after 15 minutes and are limited to 4,096 characters. Infrastructure staff/superuser accounts are excluded. Public account records contain ID, username, first/last names, product role, active state, timestamps, `is_self`, and an opaque `version`; they contain no password hash or session credential.
+
+`POST /api/v1/users` requires `username` and `role`; `first_name`, `last_name` and `is_active` are optional. Creation generates a 32-character URL-safe random password with 192 bits of entropy and returns `{user, generated_password, reauthenticate:false}` with status 201. There is no caller-supplied password field. Only the password hash is persisted. The plaintext is returned once in this no-store response and must be shared with the recipient privately; a lost password can be replaced, not retrieved.
+
+`PUT` and `PATCH /api/v1/users/{user_id}` update only supplied username, name, role and active-state fields. Every edit, reset and delete requires the current `version`. A stale version returns 409 so a second administrator cannot silently overwrite newer account changes. Usernames are NFKC-normalized using Django's Unicode validator and reserved case-insensitively across all accounts. Duplicate usernames also conflict. Editing names or username preserves sessions; changing role or active state permanently revokes the affected account's existing sessions. Account permissions still derive from the authenticated caller, not the target ID or supplied assignment.
+
+`POST /api/v1/users/{user_id}/password` accepts `{version}` and returns a new one-time `generated_password`, replacing the old hash and revoking existing sessions. A self-reset returns `reauthenticate:true`: retain the new password before acknowledging the credentials dialog and signing in again. Generated credentials are never written into the local seed-password configuration, browser history or saved views.
+
+`DELETE /api/v1/users/{user_id}` accepts `{version}` and returns `{deleted:true}`. Deletion removes the account's saved views and cached query results. Historical refresh records remain with no account owner; an account with queued/running refresh work cannot be deleted until that work finishes. Self-deletion, self-deactivation and self-demotion are rejected, and the last active Admin is protected. These rules are checked inside the serialized database mutation boundary, independently of disabled browser buttons. Contention returns `503 users_busy` with `Retry-After: 1`.
 
 ## Request and scalar encoding
 

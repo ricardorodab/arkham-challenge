@@ -8,7 +8,7 @@ Read the request path first, then use the boundary and limit sections as a refer
 
 HTTP input and submitted SQL are untrusted. The host operator, Python application, SQL compiler/parser, JavaScript shim, installed dependencies and immutable publication catalog are trusted code or state. Product personas limit remote capabilities. They do not protect files from the operating-system account that owns the application or a host administrator.
 
-Protected assets include authentication/session state, generated operator credentials, the worker's EIA credential, permitted analytical rows, publication integrity and limited query capacity. No endpoint accepts an EIA key, host path, arbitrary connection string, user ID or persona override. A facility filter narrows a query; it is not a separate tenant boundary. Analyst and Admin can access detail datasets, while Viewer can access only `national_daily` and `fleet_daily`.
+Protected assets include authentication/session state, generated operator credentials, the worker's EIA credential, permitted analytical rows, publication integrity and limited query capacity. No endpoint accepts an EIA key, host path, arbitrary connection string or caller identity override. Dedicated Admin account endpoints accept a target account ID and explicit role assignment; analytical requests cannot impersonate that target or choose their own persona. A facility filter narrows a query; it is not a separate tenant boundary. Analyst and Admin can access detail datasets, while Viewer can access only `national_daily` and `fleet_daily`.
 
 ## Follow one query from HTTP to response
 
@@ -44,19 +44,27 @@ The source trail is [service URLs](../src/outage_explorer/service/urls.py) â†’ [
 
 ## Identity is checked against current server state
 
-Django uses server-side persisted sessions and one product persona per user. The seeded Admin has no Django staff/superuser privilege. A staff flag, superuser flag, body field or browser control cannot select a product role; invalid or missing personas are denied.
+Django uses server-side persisted sessions and one product persona per user. The seeded Admin has no Django staff/superuser privilege. A staff flag, superuser flag or analytical request field cannot choose the caller's product role; invalid or missing personas are denied. Active product Admins assign roles only through the dedicated account-management service, which does not create infrastructure privileges.
 
-[policy.identity](../src/outage_explorer/service/policy.py) reloads the active user and persona, then checks the persisted unexpired session, user ID, backend and authentication hash. Its HMAC binding includes user ID, persona, session key and authentication hash. `recheck` reloads and compares this identity after admission and before result/cache delivery. Session deletion, password change, account deactivation or persona change therefore affects an already-started request or cache hit. Already-delivered information cannot be remotely erased.
+[policy.identity](../src/outage_explorer/service/policy.py) reloads the active user and persona, then checks the persisted unexpired session, user ID, backend, authentication hash and persisted persona session version. Its HMAC binding includes user ID, persona, session key, authentication hash and a nonlegacy session version. Version 1 retains the original binding format for existing sessions. `recheck` reloads and compares this identity after admission and before result/cache delivery. Session deletion, password change, account deactivation or persona change therefore affects an already-started request or cache hit. Already-delivered information cannot be remotely erased.
 
 | Persona | Analytical access | Additional capability |
 | --- | --- | --- |
 | Viewer | Exactly `national_daily`, `fleet_daily` | None |
 | Analyst | All ten registered analytical datasets | None |
-| Admin | All ten registered analytical datasets | Refresh, readiness and its own refresh jobs |
+| Admin | All ten registered analytical datasets | Product account management, refresh, readiness and its own refresh jobs |
 
 Catalog filtering removes hidden datasets and foreign-key references to them. The static authenticated OpenAPI schema describes the whole API; it grants no permission and exposes no other persona's runtime rows. Service policy and `model_store._allowed` currently derive compatible permissions from the common dataset classifications; a future policy change needs cross-layer tests to keep them aligned.
 
 Every mutation, including login, requires Django CSRF protection. Cookies authenticate; the CSRF token protects unsafe cookie-authenticated requests. Sessions are HttpOnly, SameSite=Lax, valid for 1,800 seconds and expire at browser close. Login rotates the CSRF token. Shared login throttles count successful and failed attempts: 10 per username and 30 per client address in five minutes, with `429` and `Retry-After` on saturation. HMAC bucket keys avoid storing raw names/addresses. The delivered runner uses `REMOTE_ADDR`; a remote proxy deployment requires a deliberate client-IP trust policy.
+
+### Account changes revoke sessions permanently
+
+The Admin-only [account service](../src/outage_explorer/service/user_management.py) serializes mutations with a service-state writer lock and a SQLite write transaction, then rechecks the calling actor inside that boundary. Opaque account versions prevent stale edits, password resets and deletions. The service protects the last active Admin and rejects self-deletion, self-deactivation and self-demotion; staff/superuser accounts are excluded. Accounts owning active refresh work cannot be deleted. Completed refresh history survives account deletion, while owned saved definitions and cached results are removed.
+
+Role, active-state and password changes increment `Persona.session_version`. Login records that version in the persisted session; identity checks reject an older version. Missing versions mean 1 for compatibility with existing sessions. This avoids scanning/decoding every session row on a mutation and prevents an old session from becoming valid again when an account is reactivated or its previous role is restored. Username/name edits preserve the authorization context.
+
+Creation and password reset use cryptographically generated passwords. Only their Django hashes are persisted; plaintext appears once in the authorized no-store response and a transient credentials dialog, never logs or browser storage. A self-reset deliberately returns its new credential after revoking the requesting session, then requires fresh authentication. The browser temporarily defers its automatic expiry transition only during that operation and acknowledgment so the generated credential can be retained; this grants no further server access. Dismissing or leaving a displayed credential clears it and ends the old workspace after a self-reset. Replies arriving while the tab is already in the background remain only in private memory for at most five minutes; another account's credential is displayed masked on return only after a session check.
 
 ## The compiler permits a small language; it is not the engine sandbox
 
@@ -162,7 +170,7 @@ The separate worker first acquires its control lock, then can recover `running â
 
 ## Local credentials, HTTP and browser trust
 
-`web.local init` explicitly creates random Django/persona inputs in ignored `.service/local-config.json`, migrates the service database and seeds `viewer`, `analyst`, `admin`. There are no shipped/default passwords. Creation uses exclusive file creation and fsync, POSIX mode 0600 or a new-file owner-only NTFS ACL. Passwords are hashed in Django. Repeated setup preserves passwords unless `--reset-passwords` is supplied; privileged/conflicting identities require reconciliation.
+On first use, `web.local init` explicitly creates random Django/persona inputs in ignored `.service/local-config.json`, migrates the service database and seeds `viewer`, `analyst`, `admin`. There are no shipped/default passwords. Creation uses exclusive file creation and fsync, POSIX mode 0600 or a new-file owner-only NTFS ACL. Passwords are hashed in Django. Repeated setup applies migrations but preserves Admin-managed usernames, deletions, roles and passwords. Seeding occurs only when no product personas exist or `--reset-passwords` is explicitly supplied; recovery can recreate default identities, while privileged/conflicting identities require reconciliation.
 
 That JSON accepts exactly the generated Django key and three seed passwords. Other effective settings come from process environment or defaults in code; `.env.example` and a renamed `.env` are not automatically loaded. [PROJECT_TOUR.md](PROJECT_TOUR.md) explains precedence and [LOCAL_OPERATIONS.md](LOCAL_OPERATIONS.md) gives commands.
 

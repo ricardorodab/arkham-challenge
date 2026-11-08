@@ -131,6 +131,12 @@ def reset() -> None:
         SavedView,
     )
 
+    # User administration tests can rename, deactivate or reset seeded accounts.
+    # Restore only this run's synthetic identities before the next scenario.
+    RefreshJob.objects.filter(status__in=["queued", "running"]).update(
+        status="interrupted", finished_at=timezone.now(), error_code="synthetic_fixture_reset"
+    )
+    get_user_model().objects.exclude(username__in=FIXTURE["passwords"]).delete()
     for role in FIXTURE["passwords"]:
         user = get_user_model().objects.filter(username=role).first()
         if user is None:
@@ -138,15 +144,14 @@ def reset() -> None:
         get_user_model().objects.filter(pk=user.pk).update(
             is_active=True, is_staff=False, is_superuser=False
         )
-        Persona.objects.update_or_create(user_id=user.pk, defaults={"role": role})
-    call_command("seed_users", verbosity=0)
+        Persona.objects.update_or_create(
+            user_id=user.pk, defaults={"role": role, "session_version": 1}
+        )
+    call_command("seed_users", verbosity=0, reset_passwords=True)
     Session.objects.all().delete()
     QueryCacheEntry.objects.all().delete()
     SavedView.objects.all().delete()
     RateLimitBucket.objects.all().delete()
-    RefreshJob.objects.filter(status__in=["queued", "running"]).update(
-        status="interrupted", finished_at=timezone.now(), error_code="synthetic_fixture_reset"
-    )
     baseline_file = settings.OUTAGE_STATE_DIR / "synthetic-baseline.json"
     baseline = (
         json.loads(baseline_file.read_text(encoding="utf-8")) if baseline_file.exists() else {}

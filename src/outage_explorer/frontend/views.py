@@ -39,6 +39,7 @@ ASSETS = {
     "query_results.js": "text/javascript; charset=utf-8",
     "saved_views.js": "text/javascript; charset=utf-8",
     "refresh.js": "text/javascript; charset=utf-8",
+    "users.js": "text/javascript; charset=utf-8",
     "overview.js": "text/javascript; charset=utf-8",
     "explore.js": "text/javascript; charset=utf-8",
     "favicon.svg": "image/svg+xml",

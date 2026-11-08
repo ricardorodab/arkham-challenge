@@ -13,6 +13,7 @@ import { ExploreController } from './explore.js';
 import { SqlController, clearPrivateHistory } from './sql.js';
 import { RefreshController } from './refresh.js';
 import { SavedViewsController } from './saved_views.js';
+import { UsersController } from './users.js';
 
 /**
  * Own shared model/catalog state, navigation and browser session disposal.
@@ -29,7 +30,12 @@ export class Workspace {
     this.candidate = null;
     this.queue = new AnalyticalQueue();
     this.client = new ApiClient({
-      onSessionLost: (error) => this.expire(error.status === 403 ? 'permissions' : 'expired'),
+      onSessionLost: (error) => {
+        // A self-reset intentionally revokes this session. Deliver its one-time
+        // credentials before the controller acknowledges the required sign-in.
+        if (!this.users?.awaitingSelfPasswordReset)
+          this.expire(error.status === 403 ? 'permissions' : 'expired');
+      },
     });
     // Shared closures read current workspace state; controllers never retain a second actor authority.
     const context = {
@@ -43,6 +49,9 @@ export class Workspace {
       applyLatest: () => this.applyLatest(),
       hasUpdate: () => !!this.candidate,
       notice: (message) => this.notice(message),
+      onSelfUserUpdated: (user) => this.updateOwnUser(user),
+      onSelfPasswordReset: () => this.expire('password-reset'),
+      onSessionCheckRequired: () => this.checkSession(true),
     };
     context.onSavedViewCapabilities = () => this.sql?.updatePager();
     this.savedViews = new SavedViewsController(context, {
@@ -70,6 +79,7 @@ export class Workspace {
     this.explore = new ExploreController(context);
     this.sql = new SqlController(context);
     this.refresh = scope.persona === 'admin' ? new RefreshController(context) : null;
+    this.users = scope.persona === 'admin' ? new UsersController(context) : null;
     byId('sql-run').disabled = true;
     byId('logout-button').addEventListener('click', () => this.signOut());
     byId('apply-snapshot').addEventListener('click', () => this.applyLatest());
@@ -174,11 +184,13 @@ export class Workspace {
   route(focus) {
     if (this.ended) return;
     const requested = location.hash.slice(1) || 'overview';
+    if (this.view === 'users' && requested !== 'users') this.users?.clearCredentials();
+    if (this.ended) return;
     const allowed = [
       'overview',
       'explore',
       'sql',
-      ...(this.scope.persona === 'admin' ? ['refresh'] : []),
+      ...(this.scope.persona === 'admin' ? ['refresh', 'users'] : []),
     ];
     this.view = allowed.includes(requested) ? requested : 'denied';
     for (const section of document.querySelectorAll('.workspace-view'))
@@ -188,6 +200,7 @@ export class Workspace {
       explore: 'Explore data',
       sql: 'SQL workspace',
       refresh: 'Data refresh',
+      users: 'User management',
       denied: 'Access restricted',
     };
     setText('page-title', titles[this.view]);
@@ -221,6 +234,7 @@ export class Workspace {
       window.scrollTo({ top: 0, behavior: 'instant' });
     }
     if (this.view === 'refresh') this.refresh.load();
+    if (this.view === 'users') this.users?.activate();
     if (!this.catalog) return;
     if (this.view === 'overview') {
       this.overview.load();
@@ -238,6 +252,16 @@ export class Workspace {
     container.replaceChildren(element('p', 'state-message', message));
     container.setAttribute('role', 'status');
     container.hidden = false;
+  }
+
+  /** Keep local identity labels aligned after an Admin edits their own profile. */
+  updateOwnUser(user) {
+    if (this.ended || !user?.is_self || typeof user.username !== 'string') return;
+    this.scope.username = user.username;
+    const name = document.querySelector('.account-name');
+    const avatar = document.querySelector('.sidebar-account .avatar');
+    if (name) name.textContent = user.username;
+    if (avatar) avatar.textContent = user.username.slice(0, 1).toUpperCase();
   }
 
   /**
@@ -292,7 +316,7 @@ export class Workspace {
    * @param {boolean} protectContent Hide content while confirmation is pending.
    */
   async checkSession(protectContent) {
-    if (this.ended) return;
+    if (this.ended || this.users?.awaitingSelfPasswordReset) return;
     // Latch protection before the in-flight check guard so focus can escalate a background check.
     if (protectContent) {
       this.protectSessionCheck = true;
@@ -302,7 +326,7 @@ export class Workspace {
     this.sessionCheck = true;
     try {
       const session = await this.client.request('/auth/session');
-      if (this.ended) return;
+      if (this.ended || this.users?.awaitingSelfPasswordReset) return;
       if (
         session.user.username !== this.scope.username ||
         session.user.persona !== this.scope.persona ||
@@ -316,7 +340,7 @@ export class Workspace {
       byId('session-shield')?.remove();
       this.checkLatest();
     } catch (error) {
-      if (!this.ended && this.protectSessionCheck)
+      if (!this.ended && !this.users?.awaitingSelfPasswordReset && this.protectSessionCheck)
         this.shield(
           'Unable to verify your session. Your workspace is hidden until access can be confirmed.',
           () => this.checkSession(true),
@@ -363,6 +387,7 @@ export class Workspace {
     this.sql.dispose();
     this.savedViews?.dispose();
     this.refresh?.dispose();
+    this.users?.dispose();
     clearPrivateHistory();
     this.catalog = null;
     this.candidate = null;

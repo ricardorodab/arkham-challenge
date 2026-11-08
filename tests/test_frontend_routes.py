@@ -96,6 +96,8 @@ def test_authenticated_shell_exposes_only_fresh_role_and_opaque_session_scope(
     assert client.session.session_key not in current.content.decode()
     assert client.session.session_key not in html
     assert ('id="admin-panel"' in html) is (role == "admin")
+    assert ('id="view-users"' in html) is (role == "admin")
+    assert ('data-view="users"' in html) is (role == "admin")
     assert response["Cache-Control"] == "no-store"
     assert response["X-Content-Type-Options"] == "nosniff"
 
@@ -227,6 +229,7 @@ def test_html_routes_accept_get_only(no_analytical_access, path):
         "query_results.js",
         "saved_views.js",
         "refresh.js",
+        "users.js",
         "overview.js",
         "explore.js",
         "favicon.svg",

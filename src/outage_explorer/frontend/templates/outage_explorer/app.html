@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#172f3b">
+  <meta name="theme-color" content="#14253f">
   <meta name="description" content="Explore published U.S. nuclear outage observations in a secure, versioned workspace.">
   <title>Outage Explorer · Workspace</title>
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
@@ -26,6 +26,7 @@
 {# Omit Admin markup for truthful capabilities; service policy still authorizes every refresh request. #}        {% if is_admin %}
         <span class="nav-divider">Administration</span>
         <a href="#refresh" data-view="refresh" class="nav-link"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M5.3 8a7 7 0 0 1 11.5-3L20 8M4 16l3.2 3A7 7 0 0 0 18.7 16"/></svg><span>Data refresh</span><span class="nav-index">04</span></a>
+        <a href="#users" data-view="users" class="nav-link"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M17 4a3 3 0 0 1 0 6m1 4a5 5 0 0 1 3 4v3"/></svg><span>Users</span><span class="nav-index">05</span></a>
         {% endif %}
       </nav>
       <div class="sidebar-note"><span class="small-orbit" aria-hidden="true"></span><p>Daily observations.<br>One published view.</p></div>
@@ -148,6 +149,20 @@ LIMIT 100</textarea></div>
             <div class="refresh-detail" aria-live="off"><dl class="refresh-metrics"><div><dt id="refresh-step-label">Current step</dt><dd id="refresh-step">Not started</dd></div><div id="refresh-elapsed-row" hidden><dt>Elapsed</dt><dd id="refresh-elapsed"></dd></div><div id="refresh-updated-row" hidden><dt>Last progress update</dt><dd><time id="refresh-updated"></time></dd></div></dl><p id="refresh-counts" class="refresh-counts" hidden></p><ul id="refresh-routes" class="refresh-routes" aria-label="Source activity" hidden></ul><p id="refresh-progress-label" class="refresh-export-label" hidden></p><progress id="refresh-progress" aria-label="Refresh activity" hidden>Refresh in progress</progress><p id="refresh-progress-note" class="muted refresh-progress-note" hidden></p></div><div class="refresh-status-actions"><p class="muted">The published data remains available while this job runs.</p><div class="button-group"><button id="refresh-check" class="button button-secondary button-small" type="button">Check status</button><button id="refresh-use-latest" class="button button-small" type="button" hidden>Use latest publication <span aria-hidden="true">↗</span></button></div></div></section>
           <section class="panel refresh-history" aria-labelledby="refresh-history-heading"><div class="panel-heading"><div><p class="eyebrow">Your activity</p><h3 id="refresh-history-heading">Recent refresh jobs</h3></div><span class="muted">Visible to you</span></div><div id="refresh-jobs" class="refresh-jobs"><p class="muted">Your refresh jobs will appear here.</p></div></section>
         </div></section>
+        <section id="view-users" class="workspace-view" aria-labelledby="users-heading" hidden>
+          <div class="section-intro user-section-intro"><div><p class="eyebrow">Account administration</p><h2 id="users-heading">People and access</h2><p class="section-description">Manage sign-in accounts, access levels, and credentials for this workspace.</p></div><button id="users-create" class="button" type="button"><span aria-hidden="true">+</span> Create user</button></div>
+          <section id="users-content" class="panel user-directory" aria-label="Workspace accounts" aria-busy="false">
+            <div class="user-directory-toolbar"><form id="users-search-form" class="user-directory-search" role="search"><label class="field" for="users-search"><span>Find a user</span><input id="users-search" type="search" maxlength="150" autocomplete="off" placeholder="Search usernames or names"></label><button class="button button-secondary" type="submit">Search</button></form><button id="users-reload" class="button button-quiet button-small" type="button">Refresh list</button></div>
+            <p id="users-status" class="user-list-status" role="status" aria-live="polite">Open user management to load accounts.</p>
+            <div id="users-loading" class="loading-state user-directory-loading" role="status" hidden><span class="spinner" aria-hidden="true"></span>Loading accounts…</div>
+            <div id="users-error" class="notice notice-error user-directory-error" role="alert" hidden></div>
+            <div id="users-empty" class="empty-state user-directory-empty" hidden><h3>No accounts match this search</h3><p>Try a different username or name, or clear the search field.</p></div>
+            <div id="users-table-wrap" class="table-wrap" tabindex="0" role="region" aria-label="User directory, scroll horizontally for account actions" hidden><table id="users-table" class="data-table user-table"><caption class="sr-only">User accounts and access levels</caption><thead><tr><th scope="col">Username</th><th scope="col">Name</th><th scope="col">Access level</th><th scope="col">Status</th><th scope="col">Last sign-in</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="users-table-body"></tbody></table></div>
+            <div class="pagination"><p class="pagination-note">25 accounts per page · Changes take effect immediately</p><div class="pagination-actions"><button id="users-prev" class="button button-secondary button-small" type="button" disabled><span aria-hidden="true">←</span> Previous</button><span id="users-page" class="page-label" aria-live="polite">Page 1</span><button id="users-next" class="button button-secondary button-small" type="button" disabled>Next <span aria-hidden="true">→</span></button></div></div>
+          </section>
+          <aside class="user-access-guide" aria-label="Access level guide"><article><span class="badge user-role">Viewer</span><p>Explore national data and shared views permitted for the account.</p></article><article><span class="badge user-role">Analyst</span><p>Explore all datasets, write queries, and create or share saved views.</p></article><article><span class="badge user-role">Admin</span><p>Analyst capabilities, plus account management and data refresh.</p></article></aside>
+        </section>
+        <dialog id="user-dialog" class="saved-view-dialog user-dialog" aria-labelledby="user-dialog-title"></dialog>
         {% endif %}
         <dialog id="saved-view-dialog" class="saved-view-dialog" aria-labelledby="saved-view-dialog-title"></dialog>
         <footer class="workspace-footer"><span>Outage Explorer</span><span>Published daily observations. <span aria-hidden="true">·</span> U.S. EIA</span></footer>

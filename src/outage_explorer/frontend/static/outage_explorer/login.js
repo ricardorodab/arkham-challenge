@@ -21,7 +21,9 @@ const reasonMessage =
       ? 'Your access changed. Sign in with an authorized account.'
       : reason === 'signed-out'
         ? 'You have been signed out.'
-        : '';
+        : reason === 'password-reset'
+          ? 'Your password was reset. Sign in with your new password.'
+          : '';
 /**
  * Bootstrap the CSRF token before enabling login; leave failures explicitly retryable.
  */

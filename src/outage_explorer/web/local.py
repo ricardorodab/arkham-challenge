@@ -1,7 +1,8 @@
 """Provide explicit local init, HTTP serve and separate refresh-worker launchers.
 
-init creates/loads private generated credentials, configures Django, migrates the application
-database and calls seed_users. serve runs Waitress; worker calls the polling management
+init creates/loads private generated credentials, configures Django and migrates the application
+database. It seeds accounts only for a fresh product state or an explicit password reset.
+serve runs Waitress; worker calls the polling management
 command in its own invocation. The launcher loads exactly its four generated Django/password
 inputs, never .env, .env.example or an EIA key file. Other settings remain process-environment
 inputs or defaults in web.settings.
@@ -85,7 +86,8 @@ def main():
 
     State defaults to cwd/.service unless OUTAGE_STATE_DIR is set. Override the process Django
     key with generated configuration, without autoloading environment files. init migrates
-    then seeds, preserving passwords unless explicitly reset; serve removes upstream/seed
+    then seeds only a fresh product state or an explicit reset; ordinary initialization
+    preserves Admin-managed account names, roles, removals and passwords. serve removes upstream/seed
     secrets before Waitress; worker keeps its EIA key but removes seed passwords before
     run_refresh_worker. Emit safe setup failures and exit 2 without printing generated values.
     """
@@ -123,13 +125,18 @@ def main():
             for key, value in values.items():
                 os.environ[key] = value
             call_command("migrate", verbosity=0, interactive=False)
-            call_command("seed_users", reset_passwords=args.reset_passwords)
+            from outage_explorer.service.models import Persona
+
+            seeded = args.reset_passwords or not Persona.objects.exists()
+            if seeded:
+                call_command("seed_users", reset_passwords=args.reset_passwords)
             print(
                 json.dumps(
                     {
                         "initialized": True,
                         "credentials_file": str(config_path),
-                        "users": ["viewer", "analyst", "admin"],
+                        "seeded": seeded,
+                        "users": ["viewer", "analyst", "admin"] if seeded else [],
                     }
                 )
             )

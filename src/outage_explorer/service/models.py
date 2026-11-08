@@ -17,6 +17,8 @@ class Persona(models.Model):
 
     The one-to-one relation and check constraint define policy input; product Admin does not
     imply Django staff/superuser or infrastructure privileges.
+    session_version retires prior sign-ins after credential or access changes without
+    scanning the session table; version one preserves pre-existing local sessions.
     """
 
     class Role(models.TextChoices):
@@ -30,6 +32,7 @@ class Persona(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="persona"
     )
     role = models.CharField(max_length=7, choices=Role.choices)
+    session_version = models.PositiveIntegerField(default=1)
 
     class Meta:
         """Enforce the allowed role vocabulary in the application database."""
@@ -49,6 +52,7 @@ class RefreshJob(models.Model):
     permits only one queued/running job globally. Neither rule guarantees exactly-once
     ingestion: data publication and job completion occur in different databases/transactions,
     so interruption may follow successful publication.
+    Deleting an eligible account detaches its completed history instead of erasing jobs.
     """
 
     class Mode(models.TextChoices):
@@ -68,7 +72,10 @@ class RefreshJob(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     owner = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="refresh_jobs"
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="refresh_jobs",
     )
     mode = models.CharField(max_length=6, choices=Mode.choices)
     status = models.CharField(max_length=11, choices=Status.choices, default=Status.QUEUED)
