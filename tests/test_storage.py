@@ -13,8 +13,8 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from outage_explorer.domain import ROUTES, canonical_json, identifier, validate_row
-from outage_explorer.storage import Catalog, StorageError, writer_lock
+from outage_explorer.data.domain import ROUTES, canonical_json, identifier, validate_row
+from outage_explorer.data.storage import Catalog, StorageError, writer_lock
 
 
 def make_snapshot(catalog, run_id, *, parent=None, duplicate=False):
@@ -286,7 +286,7 @@ def test_writer_lock_excludes_another_process_and_releases(tmp_path):
     script = """
 import sys
 from pathlib import Path
-from outage_explorer.storage import StorageError, writer_lock
+from outage_explorer.data.storage import StorageError, writer_lock
 try:
     with writer_lock(Path(sys.argv[1])):
         print('acquired')

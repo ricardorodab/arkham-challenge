@@ -14,7 +14,7 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
 
-from outage_explorer.storage import StorageError, writer_lock
+from outage_explorer.data.storage import StorageError, writer_lock
 
 from .errors import APIError
 from .models import RateLimitBucket

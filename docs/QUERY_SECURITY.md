@@ -38,9 +38,9 @@ flowchart TD
 8. A disposable Node process runs regenerated SQL in the restricted WASM engine. The supervisor bounds output, enforces the deadline and reaps the child.
 9. The service pages the bounded ordered result and rechecks persisted identity before result/cache publication and delivery, including cache hits. Middleware adds safe headers, a request ID and sanitized operational logging.
 
-Preview follows the same compiler and engine controls. Its SQL and full-primary-key keyset predicates are constructed by trusted application code. A denial does not start a data query; a cached result does not authorize its recipient.
+Structured browsing uses the separate generated-plan native reader below. The SQL-editor path retains its compiler/WASM controls. A denial does not start either data query; a cached result does not authorize its recipient.
 
-The source trail is [service URLs](../src/outage_explorer/service/urls.py) → [views](../src/outage_explorer/service/views.py) → [policy](../src/outage_explorer/service/policy.py) → [API services](../src/outage_explorer/service/api_services.py) → [compiler](../src/outage_explorer/sql_compiler.py) → [sandbox supervisor](../src/outage_explorer/query_sandbox.py) → [engine worker](../src/outage_explorer/sandbox/worker.cjs).
+The source trail is [service URLs](../src/outage_explorer/service/urls.py) → [views](../src/outage_explorer/service/views.py) → [policy](../src/outage_explorer/service/policy.py) → [API services](../src/outage_explorer/service/api_services.py) → [compiler](../src/outage_explorer/query/sql_compiler.py) → [sandbox supervisor](../src/outage_explorer/query/query_sandbox.py) → [engine worker](../src/outage_explorer/sandbox/worker.cjs).
 
 ## Identity is checked against current server state
 
@@ -60,7 +60,7 @@ Every mutation, including login, requires Django CSRF protection. Cookies authen
 
 ## The compiler permits a small language; it is not the engine sandbox
 
-[sql_policy.py](../src/outage_explorer/sql_policy.py) is an AST allowlist compiler. An AST is the parser's structured representation of the SQL statement. The compiler validates specific node classes, arguments, columns, scalar types and functions, normalizes/quotes identifiers and regenerates SQL. The original submitted text is not sent directly to execution.
+[sql_policy.py](../src/outage_explorer/query/sql_policy.py) is an AST allowlist compiler. An AST is the parser's structured representation of the SQL statement. The compiler validates specific node classes, arguments, columns, scalar types and functions, normalizes/quotes identifiers and regenerates SQL. The original submitted text is not sent directly to execution.
 
 The supported language is one named-source SELECT: projection, filters, arithmetic/comparisons, grouping, HAVING, ordering, bounded LIMIT, basic aggregates and selected scalar functions/casts. It allows aggregate DISTINCT, such as `COUNT(DISTINCT ...)`, but not SELECT DISTINCT. Joins, CTEs, subqueries, windows, set operations, OFFSET, commands/mutations, table/file/network functions, arbitrary functions, CASE and NULLIF are excluded. The [API language contract](API_CONTRACT.md#sql-queries) gives the complete client-facing list.
 
@@ -78,7 +78,7 @@ Byte/token/nesting checks precede recursive parsing. Only one statement is accep
 
 Ordinary SELECTs receive full-primary-key ordering tie breakers; grouped results receive group-key tie breakers; a scalar aggregate has at most one result row. An outer cap plus one private sentinel bounds retained rows without changing an explicit inner SQL LIMIT's ordinary meaning. Preview then uses keysets; SQL pagination slices the same deterministic capped result, not an unrestricted export.
 
-Compilation runs under `Python -I -B -m outage_explorer.sql_compile_worker`, in a disposable resource-limited process with a scrubbed environment, bounded pipes and forced kill/reap. It receives no analytical bytes, data paths or application secrets and intentionally performs no analytical I/O. There is no in-process fallback.
+Compilation runs under `Python -I -B -m outage_explorer.query.sql_compile_worker`, in a disposable resource-limited process with a scrubbed environment, bounded pipes and forced kill/reap. It receives no analytical bytes, data paths or application secrets and intentionally performs no analytical I/O. There is no in-process fallback.
 
 This Python child is **not an operating-system filesystem jail**. Trusted application/parser/dependency code retains host-account authority. Its process/resource isolation and lack of supplied data capabilities are distinct from the engine restriction below.
 
@@ -130,7 +130,19 @@ File hashes establish agreement with a trusted manifest. They are not signatures
 
 The private SQLite result cache binds user, persona, session/authentication state, canonical SQL/caps/page size, selected immutable model and current publication model ID. It lasts 60 seconds, retains up to eight entries per user and does not extend expiry on hits. Authorization precedes lookup and is checked before delivery. HTTP responses remain `no-store`; HTTP caching and authorized server result caching are separate mechanisms.
 
-Signed cursors expire after 15 minutes and bind the actor, query/filter parameters, limits and model. They are not encrypted, authentication credentials or caller-selected offsets. Preview uses full-PK keysets; SQL pages within its retained cap. A cursor can keep an old model pinned while a new publication retires cache generations. Immutable model retention therefore needs a future garbage-collection policy coordinated with cursor lifetime and active readers.
+Signed cursors expire after 15 minutes and bind the actor, query/filter parameters, limits and model. They are not encrypted, authentication credentials or caller-selected offsets. Structured browsing uses requested sort keys plus unique PK ties; SQL pages within its retained cap. A cursor can keep an old model pinned while a new publication retires cache generations. Immutable model retention therefore needs a future garbage-collection policy coordinated with cursor lifetime and active readers.
+
+## Structured browsing has a separate trusted reader
+
+Explore submits a closed search/filter/order specification, not SQL. [The pure browse compiler](../src/outage_explorer/query/browse.py) allows declared dataset columns, type-compatible operators and bound values only. The child independently validates the canonical plan and generates a projected SELECT with total ordering, NULLS LAST, exact seek operands and LIMIT plus one sentinel. There is no caller-supplied expression, join, function, path or SQL statement inlet. The existing SQL editor still uses the compiler/WASM capability boundary; it cannot opt into native execution.
+
+[The native supervisor](../src/outage_explorer/query/browse_runtime.py) authorizes through the service, rejects symlink/reparse components, pins the selected regular file and checks its expected manifest SHA-256. A process-local LRU retains at most 128 verified `(path, checksum, file identity, size, mutation timestamps)` entries, never file bytes. Cold hashing uses bounded chunks and the same execution deadline; warm requests still check identity before/after reading. File replacement or ordinary modification invalidates verification. The cache trusts immutable publication and host metadata, not a host writer capable of rewriting files/manifests and restoring every fingerprint field. Windows keeps a read-only handle that denies write/delete sharing and checks explicit file ChangeTime; POSIX passes its read-only descriptor to the child.
+
+The disposable native worker uses one DuckDB thread and a 256 MB engine limit, with separate 512 MiB process supervision, six CPU seconds, the shared eight-second wall deadline, bounded input, 1,001 rows including the sentinel and 2 MiB output. It disables extension installation/autoload, community/unsigned extensions, persistent secrets, spill storage and external access; the exact selected file is allowlisted before configuration is locked. `allowed_paths` permits access, not OS read-only permission. This trusted generated-SELECT path is not a general filesystem/network jail, and DuckDB's memory setting is not a complete RSS cap. See [DuckDB security](https://duckdb.org/docs/2.0/operations_manual/securing_duckdb/overview) and [resource settings](https://duckdb.org/docs/2.0/configuration/pragmas#resource-management).
+
+The reader does not copy an entire Parquet file into Python, a pipe, WASM or the browser. DuckDB can use projection/filter pushdown and row-group statistics, while small ORDER BY LIMIT plans can use TOP_N. Seek predicates avoid deep OFFSET heap growth; they do not create an index or guarantee logarithmic access. Global lower/cast/substring search may scan many candidates, and requests exceeding resource limits fail safely. No filtered COUNT runs per page. [Parquet pushdown](https://duckdb.org/docs/2.0/data/parquet/overview) and the [TOP_N optimizer](https://github.com/duckdb/duckdb/blob/v2.0.0/src/optimizer/topn_optimizer.cpp) describe these limits.
+
+[Scale verification](BROWSE_PERFORMANCE.md) records the actual 3-million-row, 102.6 MiB production-path measurements, cache conditions and resource observations on Windows and Linux Docker.
 
 ## Refresh has three different concurrency controls
 
@@ -158,7 +170,7 @@ The serving wrapper removes EIA/seed-password environment entries; the worker re
 
 The delivered Waitress runner binds `127.0.0.1`, clears untrusted proxy headers and hides tracebacks. Ordinary settings default DEBUG false, allow only localhost/127.0.0.1, and use local HTTP. Testserver is confined to test settings. A Django key requires ≥50 characters, ≥5 distinct characters and no `django-insecure-` prefix. `OUTAGE_LOCAL_HTTP=0` enables Secure cookies and HTTPS redirect; it does not provision TLS or configure trusted proxies. No credential-sharing CORS policy is enabled. Remote hosting still requires TLS, reviewed hosts/proxy trust, operator access, backups, monitoring and target-platform runtime acceptance. OAuth/OIDC, tenant row/column security and horizontal multi-host operation are future scope.
 
-API headers include request ID, no-store, nosniff, frame denial and restrictive CSP. HTML uses self-only scripts/styles/connections without inline/eval allowances; API CSP denies content capabilities. Templates escape identity and use inert `json_script`; browser values become text nodes. Public assets use a fixed filename allowlist, nosniff and ETag revalidation. They cannot select host paths.
+API headers include request ID, no-store, nosniff, frame denial and restrictive CSP. HTML permits self-only scripts/connections and self-hosted styles; CodeMirror-generated style sheets require a fresh per-response CSS nonce. Inline scripts, eval and arbitrary inline style attributes remain blocked. API CSP denies content capabilities. Templates escape identity and use inert `json_script`; browser values become text nodes. Public assets use a fixed filename allowlist, nosniff and ETag revalidation. They cannot select host paths.
 
 Logs record safe route/method/status/duration/request IDs, lifecycle IDs/statuses and sanitized events. Public errors omit SQL, credentials, host paths, raw source echoes and engine diagnostics. Bodies, passwords, cookies, original/generated SQL and raw child stderr are not logged. Liveness means HTTP responds. Admin readiness resolves a model and verifies pinned runtime availability; it makes no EIA call and runs no complete query or workload benchmark.
 
@@ -166,7 +178,7 @@ The browser's opaque session-scope HMAC is neither a raw session ID nor a bearer
 
 ## Capacity limits to explain before proposing a larger deployment
 
-A 100× data/user scenario is a planning question, not a measured load result. A cache miss reads/hashes the entire selected Parquet file, copies it through Python/pipe/Node/WASM, and cold-starts compiler plus engine. Predicate pushdown inside DuckDB cannot avoid Python's initial whole-file read. The 64 MiB file ceiling is intentional; larger data needs measured partitioning or another execution design.
+For arbitrary user SQL, a 100× data/user scenario remains a planning question, not a measured load result. A cache miss reads/hashes the entire selected Parquet file, copies it through Python/pipe/Node/WASM, and cold-starts compiler plus engine. Predicate pushdown inside DuckDB cannot avoid Python's initial whole-file read. That path retains its intentional 64 MiB ceiling. Structured browsing uses the separately measured native reader above; the 3-million-row benchmark does not establish concurrent-user throughput.
 
 Two admitted request slots do not cap all service memory: parent buffers/copies, Python objects, HTTP threads, the service database and runtime allocations add overhead. Eight cache entries per user is not a global byte budget; many users and large results can pressure SQLite/storage, while cleanup is opportunistic. Authentication/compiler/admission work remains on cache hits. Queues protect availability without increasing throughput or promising fairness.
 
@@ -191,3 +203,9 @@ The sandbox engine suite visibly skips if the runtime is unavailable. Such a ski
 ## Source-reading route
 
 Read `urls.py` → `views.endpoint/body/query` → `policy.identity/authorize_dataset/recheck` → `api_services._query/_validate/_run` → `sql_policy.validate_sql/_stable_order` → `sql_compiler.compile_sql` → `query_sandbox.run_query/_capture` → `worker.cjs:execute` → refresh/models/admission. Start with the request-flow diagram, then locate each boundary in code.
+
+## Saved definition authorization
+
+Saved views persist SQL and presentation settings in the application database, with no analytical row snapshot. Only Analyst/Admin may create/edit/share; only owners mutate/delete. Private is the default. Explicit role audiences never bypass current dataset policy, including when listing names, retrieving query text or running a definition. Viewer national-data restrictions apply to every shared execution. Owners can delete an existing permitted definition after a downgrade; this does not grant saved-query authoring.
+
+Every run uses the reader's Actor, existing SQL compiler/sandbox, model pin and private query cache. Definition revision and audience are rechecked after execution; deleting or unsharing during a long run prevents result delivery. Signed actor-bound list cursors, strict bounded bodies, quota50, short serialized metadata writes, CSRF and optimistic revision checks protect the management path. Shared recipients receive the saved SQL text intentionally. Creation-model metadata is provenance, not a capability to read an otherwise forbidden publication or dataset.

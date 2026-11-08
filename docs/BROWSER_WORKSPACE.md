@@ -1,6 +1,6 @@
 # How the browser workspace keeps an investigation consistent
 
-Outage Explorer turns published EIA observations into a focused workspace for following the U.S. nuclear fleet. Viewer follows national trends; Analyst explores all analytical datasets and writes SQL; Admin also refreshes the publication. The browser uses the authenticated Django API for every data operation. It never opens Parquet files or runs a second analytical engine.
+Outage Explorer turns published EIA observations into a focused workspace for following the U.S. nuclear fleet. Viewer follows national trends; Analyst explores all analytical datasets and writes SQL; Admin also refreshes the publication. Analytical retrieval uses the authenticated Django API; Explore can also narrow its already loaded page in memory. The browser never opens Parquet files or runs a second analytical engine.
 
 The central product choice is to keep the chart, table and SQL on **one immutable publication** while an investigation is in progress. A refresh can finish in the background, but the user explicitly chooses **Use latest** before moving to its results. This makes empty results, errors, delayed responses and new data easier to interpret: old rows must not masquerade as a newly answered question.
 
@@ -11,7 +11,7 @@ Read [PROJECT_TOUR.md](PROJECT_TOUR.md) for the basic system and [LOCAL_OPERATIO
 | View | Task and behavior |
 | --- | --- |
 | Fleet overview | Follow the stored US-08 metric, its same-day MW numerator/denominator and observation date; select up to 366 days; inspect an SVG chart and exact table |
-| Explore data | Choose a permitted dataset, inspect schema/units, apply supported date/facility filters, page through backend results and export the current page |
+| Explore data | Build typed dataset queries, immediately filter loaded rows, sort/page through applied backend results and export visible rows; inspect schema/units separately |
 | SQL workspace | Select one permitted source, enter bounded SELECT SQL, insert schema identifiers, inspect errors/results/pages and reuse recent session queries |
 | Data refresh | Admin queues work, sees only owned job history, follows explicit queued/running/outcome states and chooses whether to adopt a new publication |
 
@@ -39,23 +39,41 @@ Cards show the latest observation **within the selected period**, its date and t
 
 True zero remains zero. Missing dates and undefined/null ratios split the line instead of becoming zero or being interpolated. Dates are observation calendar dates, formatted with UTC calendar logic rather than converted to the browser's local time zone. Exact values remain in the chart's table and current-page CSV.
 
-### Apply filters and page through data
+### Query the dataset and filter the loaded page
 
-Selecting a dataset configures controls from its schema. Date/facility filters appear only when supported; the default date window is the latest 30 days. Applying filters captures the dataset, filters, page size and model as the question being answered.
+The compact command bar keeps dataset selection and **Apply query** visible while a collapsible editor holds typed field/operator/value conditions and ordering. Date scope and entity IDs use the same condition rows, avoiding duplicate date controls or an incomplete ID selector. The initial date condition covers the latest available 30 days where supported. Conditions AND together; exact values and type-compatible operators are validated before a request.
 
-The server supplies opaque keyset cursors. Next uses the returned token; Previous uses the retained cursor chain. The browser does not manufacture SQL offsets. Every result is checked against the expected dataset and model before rendering.
+**Filter loaded rows** responds immediately to typing, paste and cut, without an API call. Plain Enter does not submit the query. It searches canonical cell values case-insensitively and literally: textual IDs, ISO dates, exact unformatted numbers and booleans; nulls supply no searchable text. Only one bounded raw page and its search index are retained. Matching rows are shown without changing the server's cursor or ordering; the count explicitly distinguishes visible rows from loaded rows. A local-empty result explains that Apply can search beyond this page.
 
-Editing draft controls marks the displayed result as belonging to the **last applied** question and disables incompatible continuation. Export uses that displayed packet and its applied dataset, not whatever the controls currently contain. This is how the product can show an old answer honestly while a user edits a new question.
+Apply captures the current text, typed conditions, ordering, page size and immutable model, and queries the full dataset. Next/Previous and header sorting use that **last applied** database scope even while local text or conditions have pending edits. The server supplies signed seek tokens; the browser retains at most 50 previous page positions and never manufactures offsets. Every response is checked against its captured generation, dataset and model. The latest local text filters a newly arriving page without overwriting that text or promoting it into the earlier request.
 
-The facility lookup currently reads one `dim_facility` page with `limit=1000` and ignores its continuation. Present nuclear facilities fit; a future larger domain needs paginated lookup to avoid a truncated selector.
+**Clear filter** restores the loaded raw page; **Reset query** clears draft clauses/text and restores primary-key ordering. Neither sends a request or silently clears an applied database search: Apply is required. The quiet unapplied indicator and applied-query summary keep these scopes visible. **Export visible rows** uses the locally visible subset and its loaded dataset/model, retaining server order and exact values. SQL types remain available through header titles and the schema/units disclosure rather than occupying a second primary-grid header line.
 
 ### Run and refine SQL
 
 The client captures the selected dataset, SQL, caps and model on Run, and rejects input over 16 KiB. UI controls offer retained-row caps of 100/500/1,000 and page sizes of 25/50/100. The backend remains responsible for SQL policy, permissions, result caps and execution isolation; bypassing client checks cannot expand them.
 
-The supported language matches the backend's single-dataset SELECT subset. Schema insertion doubles embedded quotes and inserts the selected dataset or column as a quoted identifier. It is identifier assistance, not a SQL parser or semantic completion engine. `Ctrl+Enter`/`Cmd+Enter` runs SQL; `Ctrl+Space` focuses completion. Clicking a schema column also inserts it.
+Each authorized dataset has three **Query starters** covering browsing, filtering and summaries. Loading a starter updates the draft without executing SQL or adding a recent-history entry. Recent queries remain the actual session's executions. The 30 templates are checked against the current SQL policy and synthetic model data.
+
+The self-hosted CodeMirror editor provides SQL token colors, line numbers, bracket matching/closing, undo, and local suggestions for the selected dataset's fields and the supported SQL vocabulary. Typing opens suggestions; `Ctrl+Space` requests them explicitly, Enter accepts a suggestion, Escape dismisses it, and Tab moves to the next control. `Ctrl+Enter`/`Cmd+Enter` runs SQL. Clicking a schema field inserts its quoted name at the retained cursor or selection. Dataset switches reset editor undo history so another dataset's draft is not revealed by Undo. No query text is sent to an external completion service.
+
+These helpers do not expand the backend's single-dataset SELECT language or perform semantic authorization. The backend remains authoritative. If the enhanced editor asset cannot load, a labeled plain-text editor still supports query execution and schema insertion. CodeMirror's generated styles use a fresh response-specific CSS nonce; inline scripts and unrestricted inline styles remain blocked.
+
+During selection replacement, Chromium can try to copy a highlighted token's color/weight into an inline style attribute. CSP blocks that native style copy; editing and completion continue, with highlighting supplied by the approved style sheets. Browser checks distinguish this known blocked native operation from application script/style-sheet failures.
+
+The editor source is [sql_editor.js](../src/outage_explorer/frontend/editor/sql_editor.js). After changing it, run `npm run build:editor`; `npm run check:editor` verifies the checked-in bundle and dependency licenses, including in CI. Normal installation and Docker use the packaged bundle without requiring an editor build or external CDN.
 
 Result cursors and generation/model checks keep pages attached to the executed query. Changing draft SQL or limits disables paging incompatible with the displayed result and identifies it as a previous run. At most ten query texts/statuses/timestamps are retained in the current scoped session history; no result rows or authentication fields are stored there. Retained SQL text is not scrubbed for sensitive literals.
+
+### Save custom tables and graphs
+
+Analysts and Admins can run a query, optionally choose its time/value/series fields under **Graph over time**, then **Save to overview** with a name. Loading a starter does not execute or save it. The saved definition is private by default; explicit audience choices share the definition, including SQL text. Every recipient must independently have access to its dataset. Viewers consume permitted shared views; saving/sharing does not change the existing direct SQL policy.
+
+**Custom tables and graphs** appears beneath the built-in Overview. Load a named view to execute it against the workspace's adopted publication, inspect its graph and paged exact table, or export the visible table page. Owners can rename it, change chart/audience settings, open its SQL for editing and update the definition, or confirm deletion. Definitions survive reloads and container recreation; analytical rows are not stored with them. A definition's creation model is provenance, while subsequent executions follow the reader's adopted publication.
+
+Charts collect the complete retained SQL result (up to 1,000 rows and an 8 MiB client aggregate budget), not just the visible page. A capped result is clearly labeled and is not claimed to cover the full dataset. Choose a date/timestamp and numeric output; repeated times require a series field, with at most eight series. Duplicate time/series pairs require aggregation in SQL. Nulls and missing daily observations break lines; display coordinates are approximate and tables retain exact values. Queries without a compatible time axis remain useful saved tables.
+
+Saved-view metadata is paged, with at most 50 definitions per owner and eight loaded previews retained in memory. Loading is explicit so opening Overview does not launch every saved SQL query. The API rechecks ownership/audience, dataset permissions, session and definition revision; concurrent changes return a conflict instead of silently overwriting settings.
 
 ### Ask Admin to refresh data
 
@@ -101,9 +119,9 @@ ISO dates are validated by round-trip and formatted using UTC calendar arithmeti
 
 ### Render text and export only the page shown
 
-Dynamic values become text nodes/`textContent`, never data-driven HTML interpolation. Templates escape identity and use inert `json_script` bootstrap. External text resembling markup therefore stays text. Column label lookup uses own-property checks so valid aliases such as `constructor` or `toString` are handled as names rather than inherited properties. Private HTML/API responses use `no-store`; HTML has a self-only script/style/connect policy without inline/eval allowances.
+Dynamic values become text nodes/`textContent`, never data-driven HTML interpolation. Templates escape identity and use inert `json_script` bootstrap. External text resembling markup therefore stays text. Column label lookup uses own-property checks so valid aliases such as `constructor` or `toString` are handled as names rather than inherited properties. Private HTML/API responses use `no-store`; HTML restricts scripts/connections to self and permits the editor's generated style sheets through a fresh response nonce. Inline scripts, eval and arbitrary inline styles remain blocked.
 
-CSV export includes the currently displayed page only, with a dataset/model-prefix filename. Every cell is quoted and embedded quotes escaped; original scalar text is retained. Formula-like text such as `=SUM(...)`, leading tabs/line breaks and zero-padded text identifiers such as `001` receive an apostrophe guard, including headers. There is no undisclosed bulk download or background query. Spreadsheet applications still choose import types, so CSV cannot guarantee every inferred identifier or large integer survives their import; canonical programmatic consumers should use the typed API.
+CSV export includes the currently displayed page only, narrowed to visible rows in Explore when its local filter is active, with a dataset/model-prefix filename. Every cell is quoted and embedded quotes escaped; original scalar text is retained. Formula-like text such as `=SUM(...)`, leading tabs/line breaks and zero-padded text identifiers such as `001` receive an apostrophe guard, including headers. There is no undisclosed bulk download or background query. Spreadsheet applications still choose import types, so CSV cannot guarantee every inferred identifier or large integer survives their import; canonical programmatic consumers should use the typed API.
 
 ### Make the bounded interface usable without a pointer
 
@@ -117,20 +135,20 @@ Automated scans, keyboard checks and visual review cover basics. They do not rep
 
 | Choice | Reason and cost |
 | --- | --- |
-| Native modules rather than React | Four focused views, bounded pages and limited shared state avoid framework/build overhead and support a small self-only CSP surface. Manual DOM, lifecycle and race management are real maintenance costs. A framework becomes useful with more reusable components, navigation/collaboration complexity or team needs; frameworks are not inherently slower or less secure. |
+| Native modules rather than React | Four focused views use native modules and manual DOM/lifecycle management. The specialized CodeMirror editor has one reproducible local bundle; the surrounding UI needs no framework build. That keeps the runtime surface small, with manual race management as a maintenance cost. A framework becomes useful with more reusable components, navigation/collaboration complexity or team needs. |
 | Server role policy plus omitted Admin markup | The interface shows truthful capabilities while the server enforces them. Removing markup restrictions must still fail at the API. |
 | Pinned model rather than automatic freshness | Chart, preview and SQL answer one reproducible investigation. New data is visible and explicitly adopted. Older versions need backend retention/expiry policy, and users can deliberately remain on old data. |
 | Bounded native tables rather than a virtualized grid | Typical pages are 25–100 rows and schemas are small; native semantics help keyboard/screen-reader use. Very wide or much larger pages would make DOM work costly and need another design. |
 | Small custom SVG chart rather than a charting library | One line/area metric needs no extra dependency. Axes, responsiveness, tooltip and accessibility are maintained manually; a richer chart suite could justify a library. |
-| Session history rather than durable saved queries | Ten recent texts/statuses offer reload continuity with limited retention and no result storage. History is per tab/server scope and does not persist across sessions/devices. |
+| Session history plus named saved views | Recent text stays scoped to the tab/session; deliberately saved query/chart definitions persist in application state with owner and audience checks. Result rows are not saved with definitions. |
 | Indeterminate refresh rather than a progress percentage | Lifecycle state is known; a reliable work denominator is not. A future percentage would need explicit stage/work counters and defined semantics. |
 | Guarded current-page CSV | Users export exactly what they see with version context and spreadsheet guards. Whole-dataset exports are absent, and receiving spreadsheet typing is outside application control. |
 
-The added stories are consistency during refresh, recovery from invalid/empty/busy results without relabeling old rows, and export with reproducible dataset/model context. Deliberate exclusions are a dashboard builder, multi-table SQL, cross-session saved queries/investigations and cloud deployment. Next priorities are hosted runtime/operator-recovery validation, larger-volume measurements, real analyst and assistive-technology testing, then saved investigations and richer filtering informed by that feedback. These remain future work.
+The added stories are consistency during refresh, recovery from invalid/empty/busy results without relabeling old rows, and export with reproducible dataset/model context. Deliberate exclusions are a dashboard builder, multi-table SQL, collaborative investigations and cloud deployment. Next priorities are hosted runtime/operator-recovery validation, larger-volume measurements, real analyst and assistive-technology testing, then saved investigations and richer filtering informed by that feedback. These remain future work.
 
 ## Implementation map and a practical reading order
 
-The Python package ships templates, scripts, CSS and SVG assets. There is no React, bundler, CDN, external font/script or frontend build step. Public assets come from an explicit filename allowlist with packaged-resource lookup, correct MIME types, nosniff and SHA-256 ETag revalidation under DEBUG false. Unknown names are rejected before resource lookup. Public asset caching is separate from private HTML/API no-store.
+The Python package ships templates, native scripts, CSS, SVG and the prebuilt CodeMirror editor bundle/licenses. esbuild is a development dependency used only to rebuild or verify that editor asset. Normal setup and Docker use the checked-in bundle; the browser downloads no CDN code or external fonts/scripts. Public assets come from an explicit filename allowlist with packaged-resource lookup, correct MIME types, nosniff and SHA-256 ETag revalidation under DEBUG false. Unknown names are rejected before resource lookup. Public asset caching is separate from private HTML/API no-store.
 
 | File | Responsibility |
 | --- | --- |

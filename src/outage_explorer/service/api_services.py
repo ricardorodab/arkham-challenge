@@ -1,9 +1,9 @@
 """Implement authenticated catalog, preview and restricted-SQL application services.
 
 HTTP views validate transport shape, then delegate here with a server-derived Actor. Resolve
-immutable saved models, authorize every named dataset before analytical I/O, compile bounded
-SQL and execute selected bytes in the sandbox. Public API pagination is over saved model
-results; EIA download pagination is a separate connector concern. Recheck identity before
+immutable models and authorize every named dataset before analytical I/O. Structured browse
+plans run in a bounded native reader; user SQL retains the compiler/WASM sandbox. Public
+pagination reads saved results; EIA download pagination is separate. Recheck identity before
 caching or delivering data.
 """
 
@@ -14,16 +14,18 @@ import json
 import re
 from datetime import date, timedelta
 from typing import Any
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core import signing
 from django.utils import timezone
 
-from outage_explorer.model_contracts import DATASETS
-from outage_explorer.model_store import analytical_catalog, resolve_model
-from outage_explorer.query_sandbox import SandboxError, run_query
-from outage_explorer.sql_compiler import compile_sql
-from outage_explorer.storage import StorageError
+from outage_explorer.analytics.model_store import analytical_catalog, resolve_model
+from outage_explorer.data.storage import StorageError
+from outage_explorer.query.browse import BrowseError, compile_browse, normalize_query
+from outage_explorer.query.browse_runtime import BrowseRuntimeError, run_browse
+from outage_explorer.query.query_sandbox import SandboxError, run_query
+from outage_explorer.query.sql_compiler import compile_sql
 
 from .admission import query_slot, remaining_query_seconds
 from .errors import APIError
@@ -93,7 +95,7 @@ def _cursor(payload: dict) -> str:
     return signing.dumps(payload, salt=CURSOR_SALT, compress=True)
 
 
-def _read_cursor(value: str | None, context: dict) -> dict | None:
+def _read_cursor(value: str | None, context: dict, *, maximum: int = 4096) -> dict | None:
     """Return None or verify a token's signature, 15-minute age and bound context.
 
     Every context field must match the decoded payload, including purpose and Actor binding.
@@ -104,7 +106,7 @@ def _read_cursor(value: str | None, context: dict) -> dict | None:
     if value is None:
         return None
     try:
-        decoded = signing.loads(text(value, "cursor", 4096), salt=CURSOR_SALT, max_age=900)
+        decoded = signing.loads(text(value, "cursor", maximum), salt=CURSOR_SALT, max_age=900)
         if not isinstance(decoded, dict) or any(decoded.get(k) != v for k, v in context.items()):
             raise ValueError
         return decoded
@@ -252,88 +254,92 @@ def preview(request, actor: Actor, dataset_id: str, parameters: dict):
 
 
 def _preview(request, actor: Actor, dataset_id: str, parameters: dict):
-    """Build and execute a typed, model-pinned primary-key preview page.
+    """Execute one full-dataset structured query with a stable model-pinned seek.
 
-    Validate inclusive dates, supported facility filters and page limit. Signed cursors bind
-    Actor, filters and limit, then retain the immutable model and last complete primary key.
-    Lexicographic predicates resume strictly after that key; one extra row detects
-    continuation. Preview may traverse more than 1,000 rows across pages, unlike a capped
-    user-SQL result. Return exact typed scalars and applied filters only after a final
-    identity recheck.
+    Normalize only declared columns, typed operands and allowlisted operations before
+    analytical I/O. Tokens bind the canonical query, page size, actor and immutable
+    source/model publication. A new current publication does not redirect an existing
+    investigation. Sorting includes unique primary-key ties and NULLS LAST; the cursor
+    retains exact strings rather than lossy binary floating-point values.
+
+    The isolated native reader accepts this structured plan, never user SQL. It reads
+    Parquet with bounded resources and returns at most one page plus a sentinel. No
+    full result count, deep OFFSET or first-1000-row search is performed.
     """
     authorize_dataset(actor, dataset_id)
     limit = integer(parameters.get("limit", 100), "limit", 1, 1000)
-    start, end = _date(parameters.get("start"), "start"), _date(parameters.get("end"), "end")
-    if start and end and start > end:
-        raise APIError(400, "invalid_date_range", "start must be on or before end.")
-    facility = parameters.get("facility_id")
-    columns = dict(DATASETS[dataset_id].columns)
-    if facility is not None:
-        facility = text(facility, "facility_id", 64)
-        if "facility_id" not in columns:
-            raise APIError(
-                400, "unsupported_filter", "This dataset does not support the facility filter."
-            )
-    if (start or end) and "period" not in columns:
-        raise APIError(400, "unsupported_filter", "This dataset does not support date filters.")
+    cursor_limit = 16384 if request.method == "POST" else 4096
+    if request.method == "GET" and len(urlencode(parameters)) > 8192:
+        raise APIError(413, "browse_request_too_large", "Use a JSON POST for this browse request.")
+    try:
+        plan = normalize_query(dataset_id, parameters)
+    except BrowseError as error:
+        raise APIError(
+            400, error.code, "Choose supported columns and valid typed filters."
+        ) from None
     context = {
-        "purpose": "preview",
+        "purpose": "browse-v1",
         "actor": actor.binding,
         "dataset": dataset_id,
         "limit": limit,
-        "start": start,
-        "end": end,
-        "facility": facility,
+        "query": hashlib.sha256(
+            json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
     }
-    cursor = _read_cursor(parameters.get("cursor"), context)
+    cursor = _read_cursor(parameters.get("cursor"), context, maximum=cursor_limit)
     model_id = parameters.get("model_id")
     if cursor:
         if model_id is not None and model_id != cursor.get("model"):
             raise APIError(400, "invalid_cursor", "The cursor does not match this model.")
         model_id = cursor.get("model")
+    last = cursor.get("last") if cursor else None
+    if cursor and not isinstance(last, list):
+        raise APIError(400, "invalid_cursor", "The cursor contains an invalid continuation.")
+    try:
+        _, _, keys = compile_browse(dataset_id, plan, limit, last)
+    except BrowseError:
+        raise APIError(
+            400, "invalid_cursor", "The cursor contains an invalid continuation."
+        ) from None
     bundle = _bundle(model_id)
-    conditions = []
-    for key, operator, value in (
-        ("period", ">=", start),
-        ("period", "<=", end),
-        ("facility_id", "=", facility),
-    ):
-        if value is not None:
-            literal = _literal(value)
-            if key == "period":
-                literal = f"CAST({literal} AS DATE)"
-            conditions.append(f'"{key}" {operator} {literal}')
-    keys = DATASETS[dataset_id].primary_key
-    if cursor:
-        last = cursor.get("last")
-        if (
-            not isinstance(last, list)
-            or len(last) != len(keys)
-            or any(not isinstance(v, str) for v in last)
-        ):
-            raise APIError(400, "invalid_cursor", "The cursor is invalid.")
-        # Expand tuple ordering portably across all primary-key components:
-        # equal prefixes followed by a strictly greater component avoid repeats.
-        alternatives = []
-        for index, key in enumerate(keys):
-            equals = [
-                f'"{k}" = {_literal(v)}' for k, v in zip(keys[:index], last[:index], strict=True)
-            ]
-            greater = f'"{key}" > {_literal(last[index])}'
-            alternatives.append("(" + " AND ".join([*equals, greater]) + ")")
-        conditions.append("(" + " OR ".join(alternatives) + ")")
-    sql = f'SELECT * FROM "{dataset_id}"'
-    if conditions:
-        sql += " WHERE " + " AND ".join(conditions)
-    validated = _validate(actor, sql, dataset_id, limit)
-    data = _run(request, actor, bundle, dataset_id, validated)
+    source = bundle.manifest["source_snapshot_id"]
+    if cursor and cursor.get("source") != source:
+        raise APIError(400, "invalid_cursor", "The cursor does not match this publication.")
+    data = _run_browse(request, actor, bundle, dataset_id, plan, limit, last)
     rows = data["rows"][:limit]
     more = len(data["rows"]) > limit
     next_cursor = None
     if more and rows:
         names = [column["name"] for column in data["columns"]]
-        last = [str(rows[-1][names.index(key)]) for key in keys]
-        next_cursor = _cursor({**context, "model": bundle.id, "last": last})
+        last = [
+            None
+            if (value := rows[-1][names.index(key)]) is None
+            else "true"
+            if value is True
+            else "false"
+            if value is False
+            else str(value)
+            for key in keys
+        ]
+        try:
+            # Compression can hide an oversized exact key. Check the reader's
+            # scalar/vector bounds before publishing any continuation token.
+            compile_browse(dataset_id, plan, limit, last)
+        except BrowseError:
+            raise APIError(
+                413,
+                "browse_cursor_too_large",
+                "Sort values exceed the continuation size limit. Choose another sort column.",
+            ) from None
+        next_cursor = _cursor({**context, "model": bundle.id, "source": source, "last": last})
+        if len(next_cursor) > cursor_limit or (
+            request.method == "GET" and len(urlencode({**parameters, "cursor": next_cursor})) > 8192
+        ):
+            raise APIError(
+                413,
+                "browse_cursor_too_large",
+                "This sort value exceeds the continuation limit. Use JSON POST or another sort column.",
+            )
     recheck(request, actor)
     return {
         "dataset_id": dataset_id,
@@ -343,8 +349,62 @@ def _preview(request, actor: Actor, dataset_id: str, parameters: dict):
         "rows": rows,
         "returned_rows": len(rows),
         "next_cursor": next_cursor,
-        "filters": {"start": start, "end": end, "facility_id": facility},
+        "filters": {
+            name: parameters.get(name) for name in ("start", "end", "facility_id", "generator_id")
+        },
+        "query": plan,
     }
+
+
+def _run_browse(request, actor, bundle, dataset_id, plan, limit, last):
+    """Authorize and execute one generated plan against an integrity-verified file.
+
+    Keep this entry separate from the arbitrary-SQL sandbox. The native child
+    recompiles the closed structured plan and receives only its approved file.
+    """
+    authorize_dataset(actor, dataset_id)
+    info = bundle.manifest["datasets"][dataset_id]
+    path = bundle.path / f"{dataset_id}.parquet"
+    if (
+        info.get("file") != path.name
+        or path.is_symlink()
+        or path.resolve().parent != bundle.path.resolve()
+    ):
+        raise APIError(503, "data_integrity", "The selected dataset failed integrity validation.")
+    recheck(request, actor)
+    try:
+        result = run_browse(
+            path,
+            dataset_id,
+            plan,
+            limit=limit,
+            last=last,
+            expected_sha256=info["sha256"],
+            timeout_seconds=remaining_query_seconds(),
+            max_output_bytes=settings.OUTAGE_QUERY_MAX_BYTES,
+        )
+    except BrowseRuntimeError as error:
+        if error.code == "query_timeout":
+            raise APIError(
+                504, "query_timeout", "The browse request exceeded its execution deadline."
+            ) from None
+        if error.code == "result_too_large":
+            raise APIError(
+                413, "result_too_large", "The page exceeds the response size limit."
+            ) from None
+        if error.code == "data_integrity":
+            raise APIError(
+                503, "data_integrity", "The selected dataset failed integrity validation."
+            ) from None
+        if error.code == "runtime_unavailable":
+            raise APIError(
+                503, "browse_unavailable", "The structured browse reader is unavailable."
+            ) from None
+        raise APIError(
+            422, "query_failed", "The page could not be read within its resource limits."
+        ) from None
+    recheck(request, actor)
+    return result
 
 
 def query(request, actor: Actor, body: dict):

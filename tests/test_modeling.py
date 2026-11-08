@@ -10,9 +10,9 @@ from decimal import Decimal
 import duckdb
 import pytest
 
-from outage_explorer.domain import ROUTES, UNITS, identifier, validate_row
-from outage_explorer.model_contracts import DATASETS
-from outage_explorer.modeling import ModelBuildError, build_model
+from outage_explorer.analytics.model_contracts import DATASETS
+from outage_explorer.analytics.modeling import ModelBuildError, build_model
+from outage_explorer.data.domain import ROUTES, UNITS, identifier, validate_row
 
 SOURCE_ID = "a" * 32
 MODEL_ID = "b" * 32

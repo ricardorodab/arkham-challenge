@@ -1,6 +1,6 @@
 'use strict';
 
-const { test, expect, login, navigate, control } = require('./helpers.cjs');
+const { test, expect, login, navigate, control, sqlEditor, fillSql } = require('./helpers.cjs');
 
 test('protected shell redirects before data; keyboard login and logout clear back-navigation', async ({ page }) => {
   await page.goto('/');
@@ -8,7 +8,7 @@ test('protected shell redirects before data; keyboard login and logout clear bac
   await expect(page.locator('#logout-button')).toHaveCount(0);
   await login(page, 'analyst', { keyboard: true });
   await navigate(page, 'sql');
-  await expect(page.locator('#sql-editor')).toBeVisible();
+  await expect(sqlEditor(page)).toBeVisible();
   await page.locator('#logout-button').click();
   await expect(page).toHaveURL(/\/login\/(?:\?.*)?$/);
   await page.goBack();
@@ -77,7 +77,7 @@ test('logout is observed by another tab and revoked server sessions clear the pr
   await login(page, 'analyst');
   const other = await context.newPage();
   await other.goto('/#sql');
-  await expect(other.locator('#sql-editor')).toBeVisible();
+  await expect(sqlEditor(other)).toBeVisible();
   await page.locator('#logout-button').click();
   await other.bringToFront();
   await expect(other).toHaveURL(/\/login\/(?:\?.*)?$/);
@@ -85,7 +85,7 @@ test('logout is observed by another tab and revoked server sessions clear the pr
   await login(other, 'analyst');
   await navigate(other, 'sql');
   const privateQuery = 'SELECT COUNT(*) AS private_revoke_count FROM fleet_daily';
-  await other.locator('#sql-editor').fill(privateQuery);
+  await fillSql(other, privateQuery);
   await other.locator('#sql-run').click();
   await expect(other.locator('#sql-table tbody tr')).toHaveCount(1);
   expect(await other.evaluate(() => Object.values(sessionStorage).join('\n'))).toContain(privateQuery);

@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 
 from outage_explorer import cli
-from outage_explorer.domain import DataValidationError
-from outage_explorer.eia import EIAClientError
-from outage_explorer.pipeline import IngestConfig, ingest
-from outage_explorer.storage import StorageError, writer_lock
+from outage_explorer.data.domain import DataValidationError
+from outage_explorer.data.eia import EIAClientError
+from outage_explorer.data.pipeline import IngestConfig, ingest
+from outage_explorer.data.storage import StorageError, writer_lock
 
 from .helpers import SECRET, FakeClient
 
@@ -40,7 +40,7 @@ def published_data(tmp_path: Path):
 
 def test_ingest_requires_environment_key_before_network_or_storage(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv("EIA_API_KEY", raising=False)
-    monkeypatch.setattr("outage_explorer.eia.build_opener", forbid_client)
+    monkeypatch.setattr("outage_explorer.data.eia.build_opener", forbid_client)
     destination = tmp_path / "not-created"
     assert cli.main(["ingest", "--data-dir", str(destination)]) == 2
     captured = capsys.readouterr()

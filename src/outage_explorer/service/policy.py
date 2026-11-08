@@ -15,7 +15,7 @@ from django.contrib.sessions.models import Session
 from django.utils import timezone
 from django.utils.crypto import constant_time_compare, salted_hmac
 
-from outage_explorer.model_contracts import DATASETS
+from outage_explorer.analytics.model_contracts import DATASETS
 
 from .errors import APIError
 

@@ -10,10 +10,10 @@ from decimal import Decimal
 import pytest
 from django.utils import timezone
 
-from outage_explorer.pipeline import IngestConfig, ingest
-from outage_explorer.query_sandbox import SandboxError
+from outage_explorer.data.pipeline import IngestConfig, ingest
+from outage_explorer.query.query_sandbox import SandboxError
 from outage_explorer.service import api_services
-from outage_explorer.service.models import QueryCacheEntry
+from outage_explorer.service.models import Persona, QueryCacheEntry, RefreshJob
 
 from .helpers import FakeClient
 
@@ -199,7 +199,7 @@ def test_admin_refresh_is_durable_idempotent_and_polled(authenticated_client):
     )
     assert result.status_code == 202, result.content
     job = result.json()
-    assert job["status"] == "queued"
+    assert job["status"] == "queued" and job["progress"] == {}
     replay = client.post(
         "/api/v1/refresh",
         '{"mode":"recent"}',
@@ -210,6 +210,169 @@ def test_admin_refresh_is_durable_idempotent_and_polled(authenticated_client):
     assert client.get(job["status_url"]).json()["status"] == "queued"
     assert len(client.get("/api/v1/refresh").json()["jobs"]) == 1
     assert post(client, "/api/v1/refresh", {"mode": "full"}).status_code == 409
+
+
+def test_refresh_progress_is_persistent_and_filtered_on_status_history_and_replay(
+    authenticated_client,
+):
+    """Expose the same safe snapshot without replacing failed/interrupted work by estimates."""
+    client, _ = authenticated_client("admin")
+    response = client.post(
+        "/api/v1/refresh",
+        '{"mode":"recent"}',
+        content_type="application/json",
+        HTTP_IDEMPOTENCY_KEY="synthetic-progress-replay",
+    )
+    assert response.status_code == 202
+    job = RefreshJob.objects.get(pk=response.json()["id"])
+    status_url = response.json()["status_url"]
+    job.status = "succeeded"
+    job.save(update_fields=["status"])
+    assert client.get(status_url).json()["progress"] == {}
+    for status, stage in (
+        ("running", "extracting"),
+        ("failed", "extracting"),
+        ("interrupted", "validating_model"),
+        ("running", "exporting_model"),
+        ("succeeded", "completed"),
+    ):
+        job.status = status
+        job.progress = {
+            "stage": stage,
+            "updated_at": "2026-11-08T09:45:00+05:30",
+            "rows_received": 42,
+            "pages_fetched": 2,
+            "route": "generator",
+            "routes": {
+                "national": {"rows_received": 2, "pages_fetched": 1, "secret": "PRIVATE_CANARY"},
+                "generator": {"rows_received": 40, "pages_fetched": 1},
+                "PRIVATE_CANARY": {"rows_received": 7, "pages_fetched": 1},
+            },
+            "completed": 3,
+            "total": 10,
+            "api_key": "PRIVATE_CANARY",
+            "path": "PRIVATE_CANARY",
+            "sql": "PRIVATE_CANARY",
+        }
+        job.save(update_fields=["status", "progress"])
+        expected = {
+            "stage": stage,
+            "updated_at": "2026-11-08T04:15:00+00:00",
+            "rows_received": 42,
+            "pages_fetched": 2,
+            "route": "generator",
+            "routes": {
+                "national": {"rows_received": 2, "pages_fetched": 1},
+                "generator": {"rows_received": 40, "pages_fetched": 1},
+            },
+        }
+        if stage == "exporting_model":
+            expected.update(completed=3, total=10)
+        polled = client.get(status_url)
+        history = client.get("/api/v1/refresh")
+        replay = client.post(
+            "/api/v1/refresh",
+            '{"mode":"recent"}',
+            content_type="application/json",
+            HTTP_IDEMPOTENCY_KEY="synthetic-progress-replay",
+        )
+        assert polled.status_code == history.status_code == replay.status_code == 200
+        for payload in (polled.json(), history.json()["jobs"][0], replay.json()):
+            assert payload["id"] == str(job.id) and payload["status"] == status
+            assert payload["progress"] == expected
+            assert "PRIVATE_CANARY" not in json.dumps(payload)
+        job.refresh_from_db()
+        assert job.progress["api_key"] == "PRIVATE_CANARY"
+
+
+def test_refresh_progress_malformed_snapshots_and_counters_are_safe_at_the_http_boundary(
+    authenticated_client,
+):
+    client, owner = authenticated_client("admin")
+    job = RefreshJob.objects.create(owner=owner, mode="full", status="running")
+    stamp = "2026-11-08T04:15:00+00:00"
+    for malformed in (
+        [],
+        {"stage": ["extracting"], "updated_at": stamp},
+        {"stage": "PRIVATE_CANARY", "updated_at": stamp},
+        {"stage": "extracting"},
+        {"stage": "extracting", "updated_at": "2026-11-08T04:15:00"},
+        {"stage": "extracting", "updated_at": "PRIVATE_CANARY"},
+    ):
+        job.progress = malformed
+        job.save(update_fields=["progress"])
+        response = client.get(f"/api/v1/refresh/{job.id}")
+        assert response.status_code == 200
+        assert response.json()["progress"] == {}
+    job.progress = {
+        "stage": "extracting",
+        "updated_at": stamp,
+        "rows_received": True,
+        "pages_fetched": -1,
+        "route": ["generator"],
+        "routes": {
+            "national": {"rows_received": 1.5, "pages_fetched": 1 << 53},
+            "facility": [],
+        },
+        "completed": 2,
+        "total": 10,
+    }
+    job.save(update_fields=["progress"])
+    assert client.get(f"/api/v1/refresh/{job.id}").json()["progress"] == {
+        "stage": "extracting",
+        "updated_at": stamp,
+        "rows_received": 0,
+        "pages_fetched": 0,
+        "routes": {"national": {"rows_received": 0, "pages_fetched": 0}},
+    }
+    for completed, total, valid in (
+        (0, 10, True),
+        (10, 10, True),
+        (11, 10, False),
+        (1, 9, False),
+        (True, 10, False),
+    ):
+        job.progress = {
+            "stage": "exporting_model",
+            "updated_at": stamp,
+            "completed": completed,
+            "total": total,
+            "rows_received": (1 << 53) - 1,
+        }
+        job.save(update_fields=["progress"])
+        payload = client.get(f"/api/v1/refresh/{job.id}").json()["progress"]
+        assert payload["rows_received"] == (1 << 53) - 1
+        assert ("completed" in payload) is valid and ("total" in payload) is valid
+        if valid:
+            assert payload["completed"] == completed and payload["total"] == total
+
+
+def test_refresh_progress_remains_private_to_its_current_admin_owner(
+    authenticated_client, api_users
+):
+    owner_client, owner = authenticated_client("admin")
+    Persona.objects.filter(user=api_users["analyst2"]).update(role="admin")
+    other_client, _ = authenticated_client("analyst2")
+    job = RefreshJob.objects.create(
+        owner=owner,
+        mode="full",
+        status="running",
+        progress={
+            "stage": "extracting",
+            "updated_at": "2026-11-08T04:15:00+00:00",
+            "rows_received": 42,
+        },
+    )
+    path = f"/api/v1/refresh/{job.id}"
+    assert owner_client.get(path).json()["progress"]["rows_received"] == 42
+    hidden = other_client.get(path)
+    assert hidden.status_code == 404 and hidden.json()["code"] == "job_not_found"
+    assert other_client.get("/api/v1/refresh").json() == {"jobs": []}
+    for role in ("viewer", "analyst"):
+        client, _ = authenticated_client(role)
+        denied = client.get(path)
+        assert denied.status_code == 403 and denied.json()["code"] == "admin_required"
+        assert "progress" not in denied.json() and "rows_received" not in denied.content.decode()
 
 
 @pytest.mark.parametrize(
@@ -229,7 +392,7 @@ def test_preview_validation_fails_before_execution(authenticated_client, monkeyp
     def forbidden(*args, **kwargs):
         pytest.fail("Invalid preview must not execute")
 
-    monkeypatch.setattr(api_services, "_run", forbidden)
+    monkeypatch.setattr(api_services, "_run_browse", forbidden)
     result = client.get("/api/v1/data/fleet_daily", params)
     assert result.status_code == 400
 

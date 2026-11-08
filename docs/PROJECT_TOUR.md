@@ -32,6 +32,8 @@ flowchart TD
     API --> B["Browser: overview, explorer, SQL, Admin refresh"]
     API --> Q["Disposable compiler, then BUFFER-only Node / DuckDB-WASM"]
     Q --> API
+    API --> S["Structured browse plan: bounded native DuckDB reader"]
+    S --> API
     API --> J[".service/web.sqlite3: durable refresh job"]
     J --> W["Separately started refresh worker"]
     W --> I
@@ -49,13 +51,13 @@ Refresh has one additional boundary: after publishing data, the worker completes
 
 Django is the Python web framework handling login, sessions, CSRF protection and HTTP. CSRF checks browser tokens and request origin to help prevent another site causing unwanted actions, including at login before authentication. The server derives the persona; a browser field or Django staff flag cannot grant product access.
 
-The query service authorizes the selected dataset, then a bounded disposable Python compiler turns submitted SQL into checked/regenerated SQL. It discovers **every named table** and validates a deliberately small SELECT language. Each table is authorized before analytical I/O, even inside a query shape that will later be rejected. The engine receives only the selected checksummed Parquet bytes. A disposable Node process runs DuckDB-WASM with buffer-only capabilities, followed by a fresh persisted identity/session check before results are delivered or cached.
+The SQL service authorizes the selected dataset, then a bounded disposable Python compiler turns submitted SQL into checked/regenerated SQL. It discovers **every named table** and validates a deliberately small SELECT language. Each table is authorized before analytical I/O, even inside a query shape that will later be rejected. The engine receives only the selected checksummed Parquet bytes. A disposable Node process runs DuckDB-WASM with buffer-only capabilities, followed by a fresh persisted identity/session check before results are delivered or cached. Explore instead submits typed search/filter/order specifications to a separate bounded native reader. It applies them across the whole selected dataset and returns a seek page without buffering the full file in WASM or the browser. Both paths share admission, pinned versions and final authorization checks.
 
 There are four distinct protections: identity/permissions decide **which data**; the SQL language policy decides **which expressions**; engine capabilities decide **which files/network operations are possible**; resource limits bound **how much work**. SQL parsing alone is not the sandbox. See [query security](QUERY_SECURITY.md) and [the API contract](API_CONTRACT.md).
 
 ## Why Python and Node are both required
 
-Python runs the connector, trusted model/report SQL and Django service. Native DuckDB **2.0.0** is the trusted transform engine. Node runs the server's isolated user-query engine; the pinned DuckDB-WASM package embeds DuckDB **1.5.4**. The browser itself uses ordinary JavaScript modules and has no analytical engine or frontend build step.
+Python runs the connector, trusted model/report SQL, structured browse reader and Django service. Native DuckDB **2.0.0** handles trusted transforms and generated browse plans. Node runs the server's isolated user-query engine; the pinned DuckDB-WASM package embeds DuckDB **1.5.4**. The browser uses native JavaScript modules and a packaged CodeMirror editor; it has no analytical engine. Normal installation uses the checked-in editor bundle. Rebuilding that specialized asset is a separate development command, described in the [browser guide](BROWSER_WORKSPACE.md#run-and-refine-sql).
 
 `npm` is Node's package manager. `package.json` declares the required packages and scripts; `package-lock.json` fixes the dependency graph; `node_modules/` is the installed package tree. Python's `.venv/` does not install those JavaScript packages.
 
@@ -63,12 +65,14 @@ Python runs the connector, trusted model/report SQL and Django service. Native D
 
 | Path | Purpose and when it is created |
 | --- | --- |
-| `src/outage_explorer/` | Maintained application source. `pipeline.py`, `storage.py`, `modeling.py`, `model_contracts.py` and `model_store.py` own extraction/publication/model contracts. `sql_policy.py`, `sql_compiler.py`, `query_sandbox.py` and `sandbox/` own user-query compilation/execution. |
-| `src/outage_explorer/web/` | Django settings and local init/server/worker launchers. |
-| `src/outage_explorer/service/` | API, authentication/policy, admission, cache, refresh jobs and Django migrations. |
-| `src/outage_explorer/frontend/` | Django templates, native browser modules and styles. |
-| `src/outage_explorer/contracts/` | Frozen versioned model contracts. |
-| `src/outage_explorer/sql/` | Packaged report SQL; `reports.py` loads the report queries here. |
+| `src/outage_explorer/` | Package entry points (`cli.py`, `__main__.py`), version metadata and the shared `progress.py` event contract. The maintained implementation is grouped below. |
+| [`src/outage_explorer/data/`](../src/outage_explorer/data/) | Source ingestion and publication: `domain.py` defines observations and validation; `eia.py` downloads pages; `pipeline.py` coordinates extraction; `storage.py` manages immutable files and the catalog. |
+| [`src/outage_explorer/analytics/`](../src/outage_explorer/analytics/) | Model definitions, transformations, version verification and trusted reports: `model_contracts.py`, `modeling.py`, `model_store.py`, `reports.py`. Its `contracts/` holds frozen model metadata and `sql/` holds report statements. |
+| [`src/outage_explorer/query/`](../src/outage_explorer/query/) | Submitted-SQL policy/compiler and isolated execution supervisors, plus the structured-browse plan/compiler/worker. The two query paths retain separate capability boundaries. |
+| [`src/outage_explorer/sandbox/`](../src/outage_explorer/sandbox/) | Packaged launchers, the Node worker, the pinned Parquet extension and its license/provenance. These assets support the Python supervisors in `query/`. |
+| [`src/outage_explorer/service/`](../src/outage_explorer/service/) | Django API, authentication/policy, admission, cache, refresh jobs, saved views and operational migrations. |
+| [`src/outage_explorer/frontend/`](../src/outage_explorer/frontend/) | Django page routes/templates, native browser modules, styles and editor source/bundle. |
+| [`src/outage_explorer/web/`](../src/outage_explorer/web/) | Django project settings, WSGI/ASGI entry points and local init/server/worker launchers. |
 | `tests/` | Offline/synthetic tests, genuine partial recorded responses, JavaScript units and browser tests. Fixture READMEs explain scope. |
 | `data/` | Generated local analytics and its catalog, ignored by Git. Created/opened by catalog commands; ingestion/build writes the versioned files below. |
 | `.service/` | Generated local Django state, private credentials, coordination files and optional collected static assets, ignored by Git. Local `init` creates credentials, migrates and seeds users. |
@@ -82,6 +86,10 @@ Python runs the connector, trusted model/report SQL and Django service. Native D
 | `.env.example` | Public documentation of environment variable names. It is not read automatically, even if renamed `.env`. |
 | `README.md` | Root front door: setup, architecture, known limits and links to every named deliverable under `docs/`. |
 
+The package folders are source-code categories, not separate deployments. The top-level generated `data/` directory is different from `src/outage_explorer/data/`: one holds local runtime files, while the other holds the code that creates and resolves them.
+
+The public commands remain `python -m outage_explorer` (or `outage-explorer`) for data/model/report work and `python -m outage_explorer.web.local` for local Django operations. Internal worker module paths are implementation details in `query/`; they are launched by the supervisors.
+
 Generated caches such as `__pycache__`, `.pytest_cache`, `.ruff_cache`, build/egg-info, `test-results` or browser reports are tool output, not source. Their presence depends on commands run. `work/` is generated scratch/output space; report commands and browser tests may create it intentionally.
 
 ## Two SQLite databases, staging and helper files
@@ -89,9 +97,9 @@ Generated caches such as `__pycache__`, `.pytest_cache`, `.ruff_cache`, build/eg
 | Location | What it owns |
 | --- | --- |
 | `data/catalog.sqlite3` | Raw/model run history, watermarks, versions and the current coherent raw/model publication references. Analytical rows remain in Parquet. |
-| `.service/web.sqlite3` | Django users, sessions, product personas, private query cache, durable refresh jobs and service coordination state. |
+| `.service/web.sqlite3` | Django users, sessions, product personas, private query cache, durable refresh jobs, saved query/chart definitions and service coordination state. |
 
-Opening `storage.Catalog` prepares `data/.staging/`, `.model-staging/`, `snapshots/`, `runs/` and `models/`. **Empty staging folders are reserved workspace, not missing datasets.** Extraction writes candidates beneath `.staging`; model building uses `.model-staging`; successful files move to immutable version directories before catalog publication. Interrupted/unreferenced candidates can remain; folder existence does not establish published success.
+Opening `data.storage.Catalog` prepares `data/.staging/`, `.model-staging/`, `snapshots/`, `runs/` and `models/`. **Empty staging folders are reserved workspace, not missing datasets.** Extraction writes candidates beneath `.staging`; model building uses `.model-staging`; successful files move to immutable version directories before catalog publication. Interrupted/unreferenced candidates can remain; folder existence does not establish published success.
 
 ```text
 data/
@@ -112,7 +120,7 @@ Both SQLite databases use `synchronous=FULL` for durability and **WAL**, write-a
 
 An environment variable is a value inherited by a process from its launching shell/service. In PowerShell `$env:NAME = 'value'` sets it for that shell and future children. It does not edit a file or change an already-running service.
 
-No code automatically loads `.env.example`, `.env` or `key.txt`. The local launcher reads `.service/local-config.json` **only for four generated inputs**: `OUTAGE_DJANGO_SECRET_KEY` and the three persona seed passwords. It rejects extra keys. Other settings come from the process environment or the defaults in [settings.py](../src/outage_explorer/web/settings.py). Absence from the JSON is not evidence that a default is effective: the environment can override it.
+The Python application does not automatically load `.env.example`, `.env` or `key.txt`. Docker Compose separately uses the shell or a project `.env` for interpolation and forwards `EIA_API_KEY` only to its worker; [configure that key before startup](DOCKER.md#before-startup-configure-live-data-access). The local launcher reads `.service/local-config.json` **only for four generated inputs**: `OUTAGE_DJANGO_SECRET_KEY` and the three persona seed passwords. It rejects extra keys. Other settings come from the process environment or the defaults in [settings.py](../src/outage_explorer/web/settings.py). Absence from the JSON is not evidence that a default is effective: the environment can override it.
 
 | Setting | Code default or local-launcher behavior |
 | --- | --- |
@@ -129,7 +137,7 @@ No code automatically loads `.env.example`, `.env` or `key.txt`. The local launc
 | Query timeout/rows/bytes | Fixed settings: 8 seconds, 1,000 retained rows, 2,097,152 bytes. These are not local-JSON options. |
 | `OUTAGE_SANDBOX_NODE_MODULES` | If supplied, replaces automatic runtime lookup. Otherwise lookup checks cwd/node_modules and the source-tree candidate. It is trusted operator configuration. |
 
-See [local.py](../src/outage_explorer/web/local.py), [query_sandbox.py](../src/outage_explorer/query_sandbox.py) and [.env.example](../.env.example) for the exact boundary. Do not expose private generated values while explaining it.
+See [local.py](../src/outage_explorer/web/local.py), [query_sandbox.py](../src/outage_explorer/query/query_sandbox.py) and [.env.example](../.env.example) for the exact boundary. Do not expose private generated values while explaining it.
 
 ## What is delivered, and what remains uncertain
 

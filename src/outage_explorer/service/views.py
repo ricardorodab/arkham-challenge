@@ -21,9 +21,10 @@ from django.http import JsonResponse
 from django.middleware.csrf import get_token
 from django.views.decorators.csrf import ensure_csrf_cookie
 
-from . import api_services
+from . import api_services, saved_views
 from .authentication import limit_login
 from .errors import APIError, problem
+from .job_progress import public_progress
 from .models import RefreshJob
 from .policy import frontend_session_scope, identity, recheck, require_admin
 from .refresh import RefreshServiceError, enqueue_refresh
@@ -187,10 +188,27 @@ def catalog(request, actor):
     return response(api_services.catalog(request, actor, args.get("model_id")))
 
 
-@endpoint("GET")
+@endpoint("GET", "POST")
 def data(request, actor, dataset_id):
-    """Delegate supported date/facility/keyset parameters for one dataset preview page."""
-    args = parameters(request, {"start", "end", "facility_id", "limit", "cursor", "model_id"})
+    """Delegate typed full-dataset search, filtering, sorting and seek pagination."""
+    allowed = {
+        "start",
+        "end",
+        "facility_id",
+        "generator_id",
+        "limit",
+        "cursor",
+        "model_id",
+        "search",
+        "sort",
+        "direction",
+        "filters",
+    }
+    if request.method == "POST":
+        parameters(request, set())
+        args = body(request, allowed)
+    else:
+        args = parameters(request, allowed)
     return response(api_services.preview(request, actor, dataset_id, args))
 
 
@@ -199,6 +217,45 @@ def query(request, actor):
     """Delegate one bounded SQL request; this endpoint reads saved data, not EIA."""
     payload = body(request, {"dataset_id", "sql", "max_rows", "page_size", "cursor", "model_id"})
     return response(api_services.query(request, actor, payload))
+
+
+@endpoint("GET", "POST")
+def saved_view_collection(request, actor):
+    """List authorized definitions or save a validated owned SQL/presentation definition."""
+    if request.method == "GET":
+        return response(
+            saved_views.listing(request, actor, parameters(request, {"limit", "cursor"}))
+        )
+    parameters(request, set())
+    view = saved_views.create(request, actor, body(request, saved_views.EDIT_FIELDS))
+    result = response({"view": view}, status=201)
+    result["Location"] = f"/api/v1/saved-views/{view['id']}"
+    return result
+
+
+@endpoint("GET", "PUT", "DELETE")
+def saved_view_detail(request, actor, view_id):
+    """Read, replace or remove a definition under current visibility/ownership rules."""
+    parameters(request, set())
+    if request.method == "GET":
+        return response({"view": saved_views.retrieve(request, actor, view_id)})
+    if request.method == "PUT":
+        return response(
+            {
+                "view": saved_views.update(
+                    request, actor, view_id, body(request, saved_views.EDIT_FIELDS | {"revision"})
+                )
+            }
+        )
+    return response(saved_views.delete(request, actor, view_id, body(request, {"revision"})))
+
+
+@endpoint("POST")
+def saved_view_run(request, actor, view_id):
+    """Execute saved SQL with the reader's current identity, revision and adopted model."""
+    parameters(request, set())
+    payload = body(request, {"revision", "model_id", "page_size", "cursor"})
+    return response(saved_views.run(request, actor, view_id, payload))
 
 
 def _job(job):
@@ -217,6 +274,7 @@ def _job(job):
         "error_code": job.error_code or None,
         "message": job.public_message,
         "result": job.result,
+        "progress": public_progress(job.progress),
         "status_url": f"/api/v1/refresh/{job.id}",
     }
 
@@ -284,7 +342,7 @@ def ready(request, actor):
     """
     require_admin(actor)
     bundle = api_services._bundle(None)
-    from outage_explorer.query_sandbox import runtime_status
+    from outage_explorer.query.query_sandbox import runtime_status
 
     runtime = runtime_status()
     if not runtime["available"]:

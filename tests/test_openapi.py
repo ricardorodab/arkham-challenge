@@ -6,14 +6,16 @@ import ast
 import inspect
 import json
 import re
+from datetime import datetime
 from importlib.resources import files
 
 import pytest
 from django.test import Client
 
-from outage_explorer.model_contracts import DATASETS
+from outage_explorer.analytics.model_contracts import DATASETS
+from outage_explorer.query.sql_policy import MAX_ROWS, MAX_SQL_BYTES
 from outage_explorer.service import api_services, urls, views
-from outage_explorer.sql_policy import MAX_ROWS, MAX_SQL_BYTES
+from outage_explorer.service.models import RefreshJob
 
 
 @pytest.fixture(scope="module")
@@ -67,7 +69,9 @@ def test_all_actual_routes_and_declared_methods_have_exact_contract_coverage(spe
         for item in specification["paths"].values()
         for operation in item.values()
     ]
-    assert len(operations) == len(set(operations)) == 13
+    assert (
+        len(operations) == len(set(operations)) == sum(len(methods) for methods in actual.values())
+    )
 
 
 def test_all_references_resolve_and_every_operation_has_typed_success_and_safe_errors(
@@ -78,7 +82,11 @@ def test_all_references_resolve_and_every_operation_has_typed_success_and_safe_e
             assert isinstance(resolve(specification, node["$ref"]), dict)
     for item in specification["paths"].values():
         for operation in item.values():
-            assert operation["responses"]["200"]["content"]["application/json"]["schema"]
+            successes = [
+                value for code, value in operation["responses"].items() if code.startswith("2")
+            ]
+            assert successes
+            assert all(value["content"]["application/json"]["schema"] for value in successes)
             for code, response in operation["responses"].items():
                 if int(code) < 400:
                     continue
@@ -102,8 +110,8 @@ def test_session_csrf_public_and_admin_security_requirements_are_explicit(specif
     for path in ("/api/v1/auth/csrf", "/api/v1/health/live"):
         assert specification["paths"][path]["get"]["security"] == []
     for path, item in specification["paths"].items():
-        if "post" in item:
-            required = set(item["post"]["security"][0])
+        for method in {"post", "put", "delete"} & item.keys():
+            required = set(item[method]["security"][0])
             assert {"CSRFCookie", "CSRFHeader"} <= required
             assert ("SessionCookie" in required) is (path != "/api/v1/auth/login")
     for path in ("/api/v1/refresh", "/api/v1/refresh/{job_id}", "/api/v1/health/ready"):
@@ -162,6 +170,143 @@ def test_refresh_contract_distinguishes_queueing_replay_busy_and_owner_polling(s
     assert "404" in poll["responses"] and "owner" in poll["description"]
     statuses = specification["components"]["schemas"]["RefreshJob"]["properties"]["status"]["enum"]
     assert statuses == ["queued", "running", "succeeded", "failed", "interrupted"]
+
+
+def test_refresh_progress_contract_is_closed_bounded_and_has_no_overall_denominator(specification):
+    schemas = specification["components"]["schemas"]
+    job = schemas["RefreshJob"]
+    assert "progress" in job["required"]
+    assert job["properties"]["progress"] == {"$ref": "#/components/schemas/RefreshProgress"}
+    empty, snapshot = schemas["RefreshProgress"]["oneOf"]
+    assert empty == {"type": "object", "properties": {}, "additionalProperties": False}
+    assert snapshot["additionalProperties"] is False
+    assert set(snapshot["required"]) == {
+        "stage",
+        "updated_at",
+        "rows_received",
+        "pages_fetched",
+    }
+    properties = snapshot["properties"]
+    assert set(properties) == {
+        "stage",
+        "updated_at",
+        "rows_received",
+        "pages_fetched",
+        "route",
+        "routes",
+        "completed",
+        "total",
+    }
+    assert set(properties["stage"]["enum"]) == {
+        "preparing",
+        "metadata",
+        "extracting",
+        "validating_source",
+        "model_sources",
+        "model_facts",
+        "model_fleet",
+        "model_reconciliation",
+        "model_quality",
+        "validating_model",
+        "exporting_model",
+        "verifying_model",
+        "publishing",
+        "completed",
+    }
+    assert properties["updated_at"] == {"type": "string", "format": "date-time"}
+    counts = schemas["RefreshProgressCounts"]
+    assert counts["additionalProperties"] is False
+    assert (
+        set(counts["properties"])
+        == set(counts["required"])
+        == {
+            "rows_received",
+            "pages_fetched",
+        }
+    )
+    for name in ("rows_received", "pages_fetched"):
+        assert (
+            properties[name]
+            == counts["properties"][name]
+            == {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": (1 << 53) - 1,
+            }
+        )
+    assert set(properties["route"]["enum"]) == {"national", "facility", "generator"}
+    routes = properties["routes"]
+    assert routes["additionalProperties"] is False
+    assert set(routes["properties"]) == {"national", "facility", "generator"}
+    assert all(
+        value == {"$ref": "#/components/schemas/RefreshProgressCounts"}
+        for value in routes["properties"].values()
+    )
+    assert properties["total"] == {"type": "integer", "const": len(DATASETS)}
+    assert properties["completed"] == {"type": "integer", "minimum": 0, "maximum": 10}
+    assert len(DATASETS) == 10
+    assert snapshot["dependentRequired"] == {"completed": ["total"], "total": ["completed"]}
+    assert snapshot["if"]["properties"]["stage"]["const"] == "exporting_model"
+    assert {tuple(item["required"]) for item in snapshot["else"]["not"]["anyOf"]} == {
+        ("completed",),
+        ("total",),
+    }
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "progress",
+    [
+        {},
+        {
+            "stage": "extracting",
+            "updated_at": "2026-11-08T04:15:00+00:00",
+            "route": "facility",
+            "rows_received": 12,
+            "pages_fetched": 2,
+            "routes": {"facility": {"rows_received": 12, "pages_fetched": 2}},
+        },
+        {
+            "stage": "exporting_model",
+            "updated_at": "2026-11-08T04:15:00+00:00",
+            "completed": 4,
+            "total": 10,
+        },
+    ],
+    ids=["legacy", "receiving-pages", "bounded-export"],
+)
+def test_refresh_job_wire_progress_matches_its_required_schema(
+    specification, authenticated_client, progress
+):
+    client, owner = authenticated_client("admin")
+    job = RefreshJob.objects.create(owner=owner, mode="full", status="running", progress=progress)
+    response = client.get(f"/api/v1/refresh/{job.id}")
+    assert response.status_code == 200
+    payload = response.json()
+    schemas = specification["components"]["schemas"]
+    assert set(payload) == set(schemas["RefreshJob"]["required"])
+    assert schemas["RefreshJob"]["additionalProperties"] is False
+    actual = payload["progress"]
+    if not progress:
+        assert actual == {}
+        return
+    snapshot = schemas["RefreshProgress"]["oneOf"][1]
+    assert set(snapshot["required"]) <= set(actual) <= set(snapshot["properties"])
+    assert actual["stage"] in snapshot["properties"]["stage"]["enum"]
+    assert datetime.fromisoformat(actual["updated_at"]).utcoffset() is not None
+    for name in ("rows_received", "pages_fetched"):
+        assert type(actual[name]) is int
+        assert 0 <= actual[name] <= snapshot["properties"][name]["maximum"]
+    if actual["stage"] == "exporting_model":
+        assert actual["total"] == snapshot["properties"]["total"]["const"]
+        assert 0 <= actual["completed"] <= actual["total"]
+    else:
+        assert "completed" not in actual and "total" not in actual
+        assert actual["route"] in snapshot["properties"]["route"]["enum"]
+        assert set(actual["routes"]) <= set(snapshot["properties"]["routes"]["properties"])
+        assert set(actual["routes"]["facility"]) == set(
+            schemas["RefreshProgressCounts"]["required"]
+        )
 
 
 @pytest.mark.django_db
@@ -253,7 +398,7 @@ def test_problem_details_wire_contract_matches_an_authentication_failure(
 
 
 def test_available_runtime_status_matches_its_strict_public_schema(specification):
-    from outage_explorer.query_sandbox import runtime_status
+    from outage_explorer.query.query_sandbox import runtime_status
 
     status = runtime_status()
     assert status["available"], "Contract acceptance requires the pinned query runtime."

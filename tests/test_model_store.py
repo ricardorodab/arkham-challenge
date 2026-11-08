@@ -10,19 +10,19 @@ from copy import deepcopy
 import duckdb
 import pytest
 
-from outage_explorer import model_store
-from outage_explorer.domain import canonical_json
-from outage_explorer.model_contracts import DATASETS, MODEL_VERSION, contract_profile
-from outage_explorer.model_store import (
+from outage_explorer.analytics import model_store
+from outage_explorer.analytics.model_contracts import DATASETS, MODEL_VERSION, contract_profile
+from outage_explorer.analytics.model_store import (
     analytical_catalog,
     open_model_connection,
     prepare_model,
     rebuild_model,
     verify_model,
 )
-from outage_explorer.modeling import ModelBundle, logical_digest
-from outage_explorer.pipeline import IngestConfig, ingest
-from outage_explorer.storage import Catalog, StorageError, writer_lock
+from outage_explorer.analytics.modeling import ModelBundle, logical_digest
+from outage_explorer.data.domain import canonical_json
+from outage_explorer.data.pipeline import IngestConfig, ingest
+from outage_explorer.data.storage import Catalog, StorageError, writer_lock
 from tests.helpers import FakeClient
 from tests.test_modeling import model
 

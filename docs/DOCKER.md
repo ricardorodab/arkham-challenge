@@ -2,6 +2,28 @@
 
 Docker packages Python, Node and the locked application dependencies together. Use Docker Engine or Docker Desktop with **Linux containers** and the Docker Compose plugin. Run the commands from the repository root. The default deployment serves this computer at `http://127.0.0.1:8000`; it does not configure public hosting, HTTPS or a reverse proxy.
 
+## Before startup: configure live data access
+
+Building the image, initializing accounts, logging in and reading an existing publication do **not** require an EIA key. Live ingestion and Admin refresh do. For those operations, set your own `EIA_API_KEY` in the **same terminal before the first `docker compose up`** so the worker is created with it. The key is a runtime input, not a build argument.
+
+PowerShell (private interactive input, without the literal key in command history):
+
+```powershell
+$env:EIA_API_KEY = [System.Net.NetworkCredential]::new('', (Read-Host 'EIA API key' -AsSecureString)).Password
+```
+
+Bash:
+
+```bash
+read -rsp 'EIA API key: ' EIA_API_KEY
+printf '\n'
+export EIA_API_KEY
+```
+
+Compose resolves the worker's `EIA_API_KEY` from the shell or a project `.env` used for interpolation. A shell value takes precedence, including an explicitly empty value. If you deliberately use `--env-file` instead, supply that option consistently when creating or recreating services. Only `worker` receives the resolved key; `app` and `init` do not. A one-off ingestion container receives it only when you explicitly pass `-e EIA_API_KEY`.
+
+Neither `.env.example` nor `key.txt` is loaded automatically. The Python application does not load dotenv files, and this setup has no `_FILE` adapter or Docker secret-file mount for the key. Do not share expanded Compose configuration or put credentials in the image. If containers already exist, changing the shell or `.env` alone does not update their environment; use the [recovery steps](#already-started-without-the-key).
+
 ## Start a fresh workspace
 
 ```sh
@@ -19,25 +41,11 @@ docker compose exec -T app python -c "import json,os; from pathlib import Path; 
 
 Do not include that output in shared logs or screenshots. The application does not print passwords during normal startup. [The API contract](API_CONTRACT.md) defines the three personas and their permissions.
 
-A new workspace has accounts but **no analytical publication**. Login and process health can succeed before ingestion; analytical requests need data. No EIA credential or download is required to build the image or start the app and worker. If a refresh is requested while the worker has no key, it ends as `failed` with `refresh_not_configured` and configuration guidance; existing data remains unchanged.
+A new workspace has accounts but **no analytical publication**. Container startup does not enqueue an extraction. Login and process health can succeed before ingestion; analytical requests need data. The worker can consume previously queued jobs as soon as it starts. If a refresh is claimed without a key, it ends as `failed` with `refresh_not_configured` and configuration guidance; existing data remains unchanged.
 
 ## Load data explicitly
 
-Supply your own EIA key in the current shell. In PowerShell:
-
-```powershell
-$env:EIA_API_KEY = [System.Net.NetworkCredential]::new('', (Read-Host 'EIA API key' -AsSecureString)).Password
-```
-
-In Bash:
-
-```bash
-read -rsp 'EIA API key: ' EIA_API_KEY
-printf '\n'
-export EIA_API_KEY
-```
-
-Then run a bounded three-day extraction in a separate temporary container:
+With the key still set in the current shell, run a bounded three-day extraction in a separate temporary container. If you cleared it after startup, [set it again](#before-startup-configure-live-data-access): this new CLI container does not borrow the running worker's environment.
 
 ```sh
 docker compose run --rm --no-deps -e EIA_API_KEY app python -m outage_explorer ingest --mode full --start 2026-09-01 --end 2026-09-03 --data-dir /appdata/data
@@ -45,12 +53,15 @@ docker compose run --rm --no-deps -e EIA_API_KEY app python -m outage_explorer i
 
 `-e EIA_API_KEY` forwards the already-set shell value without putting its literal value in the command. This command needs network access and consumes the provider's API quota; the sample dates are an example, not a claim of fresh live verification. It builds and publishes the matching analytical model before returning. The browser can adopt a newer model with **Use latest**.
 
-To inspect or verify the retained publication without an EIA key:
+After the command succeeds, inspect the matching retained publication and verify it without an EIA key:
 
 ```sh
 docker compose run --rm --no-deps app python -m outage_explorer status --data-dir /appdata/data
+docker compose run --rm --no-deps app python -m outage_explorer model status --data-dir /appdata/data
 docker compose run --rm --no-deps app python -m outage_explorer model verify --data-dir /appdata/data
 ```
+
+Status should identify a current snapshot and model, and verification should succeed. CLI ingestion creates a publication, not a refresh job; reload the workspace or choose **Use latest** when offered. For a refresh requested in the browser, wait for `succeeded`, then choose **Use latest**. A healthy container alone does not prove data has been published, and the Admin-only readiness endpoint requires both a model and the query runtime.
 
 For a later correction-window refresh, replace the ingest options with `--mode recent --data-dir /appdata/data`. Omit `--start` and `--end` from full ingestion only when you intend to download all advertised history. These examples name `--data-dir` explicitly for clarity. The image also uses `/appdata` as its working directory, so the CLI default `data` resolves to the same persistent `/appdata/data`. The CLI itself does not read `OUTAGE_DATA_DIR`. [Local operations](LOCAL_OPERATIONS.md#3-load-or-refresh-source-data) covers extraction semantics and limits.
 
@@ -60,15 +71,26 @@ Remove the key from the shell when finished: `Remove-Item Env:EIA_API_KEY` in Po
 
 Admin refresh requests enqueue durable jobs. The default app startup command also starts the continuous worker that consumes them; ingestion still runs outside the HTTP process. To apply this configuration to an older workspace, rerun `docker compose up --build -d app`. Existing volumes and queued jobs are retained for the worker to process.
 
-Only the worker receives the Compose-configured EIA key. With `EIA_API_KEY` set privately in your shell using the prompt above, recreate it to apply the value:
+Before an upgrade, let active refreshes finish and make `EIA_API_KEY` available in the same terminal again (or through your configured `.env`). Recreated containers receive the current Compose environment; Compose does not copy the key from an older worker. New workers report download counts and source/model/publication stages in Refresh activity. Model export has its own percentage; total download work remains unknown. Older completed jobs keep their outcome without fabricated progress measurements.
+
+The worker shares the app's data, application database and generated Django configuration. One worker owns the control lock; additional workers cannot consume concurrently. Configure its key [before startup](#before-startup-configure-live-data-access), or follow the existing-stack recovery below.
+
+### Already started without the key
+
+Starting the app first does not corrupt its state or require a volume reset. Login and existing data remain usable. If the worker was created without a key, it keeps that empty environment even after you configure the shell or `.env`. In that case, leave the app running and follow these steps. If a refresh is currently running, let it finish before deliberately recreating its worker.
+
+1. Set `EIA_API_KEY` privately in the same terminal, using the [PowerShell or Bash prompt](#before-startup-configure-live-data-access).
+2. For this already-initialized workspace, recreate **only** the worker; the app and named volumes stay in place:
 
 ```sh
-docker compose up -d --force-recreate worker
+docker compose up -d --no-deps --force-recreate worker
+docker compose ps worker
+docker compose logs --tail 30 worker
 ```
 
-`docker compose restart worker` does not apply a changed shell environment. The worker shares the app's data, application database and generated Django configuration. One worker owns the control lock; additional workers cannot consume concurrently.
+`--no-deps` is appropriate here because initialization has already completed; fresh workspaces must use the normal startup command instead. [Recreation preserves mounted volumes](https://docs.docker.com/reference/cli/docker/compose/up/); changing only the key does not require rebuilding the image. [A simple `docker compose restart worker` does not apply environment changes](https://docs.docker.com/reference/cli/docker/compose/restart/).
 
-Keyless startup remains usable for login and existing data. A missing or blank worker key makes a claimed refresh fail with `refresh_not_configured` before extraction, rather than wait indefinitely. After configuring the key, **queue a new refresh**. Completed failed jobs are not reset or automatically requeued; replaying an old idempotency key still returns that original failed outcome.
+3. Watch the existing job in Admin refresh activity. A still-`queued` job can be claimed automatically, so do not submit a duplicate while it is queued or running. If it already failed with `refresh_not_configured`, **queue a new refresh** after recreation. Completed failed jobs are not reset or automatically requeued; replaying an old idempotency key still returns the original failed outcome. On success, choose **Use latest**.
 
 You may clear the shell key after recreation; the running worker retains its process environment. Supply it again before a later worker recreation. If a job remains queued, inspect `docker compose ps worker` and `docker compose logs worker`. Starting the worker allows it to claim existing queued jobs.
 

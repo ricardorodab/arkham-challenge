@@ -21,11 +21,13 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError, OperationalError, transaction
 from django.utils import timezone
 
-from outage_explorer.domain import DataValidationError
-from outage_explorer.eia import EIAClient, EIAClientError
-from outage_explorer.pipeline import IngestConfig, ingest
-from outage_explorer.storage import Catalog, StorageError, writer_lock
+from outage_explorer.data.domain import DataValidationError
+from outage_explorer.data.eia import EIAClient, EIAClientError
+from outage_explorer.data.pipeline import IngestConfig, ingest
+from outage_explorer.data.storage import Catalog, StorageError, writer_lock
+from outage_explorer.progress import ProgressCallback, ProgressEvent, emit_progress
 
+from .job_progress import JobProgressReporter
 from .models import Persona, QueryCacheEntry, RefreshJob
 
 LOG = logging.getLogger(__name__)
@@ -165,7 +167,7 @@ def _enqueue_refresh(user, mode: str, idempotency_key: str | None):
         raise
 
 
-def perform_ingest(mode: str) -> dict[str, str]:
+def perform_ingest(mode: str, *, progress: ProgressCallback | None = None) -> dict[str, str]:
     """Download/build/publish data at the worker-only upstream credential boundary.
 
     Read EIA_API_KEY from this process environment, invoke the normal ingestion pipeline and
@@ -179,7 +181,16 @@ def perform_ingest(mode: str) -> dict[str, str]:
     if not api_key:
         raise RefreshConfigurationError
     client = EIAClient(api_key)
-    manifest = ingest(IngestConfig(data_dir=Path(settings.OUTAGE_DATA_DIR), mode=mode), client)
+
+    def report(event: ProgressEvent) -> None:
+        # Pipeline completion confirms publication. The job must also resolve its
+        # matching model receipt before reporting its own completion.
+        if progress is not None and event.stage != "completed":
+            progress(event)
+
+    manifest = ingest(
+        IngestConfig(data_dir=Path(settings.OUTAGE_DATA_DIR), mode=mode), client, progress=report
+    )
     with Catalog(Path(settings.OUTAGE_DATA_DIR)) as catalog:
         model = catalog.current_model()
         if model is None or model.manifest["source_snapshot_id"] != manifest["snapshot_id"]:
@@ -238,6 +249,7 @@ class RefreshWorker:
         command can reuse it across multiple jobs within one context.
         """
         self.executor = executor or perform_ingest
+        self._default_executor = executor is None
         self._lock = None
         self.recovered_count = 0
 
@@ -300,6 +312,8 @@ class RefreshWorker:
         )
         if not claimed:
             return None
+        reporter = JobProgressReporter(job.pk)
+        emit_progress(reporter, ProgressEvent("preparing"))
         LOG.info("refresh_job_started", extra={"run_id": str(job.pk), "mode": job.mode})
         if not _active_admin(job.owner_id):
             self._finish(
@@ -310,7 +324,11 @@ class RefreshWorker:
             )
             return job
         try:
-            result = self.executor(job.mode)
+            result = (
+                self.executor(job.mode, progress=reporter)
+                if self._default_executor
+                else self.executor(job.mode)
+            )
             if not isinstance(result, dict) or any(
                 not isinstance(result.get(field), str)
                 or re.fullmatch(r"[0-9a-f]{32}", result[field]) is None
@@ -323,6 +341,7 @@ class RefreshWorker:
                 "mode": job.mode,
             }
         except (KeyboardInterrupt, SystemExit):
+            reporter.flush()
             self._finish(
                 job,
                 RefreshJob.Status.INTERRUPTED,
@@ -331,9 +350,12 @@ class RefreshWorker:
             )
             raise
         except Exception as error:
+            reporter.flush()
             code, message = _public_failure(error)
             self._finish(job, RefreshJob.Status.FAILED, error_code=code, message=message)
         else:
+            emit_progress(reporter, ProgressEvent("completed"))
+            reporter.flush()
             self._finish(
                 job, RefreshJob.Status.SUCCEEDED, message="Refresh completed.", result=result
             )

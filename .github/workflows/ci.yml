@@ -29,6 +29,7 @@ jobs:
           node-version: '24.13.0'
           cache: npm
       - run: npm ci --ignore-scripts
+      - run: npm run check:editor
       - run: npm run test:unit
       - run: python -m pip install -r requirements-dev.lock
       - run: python -m pip install --no-deps -e .

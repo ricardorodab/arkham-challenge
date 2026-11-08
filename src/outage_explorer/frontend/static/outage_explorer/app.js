@@ -12,6 +12,7 @@ import { OverviewController } from './overview.js';
 import { ExploreController } from './explore.js';
 import { SqlController, clearPrivateHistory } from './sql.js';
 import { RefreshController } from './refresh.js';
+import { SavedViewsController } from './saved_views.js';
 
 /**
  * Own shared model/catalog state, navigation and browser session disposal.
@@ -43,6 +44,28 @@ export class Workspace {
       hasUpdate: () => !!this.candidate,
       notice: (message) => this.notice(message),
     };
+    context.onSavedViewCapabilities = () => this.sql?.updatePager();
+    this.savedViews = new SavedViewsController(context, {
+      onLoadSql: (view) => {
+        if (!this.catalog?.datasets.some((item) => item.id === view.dataset_id)) return;
+        byId('sql-dataset').value = view.dataset_id;
+        if (
+          ![...byId('sql-max-rows').options].some((item) => item.value === String(view.max_rows))
+        ) {
+          const option = element('option', '', `${view.max_rows} rows`);
+          option.value = String(view.max_rows);
+          byId('sql-max-rows').append(option);
+        }
+        byId('sql-max-rows').value = String(view.max_rows);
+        this.sql.selectDataset(view.sql);
+        this.sql.savedViewEditing = view;
+        this.sql.updatePager();
+        if (location.hash !== '#sql') history.pushState(null, '', '#sql');
+        this.route(false);
+        this.sql.focusEditor();
+      },
+    });
+    context.savedViews = this.savedViews;
     this.overview = new OverviewController(context);
     this.explore = new ExploreController(context);
     this.sql = new SqlController(context);
@@ -126,6 +149,8 @@ export class Workspace {
     this.overview.configure(catalog);
     this.explore.configure(catalog);
     this.sql.configure(catalog);
+    this.savedViews?.configure(catalog);
+    this.savedViews?.load();
     if (catalog.warnings?.length) this.notice(catalog.warnings.join(' '));
   }
 
@@ -197,7 +222,10 @@ export class Workspace {
     }
     if (this.view === 'refresh') this.refresh.load();
     if (!this.catalog) return;
-    if (this.view === 'overview') this.overview.load();
+    if (this.view === 'overview') {
+      this.overview.load();
+      this.savedViews?.load();
+    }
     if (this.view === 'explore') this.explore.activate();
   }
 
@@ -333,6 +361,7 @@ export class Workspace {
     this.overview.dispose();
     this.explore.dispose();
     this.sql.dispose();
+    this.savedViews?.dispose();
     this.refresh?.dispose();
     clearPrivateHistory();
     this.catalog = null;

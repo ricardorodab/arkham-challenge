@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from outage_explorer.domain import (
+from outage_explorer.data.domain import (
     METRICS,
     ROUTE_BY_NAME,
     UNITS,

@@ -13,7 +13,7 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.test import Client
 
-from outage_explorer.pipeline import IngestConfig, ingest
+from outage_explorer.data.pipeline import IngestConfig, ingest
 
 from .helpers import FakeClient
 

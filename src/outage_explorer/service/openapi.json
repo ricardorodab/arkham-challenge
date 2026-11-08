@@ -4,7 +4,7 @@
   "info": {
     "title": "Outage Explorer API",
     "version": "1.0.0",
-    "description": "Same-origin analytical API over immutable model publications. Sessions and product personas are server-owned: Viewer may read national data, Analyst may also read detail data, and Admin additionally queues refreshes and inspects readiness. Unknown/unauthorized dataset IDs have the same default-deny response. Request JSON is strict (no duplicate keys/unknown fields/non-finite constants); query parameters reject duplicates and unknown names. All responses use no-store browser cache policy. Private engine diagnostics, original/generated SQL, source credentials and physical paths are never returned or logged. Rows use column-described exact scalar encoding; see DecimalString and BigIntegerString. Local HTTP mode is loopback-only; HTTPS deployment uses Secure session/CSRF cookies. Cookies are SameSite=Lax; session cookies are HttpOnly. Cross-origin mutations require valid same-origin CSRF checks. The source API key belongs only to the refresh worker environment."
+    "description": "Same-origin analytical API over immutable model publications. Sessions and product personas are server-owned: Viewer may read national data, Analyst may also read detail data, and Admin additionally queues refreshes and inspects readiness. Unknown/unauthorized dataset IDs have the same default-deny response. Request JSON is strict (no duplicate keys/unknown fields/non-finite constants); query parameters reject duplicates and unknown names. All responses use no-store browser cache policy. Private engine diagnostics, generated SQL, source credentials and physical paths are never returned or logged. Rows use column-described exact scalar encoding; see DecimalString and BigIntegerString. Local HTTP mode is loopback-only; HTTPS deployment uses Secure session/CSRF cookies. Cookies are SameSite=Lax; session cookies are HttpOnly. Cross-origin mutations require valid same-origin CSRF checks. The source API key belongs only to the refresh worker environment. Authorized saved-view responses include the saved query definition after owner/audience and dataset checks."
   },
   "servers": [
     {
@@ -29,7 +29,13 @@
     "global_execution_slots": 2,
     "global_queue_slots": 8,
     "compiler_timeout_seconds": 2,
-    "queue_wait_seconds": 5
+    "queue_wait_seconds": 5,
+    "structured_browse_filters": 8,
+    "structured_browse_search_characters": 256,
+    "structured_browse_cursor_characters": 16384,
+    "structured_browse_process_memory_bytes": 536870912,
+    "structured_browse_protocol_bytes": 131072,
+    "structured_browse_integrity_cache_entries": 128
   },
   "paths": {
     "/api/v1/auth/csrf": {
@@ -351,8 +357,8 @@
     "/api/v1/data/{dataset_id}": {
       "get": {
         "operationId": "previewDataset",
-        "summary": "Preview a permitted logical dataset",
-        "description": "Read-only keyset pagination in primary-key order. The signed cursor expires after 15 minutes and binds the immutable model, dataset, user/session/persona, limit and filters. Repeat every filter and limit unchanged when providing the cursor. Pages remain pinned when a newer model is published; no missing observations are filled. The per-page limit is at most 1000 and the complete response must fit 2 MiB.",
+        "summary": "Browse a permitted logical dataset",
+        "description": "Full-dataset search, typed AND filters and total-order seek pagination in an isolated bounded native reader. No full COUNT, OFFSET or first-1000 cap across pages. Nulls sort last in both directions; primary-key ties make the order unique. Signed cursors bind the query, immutable source/model, and actor/session/persona. New publications do not change a pinned investigation. GET supports an8192-character encoded query budget; prefer JSON POST for structured conditions or long text sort keys. returned_rows counts only this page; each complete response fits2MiB.",
         "x-allowed-personas": [
           "viewer",
           "analyst",
@@ -476,6 +482,157 @@
             "schema": {
               "$ref": "#/components/schemas/ModelId"
             }
+          },
+          {
+            "name": "generator_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "description": "A column exposed by the authorized dataset schema."
+            }
+          },
+          {
+            "name": "direction",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "asc"
+            }
+          },
+          {
+            "name": "filters",
+            "in": "query",
+            "required": false,
+            "description": "Percent-encoded JSON array; prefer POST for structured requests.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "maxItems": 8,
+                  "items": {
+                    "$ref": "#/components/schemas/BrowseFilter"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "browseDataset",
+        "summary": "Browse with a structured JSON specification",
+        "description": "Full-dataset search, typed AND filters and total-order seek pagination in an isolated bounded native reader. No full COUNT, OFFSET or first-1000 cap across pages. Nulls sort last in both directions; primary-key ties make the order unique. Signed cursors bind the query, immutable source/model, and actor/session/persona. New publications do not change a pinned investigation. GET supports an8192-character encoded query budget; prefer JSON POST for structured conditions or long text sort keys. returned_rows counts only this page; each complete response fits2MiB.",
+        "x-allowed-personas": [
+          "viewer",
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-ID": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "429": {
+            "$ref": "#/components/responses/429"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          },
+          "504": {
+            "$ref": "#/components/responses/504"
+          },
+          "415": {
+            "$ref": "#/components/responses/415"
+          }
+        },
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "description": "Choose a permitted ID from the filtered catalog.",
+            "schema": {
+              "$ref": "#/components/schemas/DatasetId"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowseRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CSRFCookie": [],
+            "CSRFHeader": []
           }
         ]
       }
@@ -951,6 +1108,489 @@
           }
         }
       }
+    },
+    "/api/v1/saved-views": {
+      "get": {
+        "operationId": "listSavedViews",
+        "summary": "listSavedViews",
+        "description": "Persisted SQL definitions with owner/audience visibility and independent reader dataset authorization. Analyst/Admin create and share; only owners manage. Results execute as the reader on the explicit adopted publication. Sharing includes query text; it never grants dataset access. Revision preconditions prevent stale mutations and executions.",
+        "x-allowed-personas": [
+          "viewer",
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedViewList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "429": {
+            "$ref": "#/components/responses/429"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          },
+          "504": {
+            "$ref": "#/components/responses/504"
+          }
+        },
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createSavedView",
+        "summary": "createSavedView",
+        "description": "Persisted SQL definitions with owner/audience visibility and independent reader dataset authorization. Analyst/Admin create and share; only owners manage. Results execute as the reader on the explicit adopted publication. Sharing includes query text; it never grants dataset access. Revision preconditions prevent stale mutations and executions.",
+        "x-allowed-personas": [
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "429": {
+            "$ref": "#/components/responses/429"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          },
+          "504": {
+            "$ref": "#/components/responses/504"
+          },
+          "201": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedViewEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedViewCreate"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CSRFCookie": [],
+            "CSRFHeader": []
+          }
+        ]
+      }
+    },
+    "/api/v1/saved-views/{view_id}": {
+      "get": {
+        "operationId": "getSavedView",
+        "summary": "getSavedView",
+        "description": "Persisted SQL definitions with owner/audience visibility and independent reader dataset authorization. Analyst/Admin create and share; only owners manage. Results execute as the reader on the explicit adopted publication. Sharing includes query text; it never grants dataset access. Revision preconditions prevent stale mutations and executions.",
+        "x-allowed-personas": [
+          "viewer",
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedViewEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "429": {
+            "$ref": "#/components/responses/429"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          },
+          "504": {
+            "$ref": "#/components/responses/504"
+          }
+        },
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "put": {
+        "operationId": "updateSavedView",
+        "summary": "updateSavedView",
+        "description": "Persisted SQL definitions with owner/audience visibility and independent reader dataset authorization. Analyst/Admin create and share; only owners manage. Results execute as the reader on the explicit adopted publication. Sharing includes query text; it never grants dataset access. Revision preconditions prevent stale mutations and executions.",
+        "x-allowed-personas": [
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedViewEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "429": {
+            "$ref": "#/components/responses/429"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          },
+          "504": {
+            "$ref": "#/components/responses/504"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedViewUpdate"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CSRFCookie": [],
+            "CSRFHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "deleteSavedView",
+        "summary": "deleteSavedView",
+        "description": "Persisted SQL definitions with owner/audience visibility and independent reader dataset authorization. Analyst/Admin create and share; only owners manage. Results execute as the reader on the explicit adopted publication. Sharing includes query text; it never grants dataset access. Revision preconditions prevent stale mutations and executions.",
+        "x-allowed-personas": [
+          "viewer",
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedViewDeleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "429": {
+            "$ref": "#/components/responses/429"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          },
+          "504": {
+            "$ref": "#/components/responses/504"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedViewDelete"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CSRFCookie": [],
+            "CSRFHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/saved-views/{view_id}/run": {
+      "post": {
+        "operationId": "runSavedView",
+        "summary": "runSavedView",
+        "description": "Persisted SQL definitions with owner/audience visibility and independent reader dataset authorization. Analyst/Admin create and share; only owners manage. Results execute as the reader on the explicit adopted publication. Sharing includes query text; it never grants dataset access. Revision preconditions prevent stale mutations and executions.",
+        "x-allowed-personas": [
+          "viewer",
+          "analyst",
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedViewResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "404": {
+            "$ref": "#/components/responses/404"
+          },
+          "405": {
+            "$ref": "#/components/responses/405"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "413": {
+            "$ref": "#/components/responses/413"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "429": {
+            "$ref": "#/components/responses/429"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
+          },
+          "504": {
+            "$ref": "#/components/responses/504"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedViewRun"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": [],
+            "CSRFCookie": [],
+            "CSRFHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -1350,7 +1990,7 @@
           "next_cursor": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Cursor"
+                "$ref": "#/components/schemas/BrowseCursor"
               },
               {
                 "type": "null"
@@ -1386,14 +2026,25 @@
                   "null"
                 ],
                 "maxLength": 64
+              },
+              "generator_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 64
               }
             },
             "required": [
               "start",
               "end",
-              "facility_id"
+              "facility_id",
+              "generator_id"
             ],
             "additionalProperties": false
+          },
+          "query": {
+            "$ref": "#/components/schemas/BrowseQuery"
           }
         },
         "required": [
@@ -1404,7 +2055,8 @@
           "rows",
           "returned_rows",
           "next_cursor",
-          "filters"
+          "filters",
+          "query"
         ],
         "additionalProperties": false
       },
@@ -1816,6 +2468,9 @@
           "status_url": {
             "type": "string",
             "pattern": "^/api/v1/refresh/[0-9a-f-]{36}$"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/RefreshProgress"
           }
         },
         "required": [
@@ -1828,7 +2483,8 @@
           "error_code",
           "message",
           "result",
-          "status_url"
+          "status_url",
+          "progress"
         ],
         "additionalProperties": false
       },
@@ -1943,6 +2599,722 @@
           }
         },
         "additionalProperties": true
+      },
+      "RefreshProgressCounts": {
+        "type": "object",
+        "properties": {
+          "rows_received": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "pages_fetched": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "rows_received",
+          "pages_fetched"
+        ],
+        "additionalProperties": false
+      },
+      "RefreshProgress": {
+        "description": "Last actual milestone, retained on terminal jobs; empty for queued/legacy jobs. Received row/page counts include confirmation reads, not unique published rows. Only exporting_model has a fixed completed/total denominator, describing model export rather than overall refresh. updated_at is an observed event timestamp, not a heartbeat or proof the worker is live. Count-only persistence is throttled to one attempt per second; stages and final flush are immediate.",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "stage": {
+                "type": "string",
+                "enum": [
+                  "preparing",
+                  "metadata",
+                  "extracting",
+                  "validating_source",
+                  "model_sources",
+                  "model_facts",
+                  "model_fleet",
+                  "model_reconciliation",
+                  "model_quality",
+                  "validating_model",
+                  "exporting_model",
+                  "verifying_model",
+                  "publishing",
+                  "completed"
+                ]
+              },
+              "updated_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "rows_received": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "pages_fetched": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "route": {
+                "type": "string",
+                "enum": [
+                  "national",
+                  "facility",
+                  "generator"
+                ]
+              },
+              "routes": {
+                "type": "object",
+                "properties": {
+                  "national": {
+                    "$ref": "#/components/schemas/RefreshProgressCounts"
+                  },
+                  "facility": {
+                    "$ref": "#/components/schemas/RefreshProgressCounts"
+                  },
+                  "generator": {
+                    "$ref": "#/components/schemas/RefreshProgressCounts"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "completed": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10
+              },
+              "total": {
+                "type": "integer",
+                "const": 10
+              }
+            },
+            "required": [
+              "stage",
+              "updated_at",
+              "rows_received",
+              "pages_fetched"
+            ],
+            "additionalProperties": false,
+            "dependentRequired": {
+              "completed": [
+                "total"
+              ],
+              "total": [
+                "completed"
+              ]
+            },
+            "if": {
+              "properties": {
+                "stage": {
+                  "const": "exporting_model"
+                }
+              }
+            },
+            "else": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "completed"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "total"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "BrowseFilter": {
+        "type": "object",
+        "properties": {
+          "column": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "description": "A column exposed by the authorized dataset schema."
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "eq",
+              "ne",
+              "lt",
+              "lte",
+              "gt",
+              "gte",
+              "between",
+              "contains",
+              "not_contains",
+              "starts_with",
+              "is_null",
+              "not_null"
+            ]
+          },
+          "value": {
+            "type": [
+              "string",
+              "integer",
+              "boolean"
+            ],
+            "maxLength": 256
+          },
+          "upper": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "column",
+          "op"
+        ],
+        "additionalProperties": false,
+        "description": "AND condition. Operators must match the logical type. Null checks have no values; between requires value and upper. Exact decimals and dates use strings. Text predicates match case and treat percent and underscore literally.",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "op": {
+                  "enum": [
+                    "is_null",
+                    "not_null"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "value"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "upper"
+                    ]
+                  }
+                ]
+              }
+            },
+            "else": {
+              "required": [
+                "value"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "op": {
+                  "const": "between"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "value",
+                "upper"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "upper"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "BrowseOrder": {
+        "type": "object",
+        "properties": {
+          "column": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "description": "A column exposed by the authorized dataset schema."
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "default": "asc"
+          }
+        },
+        "required": [
+          "column",
+          "direction"
+        ],
+        "additionalProperties": false
+      },
+      "BrowseQuery": {
+        "type": "object",
+        "properties": {
+          "search": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "filters": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "$ref": "#/components/schemas/BrowseFilter"
+            }
+          },
+          "order": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+              "$ref": "#/components/schemas/BrowseOrder"
+            }
+          }
+        },
+        "required": [
+          "search",
+          "filters",
+          "order"
+        ],
+        "additionalProperties": false,
+        "description": "Canonical applied specification. All predicates AND together; search is a case-insensitive literal substring across every exposed value cast to its canonical string. Order includes unique primary-key ties and always places nulls last."
+      },
+      "BrowseCursor": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 16384,
+        "description": "Signed 900-second seek token bound to actor/session/persona, canonical query, page size and immutable source/model publication. Continue with the same JSON POST. New publications do not redirect this token."
+      },
+      "BrowseRequest": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "$ref": "#/components/schemas/DateString"
+          },
+          "end": {
+            "$ref": "#/components/schemas/DateString"
+          },
+          "facility_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "generator_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "search": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "sort": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "description": "A column exposed by the authorized dataset schema."
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "default": "asc"
+          },
+          "filters": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/BrowseFilter"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100
+          },
+          "cursor": {
+            "$ref": "#/components/schemas/BrowseCursor"
+          },
+          "model_id": {
+            "$ref": "#/components/schemas/ModelId"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "SavedChart": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "date_column": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "value_column": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "series_column": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 128
+              }
+            },
+            "required": [
+              "enabled",
+              "date_column",
+              "value_column"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "SavedViewCreate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "dataset_id": {
+            "$ref": "#/components/schemas/DatasetId"
+          },
+          "sql": {
+            "type": "string",
+            "minLength": 1,
+            "x-max-utf8-bytes": 16384
+          },
+          "max_rows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "chart": {
+            "$ref": "#/components/schemas/SavedChart"
+          },
+          "shared_roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "viewer",
+                "analyst",
+                "admin"
+              ]
+            },
+            "maxItems": 3,
+            "uniqueItems": true
+          },
+          "model_id": {
+            "$ref": "#/components/schemas/ModelId"
+          }
+        },
+        "required": [
+          "name",
+          "dataset_id",
+          "sql",
+          "max_rows",
+          "chart",
+          "shared_roles",
+          "model_id"
+        ],
+        "additionalProperties": false
+      },
+      "SavedViewUpdate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "dataset_id": {
+            "$ref": "#/components/schemas/DatasetId"
+          },
+          "sql": {
+            "type": "string",
+            "minLength": 1,
+            "x-max-utf8-bytes": 16384
+          },
+          "max_rows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "chart": {
+            "$ref": "#/components/schemas/SavedChart"
+          },
+          "shared_roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "viewer",
+                "analyst",
+                "admin"
+              ]
+            },
+            "maxItems": 3,
+            "uniqueItems": true
+          },
+          "model_id": {
+            "$ref": "#/components/schemas/ModelId"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "name",
+          "dataset_id",
+          "sql",
+          "max_rows",
+          "chart",
+          "shared_roles",
+          "model_id",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "SavedViewDelete": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "SavedViewRun": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "model_id": {
+            "$ref": "#/components/schemas/ModelId"
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "revision",
+          "model_id"
+        ],
+        "additionalProperties": false
+      },
+      "SavedView": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "dataset_id": {
+            "$ref": "#/components/schemas/DatasetId"
+          },
+          "sql": {
+            "type": "string",
+            "minLength": 1,
+            "x-max-utf8-bytes": 16384
+          },
+          "max_rows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "chart": {
+            "$ref": "#/components/schemas/SavedChart"
+          },
+          "shared_roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "viewer",
+                "analyst",
+                "admin"
+              ]
+            },
+            "maxItems": 3,
+            "uniqueItems": true
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "is_owner": {
+            "type": "boolean"
+          },
+          "can_edit": {
+            "type": "boolean"
+          },
+          "can_delete": {
+            "type": "boolean"
+          },
+          "created_model_id": {
+            "$ref": "#/components/schemas/ModelId"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "name",
+          "dataset_id",
+          "sql",
+          "max_rows",
+          "chart",
+          "shared_roles",
+          "id",
+          "revision",
+          "is_owner",
+          "can_edit",
+          "can_delete",
+          "created_model_id",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "SavedViewEnvelope": {
+        "type": "object",
+        "properties": {
+          "view": {
+            "$ref": "#/components/schemas/SavedView"
+          }
+        },
+        "required": [
+          "view"
+        ],
+        "additionalProperties": false
+      },
+      "SavedViewList": {
+        "type": "object",
+        "properties": {
+          "views": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SavedView"
+            },
+            "maxItems": 50
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "can_create": {
+            "type": "boolean"
+          },
+          "can_share": {
+            "type": "boolean"
+          },
+          "max_owned": {
+            "const": 50
+          }
+        },
+        "required": [
+          "views",
+          "next_cursor",
+          "can_create",
+          "can_share",
+          "max_owned"
+        ],
+        "additionalProperties": false
+      },
+      "SavedViewResult": {
+        "type": "object",
+        "properties": {
+          "view": {
+            "$ref": "#/components/schemas/SavedView"
+          },
+          "result": {
+            "$ref": "#/components/schemas/QueryResponse"
+          }
+        },
+        "required": [
+          "view",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      "SavedViewDeleted": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "const": true
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "additionalProperties": false
       }
     },
     "responses": {

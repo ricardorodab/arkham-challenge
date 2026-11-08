@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
 
@@ -155,6 +156,44 @@ class Acceptance:
 
     def state(self):
         return self.fixture("state")
+
+    def observe_worker(self, browser, job, *, failure=False):
+        """Poll real persisted progress over HTTP during an offline separate worker."""
+        observed = []
+        deadline = time.monotonic() + 90
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            worker = pool.submit(self.fixture, "worker", worker=True, failure=failure)
+            while not worker.done():
+                current = browser.request(job["status_url"])
+                observed.append(current)
+                require(time.monotonic() < deadline, "Synthetic progress observation timed out.")
+                time.sleep(0.1)
+            worker.result()
+        current = browser.request(job["status_url"])
+        observed.append(current)
+        require(
+            any(item["status"] == "running" and item["progress"] for item in observed),
+            "No persisted running progress was visible over HTTP.",
+        )
+        if not failure:
+            stages = {item["progress"].get("stage") for item in observed}
+            require(
+                {"extracting", "model_fleet", "exporting_model", "publishing"} <= stages,
+                "Extraction, long model phases, export and publication must report real stages.",
+            )
+            require(
+                any(item["progress"].get("total") == 10 for item in observed),
+                "Fixed model-export progress was not observable.",
+            )
+        require(
+            all(
+                item["progress"].get("stage") == "exporting_model"
+                or "total" not in item["progress"]
+                for item in observed
+            ),
+            "Unknown source totals must not become an overall percentage.",
+        )
+        return current
 
     def prepare_fixture(self):
         """Copy the public fixture through Docker's API, without a host bind mount."""
@@ -347,6 +386,41 @@ class Acceptance:
             Decimal(fleet["rows"][-1][1]) == Decimal(expected_percent),
             "Synthetic refresh value is incorrect.",
         )
+        plan = {
+            "model_id": model_id,
+            "facility_id": "001",
+            "sort": "outage_mw",
+            "direction": "desc",
+            "limit": 2,
+            "filters": [{"column": "outage_mw", "op": "not_null"}],
+        }
+        page = browser.request("/api/v1/data/generator_daily", plan)
+        require(
+            page["returned_rows"] == 2
+            and page["next_cursor"]
+            and page["query"]["order"][0] == {"column": "outage_mw", "direction": "desc"},
+            "Structured native browse did not apply ordering and a bounded seek page.",
+        )
+        names = [column["name"] for column in page["columns"]]
+        require(
+            all(row[names.index("facility_id")] == "001" for row in page["rows"]),
+            "Structured native browse did not apply exact ID filtering.",
+        )
+        following = browser.request(
+            "/api/v1/data/generator_daily", {**plan, "cursor": page["next_cursor"]}
+        )
+
+        def keys(rows):
+            return {(row[0], row[1], row[2]) for row in rows}
+
+        require(
+            keys(page["rows"]).isdisjoint(keys(following["rows"])),
+            "Structured seek repeated prior observations.",
+        )
+        literal = browser.request(
+            "/api/v1/data/generator_daily", {"search": "%_", "model_id": model_id}
+        )
+        require(literal["rows"] == [], "Structured search interpreted literal wildcard text.")
 
     def run(self):
         self.command(["compose", "version"])
@@ -489,10 +563,15 @@ class Acceptance:
             admin.request(job["status_url"])["status"] == "queued",
             "HTTP enqueue unexpectedly consumed a refresh job.",
         )
-        self.fixture("worker", worker=True)
-        succeeded = admin.request(job["status_url"])
+        succeeded = self.observe_worker(admin, job)
         require(
             succeeded["status"] == "succeeded", "Synthetic worker did not complete the queued job."
+        )
+        require(
+            succeeded["progress"]["stage"] == "completed"
+            and succeeded["progress"]["rows_received"] == 21
+            and succeeded["progress"]["pages_fetched"] == 3,
+            "The completed job lost its actual pipeline counters.",
         )
         refreshed = self.state()
         self.check_publication(refreshed)
@@ -506,8 +585,7 @@ class Acceptance:
         )
         self.query(clients["analyst"], refreshed["model_id"], "30")
         failed_job = admin.request("/api/v1/refresh", {"mode": "recent"}, expected=202)
-        self.fixture("worker", worker=True, failure=True)
-        failed = admin.request(failed_job["status_url"])
+        failed = self.observe_worker(admin, failed_job, failure=True)
         require(
             failed["status"] == "failed" and failed["error_code"] == "upstream_refresh_failed",
             "Synthetic upstream failure was not recorded safely.",

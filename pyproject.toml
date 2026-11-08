@@ -19,7 +19,7 @@ outage-explorer = "outage_explorer.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-outage_explorer = ["sql/*.sql", "contracts/*.json", "sandbox/*", "service/*.json", "frontend/templates/outage_explorer/*.html", "frontend/static/outage_explorer/*"]
+outage_explorer = ["analytics/sql/*.sql", "analytics/contracts/*.json", "sandbox/*", "service/*.json", "frontend/templates/outage_explorer/*.html", "frontend/static/outage_explorer/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

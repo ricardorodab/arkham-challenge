@@ -12,11 +12,11 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from outage_explorer import pipeline
-from outage_explorer.domain import ROUTES, UNITS, DataValidationError
-from outage_explorer.eia import EIAClientError, RouteMetadata
-from outage_explorer.pipeline import IngestConfig, ingest
-from outage_explorer.storage import Catalog, StorageError, writer_lock
+from outage_explorer.data import pipeline
+from outage_explorer.data.domain import ROUTES, UNITS, DataValidationError
+from outage_explorer.data.eia import EIAClientError, RouteMetadata
+from outage_explorer.data.pipeline import IngestConfig, ingest
+from outage_explorer.data.storage import Catalog, StorageError, writer_lock
 from tests.helpers import SECRET, FakeClient, source_rows
 
 

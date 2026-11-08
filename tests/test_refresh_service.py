@@ -17,7 +17,8 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError, close_old_connections, transaction
 from django.utils import timezone
 
-from outage_explorer.eia import EIAClientError
+from outage_explorer.data.eia import EIAClientError
+from outage_explorer.data.storage import Catalog
 from outage_explorer.service import refresh
 from outage_explorer.service.models import Persona, QueryCacheEntry, RefreshJob
 from outage_explorer.service.refresh import (
@@ -29,7 +30,6 @@ from outage_explorer.service.refresh import (
     WorkerAlreadyRunning,
     enqueue_refresh,
 )
-from outage_explorer.storage import Catalog
 from tests.helpers import FakeClient
 
 
@@ -225,6 +225,14 @@ def test_worker_publishes_source_and_model_together_and_preserves_both_on_failur
         worker.run_once()
         first.refresh_from_db()
         assert first.status == "succeeded"
+        assert first.progress["stage"] == "completed"
+        assert first.progress["rows_received"] == 21
+        assert first.progress["pages_fetched"] == 3
+        assert first.progress["routes"] == {
+            "national": {"rows_received": 3, "pages_fetched": 1},
+            "facility": {"rows_received": 6, "pages_fetched": 1},
+            "generator": {"rows_received": 12, "pages_fetched": 1},
+        }
         with Catalog(settings.OUTAGE_DATA_DIR) as catalog:
             source_id = catalog.current().id
             model_id = catalog.current_model().id
@@ -275,8 +283,8 @@ def test_worker_retains_its_completed_pair_when_another_publication_advances(
     original_ingest = refresh.ingest
     completed = {}
 
-    def publish_then_advance(config, client):
-        own = original_ingest(config, client)
+    def publish_then_advance(config, client, **kwargs):
+        own = original_ingest(config, client, **kwargs)
         with Catalog(settings.OUTAGE_DATA_DIR) as catalog:
             completed.update(snapshot_id=own["snapshot_id"], model_id=catalog.current_model().id)
         original_ingest(config, FakeClient())

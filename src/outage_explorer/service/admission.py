@@ -15,7 +15,7 @@ from contextvars import ContextVar
 
 from django.conf import settings
 
-from outage_explorer.storage import StorageError, writer_lock
+from outage_explorer.data.storage import StorageError, writer_lock
 
 from .errors import APIError
 

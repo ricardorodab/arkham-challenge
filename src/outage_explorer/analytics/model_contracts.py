@@ -332,6 +332,8 @@ def contract_profile(version: int) -> dict[str, Any]:
         }
     if version == 1:
         return json.loads(
-            files("outage_explorer").joinpath("contracts/model-v1.json").read_text(encoding="utf-8")
+            files("outage_explorer.analytics")
+            .joinpath("contracts/model-v1.json")
+            .read_text(encoding="utf-8")
         )
     raise ValueError("Unsupported analytical model version.")

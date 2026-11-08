@@ -12,11 +12,11 @@ from django.contrib.auth import get_user_model
 from django.contrib.sessions.models import Session
 from django.test import Client
 
+from outage_explorer.data.pipeline import IngestConfig, ingest
+from outage_explorer.data.storage import Catalog
 from outage_explorer.frontend import views
-from outage_explorer.pipeline import IngestConfig, ingest
 from outage_explorer.service import api_services
 from outage_explorer.service.models import Persona
-from outage_explorer.storage import Catalog
 
 from .helpers import FakeClient
 
@@ -220,6 +220,12 @@ def test_html_routes_accept_get_only(no_analytical_access, path):
         "table.js",
         "chart.js",
         "sql.js",
+        "sql_examples.js",
+        "sql_editor.bundle.js",
+        "sql_editor.LICENSE.txt",
+        "query_chart.js",
+        "query_results.js",
+        "saved_views.js",
         "refresh.js",
         "overview.js",
         "explore.js",
@@ -272,3 +278,23 @@ def test_api_response_policy_remains_json_only_and_private():
     assert response.status_code == 200 and response["Content-Type"] == "application/json"
     assert response["Content-Security-Policy"] == "default-src 'none'; frame-ancestors 'none'"
     assert response["Cache-Control"] == "no-store"
+
+
+def test_editor_styles_use_a_fresh_response_nonce_without_authorizing_inline_scripts(
+    authenticated_client,
+    no_analytical_access,
+):
+    """Bind editor-generated CSS to this private HTML response and retain script restrictions."""
+    client, _ = authenticated_client("analyst")
+    nonces = []
+    for _ in range(2):
+        response = client.get("/")
+        html = response.content.decode()
+        nonce = re.search(r'data-style-nonce="([A-Za-z0-9_-]{32})"', html).group(1)
+        csp = response["Content-Security-Policy"]
+        assert f"style-src 'self' 'nonce-{nonce}'" in csp
+        assert "script-src 'self';" in csp
+        assert "unsafe-inline" not in csp and "unsafe-eval" not in csp
+        assert response["Cache-Control"] == "no-store"
+        nonces.append(nonce)
+    assert nonces[0] != nonces[1]

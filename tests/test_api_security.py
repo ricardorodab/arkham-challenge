@@ -9,8 +9,8 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.test import Client
 
-from outage_explorer.model_contracts import DATASETS
-from outage_explorer.query_sandbox import SandboxError
+from outage_explorer.analytics.model_contracts import DATASETS
+from outage_explorer.query.query_sandbox import SandboxError
 from outage_explorer.service import api_services
 from outage_explorer.service.models import Persona, QueryCacheEntry, RefreshJob
 from tests.conftest import API_PASSWORD
@@ -36,6 +36,7 @@ def no_analytical_io(monkeypatch):
 
     monkeypatch.setattr(api_services, "_bundle", forbidden)
     monkeypatch.setattr(api_services, "_run", forbidden)
+    monkeypatch.setattr(api_services, "_run_browse", forbidden)
 
 
 def post(client, payload, path=QUERY, **headers):
@@ -354,7 +355,7 @@ def test_permissions_are_rechecked_before_result_or_cache_publication(
 def test_preview_cursor_is_bound_to_its_owner_and_filters(authenticated_client, monkeypatch):
     first, _ = authenticated_client("analyst")
     second, _ = authenticated_client("analyst2")
-    monkeypatch.setattr(api_services, "_run", Mock(return_value=RESULT))
+    monkeypatch.setattr(api_services, "_run_browse", Mock(return_value=RESULT))
     response = first.get("/api/v1/data/fleet_daily?limit=1")
     assert response.status_code == 200, response.content
     cursor = response.json()["next_cursor"]

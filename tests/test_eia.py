@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from outage_explorer.eia import REDACTED, EIAClient, EIAClientError, sanitize
+from outage_explorer.data.eia import REDACTED, EIAClient, EIAClientError, sanitize
 
 FIXTURES = Path(__file__).parent / "fixtures"
 KEY = "TEST_ONLY_NEVER_A_REAL_EIA_KEY"

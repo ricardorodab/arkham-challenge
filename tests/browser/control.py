@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from unittest.mock import patch
 
 from .fixture_support import configure, publish, reset
 
@@ -14,12 +15,15 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("reset")
     commands.add_parser("unpublish")
+    commands.add_parser("large-explore")
+    commands.add_parser("new-publication")
     revoke = commands.add_parser("revoke")
     revoke.add_argument("username", choices=("viewer", "analyst", "admin"))
     revoke.add_argument("--kind", choices=("sessions", "inactive", "viewer"), default="sessions")
     worker = commands.add_parser("worker")
     worker.add_argument("--outcome", choices=("success", "failure"), default="success")
     worker.add_argument("--delay", type=float, default=2.0)
+    worker.add_argument("--progress-delay", type=float, default=0.0)
     args = parser.parse_args()
     configure()
     import django
@@ -31,6 +35,12 @@ def main() -> None:
     logging.getLogger("outage_explorer.http").setLevel(logging.WARNING)
     if args.command == "reset":
         reset()
+    elif args.command == "large-explore":
+        # The run-ID confined fixture has 12,000 generator records. Its sentinel
+        # ID 01999 is beyond the first 1,000 primary-key ordered rows.
+        print(json.dumps(publish(generators=2000)))
+    elif args.command == "new-publication":
+        print(json.dumps(publish(revision=1)))
     elif args.command == "unpublish":
         # configure() confines this command to the run-ID browser fixture. Keep
         # immutable bundles intact; only clear its two current publication refs.
@@ -59,11 +69,23 @@ def main() -> None:
     else:
         from outage_explorer.service.refresh import RefreshWorker
 
-        def execute(mode):
+        def execute(mode, *, progress):
             time.sleep(args.delay)
-            return publish(revision=1, fail=args.outcome == "failure", mode=mode)
+            last_stage = None
 
-        with RefreshWorker(executor=execute) as consumer:
+            def report(event):
+                nonlocal last_stage
+                progress(event)
+                if event.stage != last_stage or event.stage == "exporting_model":
+                    last_stage = event.stage
+                    time.sleep(args.progress_delay)
+
+            return publish(revision=1, fail=args.outcome == "failure", mode=mode, progress=report)
+
+        with (
+            patch("outage_explorer.service.refresh.perform_ingest", execute),
+            RefreshWorker() as consumer,
+        ):
             job = consumer.run_once()
             print(
                 json.dumps(

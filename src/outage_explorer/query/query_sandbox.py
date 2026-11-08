@@ -35,7 +35,7 @@ MAX_INPUT_BYTES = 64 * 1024 * 1024
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_ROWS = 1001  # one extra row lets the API report truncation at its 1000 cap
 MEMORY_BYTES = 512 * 1024 * 1024
-ASSETS = Path(__file__).resolve().parent / "sandbox"
+ASSETS = Path(__file__).resolve().parents[1] / "sandbox"
 EXTENSION_SHA256 = "4845705bbd69fc9ad52878d96a505c73cae4a6c509822079cc2413e5eb437f95"
 _MESSAGES = {
     "sandbox_unavailable": "The isolated query runtime is unavailable.",
@@ -77,7 +77,7 @@ def _runtime() -> tuple[str, Path]:
     candidates = (
         [Path(configured)]
         if configured
-        else [Path.cwd() / "node_modules", Path(__file__).resolve().parents[2] / "node_modules"]
+        else [Path.cwd() / "node_modules", Path(__file__).resolve().parents[3] / "node_modules"]
     )
     if not node:
         raise SandboxError("sandbox_unavailable")

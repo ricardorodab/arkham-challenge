@@ -9,10 +9,10 @@ import duckdb
 import pytest
 import sqlglot
 
-from outage_explorer import sql_policy
-from outage_explorer.domain import identifier
-from outage_explorer.model_contracts import DATASETS
-from outage_explorer.sql_policy import SQLPolicyError, referenced_dataset_ids, validate_sql
+from outage_explorer.analytics.model_contracts import DATASETS
+from outage_explorer.data.domain import identifier
+from outage_explorer.query import sql_policy
+from outage_explorer.query.sql_policy import SQLPolicyError, referenced_dataset_ids, validate_sql
 
 
 @pytest.fixture

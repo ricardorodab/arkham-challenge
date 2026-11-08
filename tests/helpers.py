@@ -10,8 +10,8 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import date, timedelta
 
-from outage_explorer.domain import ROUTES, UNITS
-from outage_explorer.eia import EIAClientError, Page, RouteMetadata, sanitize
+from outage_explorer.data.domain import ROUTES, UNITS
+from outage_explorer.data.eia import EIAClientError, Page, RouteMetadata, sanitize
 
 SECRET = "test-secret-canary-not-a-real-api-key"
 

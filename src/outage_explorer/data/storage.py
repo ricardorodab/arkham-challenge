@@ -22,10 +22,10 @@ from typing import TYPE_CHECKING, Any
 
 import duckdb
 
-from .domain import ROUTES, SCHEMA_VERSION, canonical_json, identifier
+from outage_explorer.data.domain import ROUTES, SCHEMA_VERSION, canonical_json, identifier
 
 if TYPE_CHECKING:
-    from .modeling import ModelBundle
+    from outage_explorer.analytics.modeling import ModelBundle
 
 
 class StorageError(Exception):
@@ -605,7 +605,7 @@ class Catalog:
         registered source ID. Return ``ModelBundle`` without scanning dataset files;
         full contract/content validation belongs to ``verify_model``.
         """
-        from .modeling import ModelBundle
+        from outage_explorer.analytics.modeling import ModelBundle
 
         model_id = _safe_id(row["model_id"])
         path = self.root / "models" / model_id
@@ -712,7 +712,7 @@ class Catalog:
         Raise ``StorageError`` for unsafe paths, source mismatch or corrupt content.
         This performs analytical file reads but does not advance catalog references.
         """
-        from .model_store import verify_model
+        from outage_explorer.analytics.model_store import verify_model
 
         expected = self.root / "models" / _safe_id(model.id)
         if model.path.absolute() != expected or expected.resolve() != expected:

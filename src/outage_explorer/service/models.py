@@ -79,6 +79,7 @@ class RefreshJob(models.Model):
     error_code = models.CharField(max_length=64, blank=True, default="")
     public_message = models.CharField(max_length=240, default="Refresh is queued.")
     result = models.JSONField(default=dict, blank=True)
+    progress = models.JSONField(default=dict, blank=True)
 
     class Meta:
         """Index job history and enforce active-job, owner/key and enum constraints."""
@@ -143,4 +144,45 @@ class QueryCacheEntry(models.Model):
         indexes = [
             models.Index(fields=["owner", "expires_at"], name="svc_cache_owner_exp_idx"),
             models.Index(fields=["expires_at"], name="svc_cache_expiry_idx"),
+        ]
+
+
+class SavedView(models.Model):
+    """Persist a named SQL definition and presentation settings without result rows.
+
+    The current reader's dataset policy is always authoritative. Audience flags grant
+    access to this definition, never access to otherwise forbidden analytical data.
+    created_model_id records provenance; executions use the reader's adopted model.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="saved_views"
+    )
+    name = models.CharField(max_length=100)
+    dataset_id = models.CharField(max_length=64)
+    sql = models.TextField()
+    max_rows = models.PositiveSmallIntegerField(default=1000)
+    chart = models.JSONField(default=dict)
+    share_viewer = models.BooleanField(default=False)
+    share_analyst = models.BooleanField(default=False)
+    share_admin = models.BooleanField(default=False)
+    revision = models.PositiveIntegerField(default=1)
+    created_model_id = models.CharField(max_length=32)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        """Support owner listing and bounded row/revision invariants in SQLite."""
+
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["owner", "created_at"], name="svc_saved_owner_created_idx"),
+            models.Index(fields=["dataset_id", "created_at"], name="svc_saved_dataset_time_idx"),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(max_rows__gte=1, max_rows__lte=1000), name="svc_saved_valid_row_cap"
+            ),
+            models.CheckConstraint(condition=Q(revision__gte=1), name="svc_saved_valid_revision"),
         ]

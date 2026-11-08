@@ -20,7 +20,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ErrorLevel, SqlglotError
 
-from .model_contracts import DATASETS
+from outage_explorer.analytics.model_contracts import DATASETS
 
 MAX_SQL_BYTES = 16 * 1024
 MAX_TOKENS = 2048

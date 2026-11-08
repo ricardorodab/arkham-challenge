@@ -10,13 +10,23 @@
     "@duckdb/duckdb-wasm": "1.33.1-dev57.0"
   },
   "devDependencies": {
+    "@codemirror/autocomplete": "6.20.4",
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/lang-sql": "6.10.0",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.15",
+    "@lezer/highlight": "1.2.5",
     "@playwright/test": "1.64.1",
     "axe-core": "4.14.0",
+    "esbuild": "0.28.2",
     "prettier": "3.6.2"
   },
   "type": "module",
   "scripts": {
+    "build:editor": "node scripts/build-sql-editor.mjs",
+    "check:editor": "node scripts/build-sql-editor.mjs --check",
     "test:browser": "playwright test",
-    "test:unit": "node --test tests/frontend/logic.test.mjs"
+    "test:unit": "node --test tests/frontend/*.test.mjs"
   }
 }

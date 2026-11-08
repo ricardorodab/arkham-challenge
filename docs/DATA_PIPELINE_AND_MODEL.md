@@ -36,7 +36,7 @@ The transformation code is described as “pure” in the sense that it receives
 
 ## Preserve source identity and exact values
 
-[domain.py](../src/outage_explorer/domain.py) defines the source contract:
+[domain.py](../src/outage_explorer/data/domain.py) defines the source contract:
 
 | Source grain | EIA route | Natural key |
 | --- | --- | --- |
@@ -54,7 +54,7 @@ Each row has a SHA-256 hash of that canonical, sanitized source JSON. Identical 
 
 ## Fetch complete pages without trusting a misleading total
 
-[eia.py](../src/outage_explorer/eia.py) fixes the API host and supported routes; it is not a general-purpose URL fetcher. Metadata validation checks advertised start/end dates, daily frequency, required measures/units and entity facets before data extraction starts.
+[eia.py](../src/outage_explorer/data/eia.py) fixes the API host and supported routes; it is not a general-purpose URL fetcher. Metadata validation checks advertised start/end dates, daily frequency, required measures/units and entity facets before data extraction starts.
 
 The client requests at most **5,000 rows per page**, sorted ascending by every natural-key column. It advances the offset by the actual returned row count, continues after short pages, and requires an empty terminal response. The provider's `response.total` is provenance rather than a loop bound. Repeated page hashes and repeated first/last-key boundaries are errors; a maximum-page safety limit prevents an endless loop. The observed facility-total discrepancy behind this choice is recorded in [data findings](FINDINGS.md#what-the-november-inspection-confirmed).
 
@@ -66,7 +66,7 @@ The standard-library HTTP client keeps dependencies small, at the cost of implem
 
 ## Replace the correction window, then rebuild the complete model
 
-[pipeline.py](../src/outage_explorer/pipeline.py) calculates route-specific bounds. A first `recent` ingest backfills from metadata's earliest date. A later `recent` ingest starts at that route's watermark minus **29 days**, giving a **30-day overlap**. An optional requested end is bounded by the route's metadata end. A regression in the provider's advertised coverage fails rather than silently shrinking stored history.
+[pipeline.py](../src/outage_explorer/data/pipeline.py) calculates route-specific bounds. A first `recent` ingest backfills from metadata's earliest date. A later `recent` ingest starts at that route's watermark minus **29 days**, giving a **30-day overlap**. An optional requested end is bounded by the route's metadata end. A regression in the provider's advertised coverage fails rather than silently shrinking stored history.
 
 An unbounded `full` ingest replaces all source history. `recent` and bounded `full` refreshes retain prior rows outside the requested interval and replace the **entire interval** with newly extracted observations. This handles additions, revisions and deletions rather than merely appending. If rows would be deleted, a second independently paginated extraction must produce the same ordered logical digest before acceptance. Two matching extractions can still share an upstream omission; confirmation is a consistency safeguard rather than proof of upstream completeness.
 
@@ -76,7 +76,7 @@ This is **incremental extraction**, not incremental analytical materialization. 
 
 ## Make publication and crash recovery explicit
 
-[storage.py](../src/outage_explorer/storage.py) uses a nonblocking operating-system writer lock: Windows byte-range locking or POSIX `flock`. Process death releases ownership. The persistent lock file can remain, so its existence alone does not mean another writer owns the lock. Equivalent POSIX runtime acceptance remains unverified in the recorded delivery.
+[storage.py](../src/outage_explorer/data/storage.py) uses a nonblocking operating-system writer lock: Windows byte-range locking or POSIX `flock`. Process death releases ownership. The persistent lock file can remain, so its existence alone does not mean another writer owns the lock. Equivalent POSIX runtime acceptance remains unverified in the recorded delivery.
 
 The data catalog enables SQLite WAL mode, `synchronous=FULL` and foreign keys. It stores runs, raw snapshots, model builds, model snapshots and separate singleton source/model publication references; a unique active-run index prevents concurrent running records. Catalog initialization also creates `.staging`, `.model-staging`, `snapshots`, `models` and `runs`. Empty staging directories are expected when no candidate is being prepared; their existence is workspace structure, not missing published data.
 
@@ -215,7 +215,7 @@ All model MW gaps are **child aggregate minus published parent**. Absolute-gap c
 | `pct_comparison_status` | `exact`; `within_rounding_tolerance` at ≤0.005 percentage points; `mismatch`; `undefined` |
 | Weighted reported percentage | `SUM(child_capacity_mw * child_reported_pct) / SUM(child_capacity_mw)`; requires every capacity/percentage and a positive denominator; quantized to 9 places with `Decimal`, precision 28, `ROUND_HALF_UP` |
 
-Tolerances are review policies, not permission to alter source values; exact nonzero gaps remain available. The independent [reconciliation SQL](../src/outage_explorer/sql/reconciliation.sql) tests rounding with scaled integers before division. A rounding-compatible percentage difference need not imply an MW mismatch. Decimal facts and totals avoid binary floating-point classification errors.
+Tolerances are review policies, not permission to alter source values; exact nonzero gaps remain available. The independent [reconciliation SQL](../src/outage_explorer/analytics/sql/reconciliation.sql) tests rounding with scaled integers before division. A rounding-compatible percentage difference need not imply an MW mismatch. Decimal facts and totals avoid binary floating-point classification errors.
 
 Quality events are review warnings and never establish a physical cause:
 
@@ -252,7 +252,7 @@ Ingest builds and verifies a model for its candidate source before publication. 
 
 Column types, identity, metric semantics and source-unit changes require an explicit model-version decision. Missing required fields, incompatible types or units and precision loss fail validation; additive source fields are preserved and tracked.
 
-Model version **2** corrects catalog unit labels: absolute percentage values use `percent`, while differences use `percentage points`. The numeric observations, schemas and fleet metric formula are unchanged. The development version 1 contract is frozen in [model-v1.json](../src/outage_explorer/contracts/model-v1.json); its immutable artifacts remain readable with an explicit warning about the old metadata labels. Historical metadata is preserved under its original contract rather than rewritten as the current contract. The fleet metric definition stays at version **1** because its numerical meaning has not changed.
+Model version **2** corrects catalog unit labels: absolute percentage values use `percent`, while differences use `percentage points`. The numeric observations, schemas and fleet metric formula are unchanged. The development version 1 contract is frozen in [model-v1.json](../src/outage_explorer/analytics/contracts/model-v1.json); its immutable artifacts remain readable with an explicit warning about the old metadata labels. Historical metadata is preserved under its original contract rather than rewritten as the current contract. The fleet metric definition stays at version **1** because its numerical meaning has not changed.
 
 ## What the current design costs, and when to change it
 
@@ -295,9 +295,9 @@ There is no authoritative dated expected-reactor inventory, upstream snapshot tr
 
 ## Verify a bundle, and understand what verification cannot prove
 
-The executable model contract is [model_contracts.py](../src/outage_explorer/model_contracts.py); transformations are in [modeling.py](../src/outage_explorer/modeling.py). The model manifest binds the exact contract, source files, checksums and metric version. Dates use ISO encoding and Decimal values fixed-point encoding for logical hashes.
+The executable model contract is [model_contracts.py](../src/outage_explorer/analytics/model_contracts.py); transformations are in [modeling.py](../src/outage_explorer/analytics/modeling.py). The model manifest binds the exact contract, source files, checksums and metric version. Dates use ISO encoding and Decimal values fixed-point encoding for logical hashes.
 
-`verify_model` in [model_store.py](../src/outage_explorer/model_store.py) checks the supported/frozen contract version, manifest identity, exact dataset set, exact schemas, semantic catalog metadata, physical and ordered logical hashes, PK/FK validity, source row-count bindings, and an independent recomputation of the official fleet metric. It does **not** independently rederive every reconciliation and quality-event rule from raw data. Those algorithms also need independent queries and meaningful tests. Valid hashes can describe an internally consistent bug; they do not prove upstream truth.
+`verify_model` in [model_store.py](../src/outage_explorer/analytics/model_store.py) checks the supported/frozen contract version, manifest identity, exact dataset set, exact schemas, semantic catalog metadata, physical and ordered logical hashes, PK/FK validity, source row-count bindings, and an independent recomputation of the official fleet metric. It does **not** independently rederive every reconciliation and quality-event rule from raw data. Those algorithms also need independent queries and meaningful tests. Valid hashes can describe an internally consistent bug; they do not prove upstream truth.
 
 `register_views` accepts only caller-approved datasets, resolves exact manifest filenames and verifies file checksums. Its `open_model_connection` is for trusted application SQL. Authorization and hostile SQL containment are separate concerns described in [query security](QUERY_SECURITY.md).
 
@@ -336,7 +336,7 @@ From the repository root, with the environment already installed as explained in
 
 The explicit historical model ID reproduces the retained [findings](FINDINGS.md) when that bundle is available. Omitting it uses the currently published model. A fresh clone has no local data/key; ingestion produces different IDs and can observe later source revisions. The report's `work/` output path is scratch output created by a future command. [Engineering notes](NOTES.md) describe the recorded verification scope; private verification receipts are not required inputs; the selected model bundle and its referenced data must be present.
 
-[reports.py](../src/outage_explorer/reports.py) loads **18 named application-owned statements** from [reconciliation.sql](../src/outage_explorer/sql/reconciliation.sql) and [part2_findings.sql](../src/outage_explorer/sql/part2_findings.sql). It validates that each is one SELECT and uses only known bound date parameters. Reconciliation requires at least **30 inclusive calendar days**. Historical anomaly probes intentionally use their stated dates; supplied start/end do not filter every query. Results include query hashes, columns, rows, counts, model/source provenance and exact Decimal values serialized as strings.
+[reports.py](../src/outage_explorer/analytics/reports.py) loads **18 named application-owned statements** from [reconciliation.sql](../src/outage_explorer/analytics/sql/reconciliation.sql) and [part2_findings.sql](../src/outage_explorer/analytics/sql/part2_findings.sql). It validates that each is one SELECT and uses only known bound date parameters. Reconciliation requires at least **30 inclusive calendar days**. Historical anomaly probes intentionally use their stated dates; supplied start/end do not filter every query. Results include query hashes, columns, rows, counts, model/source provenance and exact Decimal values serialized as strings.
 
 The reconciliation asset contains calendar-aware daily national comparisons, daily facility comparisons, full-history summaries, exact percentage-rounding proof, a concrete percentage-gap example and actual discrepancy queries. The rounding proof uses scaled-integer cross-products before division, avoiding binary-floating-point ambiguity. Its identity is degenerate at zero capacity, so it cannot validate a reported percentage there. These are trusted report queries, separate from arbitrary user SQL isolation.
 
@@ -347,13 +347,13 @@ Read the functions in this order when tracing a correction or crash. Function na
 | Step | Code |
 | --- | --- |
 | CLI command definitions/dispatch | [cli.py](../src/outage_explorer/cli.py); ingest dispatch constructs `EIAClient` |
-| Source types and row contract | [domain.py](../src/outage_explorer/domain.py): `_measure`, `validate_row` |
-| Metadata, pages and retry policy | [eia.py](../src/outage_explorer/eia.py): `fetch_metadata`, `iter_pages`, `_request_json`, `_acquire_request_slot`, `_one_request`, `_NoRedirect`, `sanitize` |
-| Bounds, extraction and replacement | [pipeline.py](../src/outage_explorer/pipeline.py): `_bounds`, `_extract`, `_route`, `ingest` |
-| Immutable model preparation | [model_store.py](../src/outage_explorer/model_store.py): `prepare_model`, `verify_model` |
-| Model computations | [modeling.py](../src/outage_explorer/modeling.py): `logical_digest`, `_facts_and_dimensions`, `_fleet`, `_aggregates`, `_comparison`, `_reconciliation`, `_events`, `validate_model_tables`, `build_model` |
-| Publication/recovery/reader resolution | [storage.py](../src/outage_explorer/storage.py): `writer_lock`, `Catalog.publish`, `publish_model`, `recover_interrupted`, `fail_run`, `current_model` |
-| Trusted evidence reporting | [reports.py](../src/outage_explorer/reports.py): `report_queries`, `findings_report` |
+| Source types and row contract | [domain.py](../src/outage_explorer/data/domain.py): `_measure`, `validate_row` |
+| Metadata, pages and retry policy | [eia.py](../src/outage_explorer/data/eia.py): `fetch_metadata`, `iter_pages`, `_request_json`, `_acquire_request_slot`, `_one_request`, `_NoRedirect`, `sanitize` |
+| Bounds, extraction and replacement | [pipeline.py](../src/outage_explorer/data/pipeline.py): `_bounds`, `_extract`, `_route`, `ingest` |
+| Immutable model preparation | [model_store.py](../src/outage_explorer/analytics/model_store.py): `prepare_model`, `verify_model` |
+| Model computations | [modeling.py](../src/outage_explorer/analytics/modeling.py): `logical_digest`, `_facts_and_dimensions`, `_fleet`, `_aggregates`, `_comparison`, `_reconciliation`, `_events`, `validate_model_tables`, `build_model` |
+| Publication/recovery/reader resolution | [storage.py](../src/outage_explorer/data/storage.py): `writer_lock`, `Catalog.publish`, `publish_model`, `recover_interrupted`, `fail_run`, `current_model` |
+| Trusted evidence reporting | [reports.py](../src/outage_explorer/analytics/reports.py): `report_queries`, `findings_report` |
 
 ## Complete column reference
 

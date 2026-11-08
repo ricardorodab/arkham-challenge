@@ -32,6 +32,12 @@ ASSETS = {
     "table.js": "text/javascript; charset=utf-8",
     "chart.js": "text/javascript; charset=utf-8",
     "sql.js": "text/javascript; charset=utf-8",
+    "sql_examples.js": "text/javascript; charset=utf-8",
+    "sql_editor.bundle.js": "text/javascript; charset=utf-8",
+    "sql_editor.LICENSE.txt": "text/plain; charset=utf-8",
+    "query_chart.js": "text/javascript; charset=utf-8",
+    "query_results.js": "text/javascript; charset=utf-8",
+    "saved_views.js": "text/javascript; charset=utf-8",
     "refresh.js": "text/javascript; charset=utf-8",
     "overview.js": "text/javascript; charset=utf-8",
     "explore.js": "text/javascript; charset=utf-8",
@@ -76,6 +82,7 @@ def home(request):
         return _login_redirect()
     scope = frontend_session_scope(actor)
     context = {
+        "sql_style_nonce": getattr(request, "outage_style_nonce", ""),
         "username": username,
         "persona": actor.role,
         "is_viewer": actor.role == "viewer",

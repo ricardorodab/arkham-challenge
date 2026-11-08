@@ -12,12 +12,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from outage_explorer.query_sandbox import _environment
+from outage_explorer.data.storage import writer_lock
+from outage_explorer.query.query_sandbox import _environment
+from outage_explorer.query.sql_compiler import Compilation
+from outage_explorer.query.sql_policy import ValidatedQuery
 from outage_explorer.service import admission, api_services
 from outage_explorer.service.errors import APIError
-from outage_explorer.sql_compiler import Compilation
-from outage_explorer.sql_policy import ValidatedQuery
-from outage_explorer.storage import writer_lock
 
 
 @pytest.fixture

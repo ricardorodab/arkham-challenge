@@ -14,9 +14,9 @@ function control(...args) {
   });
 }
 
-function startRefreshWorker(outcome = 'success', delay = 2) {
+function startRefreshWorker(outcome = 'success', delay = 2, progressDelay = 0) {
   const child = spawn(PYTHON, ['-m', 'tests.browser.control', 'worker',
-    '--outcome', outcome, '--delay', String(delay)], {
+    '--outcome', outcome, '--delay', String(delay), '--progress-delay', String(progressDelay)], {
     cwd: ROOT, env: environment(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   });
   workers.add(child);
@@ -59,6 +59,25 @@ async function login(page, role = 'analyst', { keyboard = false } = {}) {
 async function navigate(page, view) {
   await page.locator(`a[data-view="${view}"]`).click();
   await expect(page.locator(`#view-${view}`)).toBeVisible();
+}
+
+/** Resolve the visible rich editor or its labeled plain-text fallback. */
+function sqlEditor(page) {
+  return page.getByRole('textbox', { name: 'SQL query', exact: true });
+}
+
+/** Enter SQL through the same editable surface used by keyboard users. */
+async function fillSql(page, statement) {
+  const editor = sqlEditor(page);
+  await expect(editor).toBeVisible();
+  if (await editor.evaluate(node => node.isContentEditable)) {
+    await editor.click();
+    await editor.press('ControlOrMeta+a');
+    await editor.press('Backspace');
+    await page.keyboard.insertText(statement);
+  } else await editor.fill(statement);
+  await expect(page.locator('#sql-editor')).toHaveValue(statement);
+  return editor;
 }
 
 async function readDownload(download) {
@@ -150,5 +169,5 @@ const test = baseTest.extend({
 module.exports = {
   test, expect, FRONTEND_TEST_PASSWORDS, fixture, login, navigate,
   control, startRefreshWorker, readDownload, parseCSV, expectNoHorizontalBodyOverflow,
-  expectChartAxisContrast,
+  expectChartAxisContrast, sqlEditor, fillSql,
 };

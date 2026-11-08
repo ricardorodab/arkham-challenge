@@ -9,17 +9,17 @@ from decimal import Decimal
 
 import pytest
 
-from outage_explorer import model_store
-from outage_explorer.domain import ROUTES, validate_row
-from outage_explorer.model_store import (
+from outage_explorer.analytics import model_store
+from outage_explorer.analytics.model_store import (
     open_model_connection,
     prepare_model,
     rebuild_model,
     verify_model,
 )
-from outage_explorer.modeling import ModelError
-from outage_explorer.pipeline import IngestConfig, ingest
-from outage_explorer.storage import Catalog, StorageError, writer_lock
+from outage_explorer.analytics.modeling import ModelError
+from outage_explorer.data.domain import ROUTES, validate_row
+from outage_explorer.data.pipeline import IngestConfig, ingest
+from outage_explorer.data.storage import Catalog, StorageError, writer_lock
 from tests.helpers import FakeClient, source_rows
 from tests.test_model_store import rewrite_manifest, seed
 from tests.test_storage import make_snapshot

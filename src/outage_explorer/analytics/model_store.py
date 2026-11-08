@@ -21,10 +21,11 @@ from typing import Any
 
 import duckdb
 
-from .domain import ROUTES, canonical_json, identifier
-from .model_contracts import DATASETS, contract_profile
-from .modeling import ModelBundle, ModelError, build_model, logical_digest
-from .storage import Catalog, SnapshotRef, StorageError, writer_lock
+from outage_explorer.analytics.model_contracts import DATASETS, contract_profile
+from outage_explorer.analytics.modeling import ModelBundle, ModelError, build_model, logical_digest
+from outage_explorer.data.domain import ROUTES, canonical_json, identifier
+from outage_explorer.data.storage import Catalog, SnapshotRef, StorageError, writer_lock
+from outage_explorer.progress import ProgressCallback, ProgressEvent, emit_progress
 
 LOG = logging.getLogger(__name__)
 
@@ -224,7 +225,11 @@ def verify_model(bundle: ModelBundle) -> dict[str, Any]:
 
 
 def prepare_model(
-    catalog: Catalog, source: SnapshotRef, *, model_id: str | None = None
+    catalog: Catalog,
+    source: SnapshotRef,
+    *,
+    model_id: str | None = None,
+    progress: ProgressCallback | None = None,
 ) -> ModelBundle:
     """Build and verify a model, then rename it to immutable storage without publishing.
 
@@ -247,7 +252,8 @@ def prepare_model(
             spec.name: source.path / source.manifest["routes"][spec.name]["file"] for spec in ROUTES
         }
         stage = catalog.root / ".model-staging" / model_id
-        built = build_model(sources, source.id, stage, model_id=model_id)
+        built = build_model(sources, source.id, stage, model_id=model_id, progress=progress)
+        emit_progress(progress, ProgressEvent("verifying_model"))
         verify_model(built)
         destination = catalog.root / "models" / model_id
         os.replace(stage, destination)

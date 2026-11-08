@@ -26,7 +26,7 @@ SYNTHETIC_KEY = "docker-acceptance-synthetic-source-only"
 
 def source_rows(revision=0):
     """Return coherent three-day observations, with exact decimals and textual IDs."""
-    from outage_explorer.domain import ROUTES, UNITS
+    from outage_explorer.data.domain import ROUTES, UNITS
 
     rows = {spec.route: [] for spec in ROUTES}
     for period, percent in zip(
@@ -77,13 +77,13 @@ class FakeClient:
         }
 
     def sanitize(self, value):
-        from outage_explorer.eia import sanitize
+        from outage_explorer.data.eia import sanitize
 
         return sanitize(value, (SYNTHETIC_KEY,))
 
     def fetch_metadata(self, route):
-        from outage_explorer.domain import ROUTES, UNITS
-        from outage_explorer.eia import RouteMetadata
+        from outage_explorer.data.domain import ROUTES, UNITS
+        from outage_explorer.data.eia import RouteMetadata
 
         self.requests += 1
         spec = next(spec for spec in ROUTES if spec.route == route)
@@ -98,7 +98,7 @@ class FakeClient:
         )
 
     def iter_pages(self, route, start, end, page_size=5000):
-        from outage_explorer.eia import EIAClientError, Page
+        from outage_explorer.data.eia import EIAClientError, Page
 
         if self.failure and route == "generator-nuclear-outages":
             raise EIAClientError("network_error", "Synthetic upstream failure.", retryable=True)
@@ -138,7 +138,7 @@ def setup():
 
 def image_metadata():
     """Report public dependency/hash metadata from an image without state volumes."""
-    from outage_explorer import query_sandbox
+    from outage_explorer.query import query_sandbox
 
     prohibited = (
         "/opt/outage/.env",
@@ -181,8 +181,8 @@ def state():
     from django.conf import settings
     from django.contrib.auth import get_user_model
 
+    from outage_explorer.data.storage import Catalog
     from outage_explorer.service.models import RefreshJob
-    from outage_explorer.storage import Catalog
 
     with Catalog(settings.OUTAGE_DATA_DIR) as catalog:
         raw = catalog.current()
@@ -219,18 +219,35 @@ def main():
         elif args.action == "seed":
             from django.conf import settings
 
-            from outage_explorer.pipeline import IngestConfig, ingest
+            from outage_explorer.data.pipeline import IngestConfig, ingest
 
             ingest(IngestConfig(settings.OUTAGE_DATA_DIR, "full"), FakeClient())
             result = state()
         elif args.action == "worker":
+            import time
+
+            from outage_explorer.service.job_progress import JobProgressReporter
             from outage_explorer.web import local
+
+            class ObservableReporter(JobProgressReporter):
+                """Expose real stage writes long enough for host HTTP observations."""
+
+                last_stage = None
+
+                def __call__(self, event):
+                    super().__call__(event)
+                    if event.stage != self.last_stage:
+                        self.last_stage = event.stage
+                        time.sleep(0.35)
 
             os.environ["EIA_API_KEY"] = SYNTHETIC_KEY
             sys.argv = ["docker-acceptance-worker", "worker", "--once"]
-            with patch(
-                "outage_explorer.service.refresh.EIAClient",
-                lambda key: FakeClient(key, revision=1, failure=args.failure),
+            with (
+                patch(
+                    "outage_explorer.service.refresh.EIAClient",
+                    lambda key: FakeClient(key, revision=1, failure=args.failure),
+                ),
+                patch("outage_explorer.service.refresh.JobProgressReporter", ObservableReporter),
             ):
                 local.main()
             return

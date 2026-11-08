@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from outage_explorer.pipeline import IngestConfig, ingest
-from outage_explorer.storage import Catalog
+from outage_explorer.data.pipeline import IngestConfig, ingest
+from outage_explorer.data.storage import Catalog
 from tests.helpers import FakeClient
 
 
@@ -26,8 +26,8 @@ def test_actual_process_death_preserves_publication_and_releases_lock(
     script = """
 import os, sys
 from pathlib import Path
-from outage_explorer import pipeline
-from outage_explorer.storage import Catalog
+from outage_explorer.data import pipeline
+from outage_explorer.data.storage import Catalog
 from tests.helpers import FakeClient
 boundary=sys.argv[2]
 if boundary in {'renamed', 'model_renamed'}:

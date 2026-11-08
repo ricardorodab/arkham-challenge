@@ -35,7 +35,13 @@ test('loading is announced and a forbidden dataset result becomes an explicit403
   await expect(page.locator('#explore-error')).toBeVisible();
   await expect(page.locator('#explore-error')).toContainText(/not allowed|not permitted/i);
   await expect(page.locator('#explore-loading')).toBeHidden();
-  await expect(page.locator('#explore-content')).toBeHidden();
+  // The local filter remains available for a corrected explicit query, while
+  // denied responses never leave analytical rows or exportable data visible.
+  await expect(page.locator('#explore-content')).toBeVisible();
+  await expect(page.locator('#explore-search')).toBeVisible();
+  await expect(page.locator('#explore-table')).toBeHidden();
+  await expect(page.locator('#explore-table tbody tr')).toHaveCount(0);
+  await expect(page.locator('#explore-export')).toBeDisabled();
 });
 
 test('429 capacity errors expose retry guidance and a retry can recover normally', async ({ page }) => {

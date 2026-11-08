@@ -41,7 +41,7 @@ def configure() -> None:
         os.environ[f"OUTAGE_{role.upper()}_PASSWORD"] = password
 
 
-def source_rows(*, revision: int = 0):
+def source_rows(*, revision: int = 0, generators: int = 20):
     """Return coherent three-grain rows for metric, gap and hostile-text UI checks.
 
     Dates come from the fixture's deliberately gapped period list. Daily percentages are 10, 0
@@ -49,7 +49,7 @@ def source_rows(*, revision: int = 0):
     IDs and formula/HTML-looking facility names exercise exact text rendering/export rather
     than representing actual EIA observations.
     """
-    from outage_explorer.domain import ROUTES, UNITS
+    from outage_explorer.data.domain import ROUTES, UNITS
 
     rows = {spec.route: [] for spec in ROUTES}
     percentages = [10, 0, 20 + 10 * revision]
@@ -57,9 +57,16 @@ def source_rows(*, revision: int = 0):
         for spec in ROUTES:
             entities = [()] if spec.name == "national" else [(f,) for f in ("001", "002")]
             if spec.name == "generator":
-                entities = [(f, f"{g:02d}") for f in ("001", "002") for g in range(1, 21)]
+                width = 2 if generators == 20 else 5
+                entities = [
+                    (f, f"{g:0{width}d}") for f in ("001", "002") for g in range(1, generators + 1)
+                ]
             for entity in entities:
-                capacity = {"national": 2000, "facility": 1000, "generator": 50}[spec.name]
+                capacity = {
+                    "national": 2000,
+                    "facility": 1000,
+                    "generator": Decimal(1000) / generators,
+                }[spec.name]
                 row = {
                     "period": period,
                     "capacity": str(capacity),
@@ -78,7 +85,9 @@ def source_rows(*, revision: int = 0):
     return rows
 
 
-def publish(*, revision: int = 0, fail: bool = False, mode: str = "full"):
+def publish(
+    *, revision: int = 0, fail: bool = False, mode: str = "full", progress=None, generators=20
+):
     """Build/publish fixture data through the real pipeline using a fake upstream.
 
     An optional generator-route failure tests preservation of prior publication. Return the
@@ -87,14 +96,14 @@ def publish(*, revision: int = 0, fail: bool = False, mode: str = "full"):
     """
     from django.conf import settings
 
-    from outage_explorer.pipeline import IngestConfig, ingest
-    from outage_explorer.storage import Catalog
+    from outage_explorer.data.pipeline import IngestConfig, ingest
+    from outage_explorer.data.storage import Catalog
     from tests.helpers import FakeClient
 
-    client = FakeClient(source_rows(revision=revision))
+    client = FakeClient(source_rows(revision=revision, generators=generators))
     if fail:
         client.fail_route = "generator-nuclear-outages"
-    manifest = ingest(IngestConfig(settings.OUTAGE_DATA_DIR, mode), client)
+    manifest = ingest(IngestConfig(settings.OUTAGE_DATA_DIR, mode), client, progress=progress)
     with Catalog(settings.OUTAGE_DATA_DIR) as catalog:
         return {"snapshot_id": manifest["snapshot_id"], "model_id": catalog.current_model().id}
 
@@ -113,8 +122,14 @@ def reset() -> None:
     from django.core.management import call_command
     from django.utils import timezone
 
-    from outage_explorer.service.models import Persona, QueryCacheEntry, RateLimitBucket, RefreshJob
-    from outage_explorer.storage import Catalog
+    from outage_explorer.data.storage import Catalog
+    from outage_explorer.service.models import (
+        Persona,
+        QueryCacheEntry,
+        RateLimitBucket,
+        RefreshJob,
+        SavedView,
+    )
 
     for role in FIXTURE["passwords"]:
         user = get_user_model().objects.filter(username=role).first()
@@ -127,6 +142,7 @@ def reset() -> None:
     call_command("seed_users", verbosity=0)
     Session.objects.all().delete()
     QueryCacheEntry.objects.all().delete()
+    SavedView.objects.all().delete()
     RateLimitBucket.objects.all().delete()
     RefreshJob.objects.filter(status__in=["queued", "running"]).update(
         status="interrupted", finished_at=timezone.now(), error_code="synthetic_fixture_reset"

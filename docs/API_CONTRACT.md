@@ -16,6 +16,7 @@ Use the [local operations guide](LOCAL_OPERATIONS.md) for installation and the l
 | `GET /auth/session` | Signed in | `200`, current username/persona and opaque session scope |
 | `GET /catalog` | Signed in | `200`, permitted logical dataset metadata |
 | `GET /data/{dataset_id}` | Dataset permission | `200`, filtered, ordered preview page |
+| `POST /data/{dataset_id}` | Dataset permission, valid CSRF | `200`, structured full-dataset search/filter/sort seek page |
 | `POST /query` | Dataset permission, valid CSRF | `200`, one page of a bounded SQL result |
 | `GET /refresh` | Active Admin | `200`, that Admin's own recent jobs |
 | `POST /refresh` | Active Admin, valid CSRF | `202` new job; `200` idempotent replay |
@@ -51,19 +52,40 @@ Every response has `Cache-Control: no-store` and `X-Request-ID`. The former cont
 
 `GET /api/v1/catalog?model_id=<optional model>` returns `model_id`, `source_snapshot_id`, `model_version`, `datasets`, `metrics`, and `warnings`. Dataset descriptors include logical columns/types, PK/FK metadata, units, classification, row/date bounds and allowed personas. Physical paths and Parquet filenames are not exposed. Omitting `model_id` chooses the current published model. Historical contracts retain their own metadata and any version warning.
 
-`GET /api/v1/data/{dataset_id}` accepts:
+`POST /api/v1/data/{dataset_id}` accepts a structured JSON specification (32 KiB maximum) with session and CSRF protection. `GET` remains available for simple query parameters within an 8,192-character encoded query budget. Neither method accepts SQL.
 
 | Parameter | Contract |
 | --- | --- |
 | `start`, `end` | Optional inclusive ISO dates; `start <= end`; only datasets with `period` |
-| `facility_id` | Optional exact string match, maximum 64 characters; only datasets with that column |
+| `facility_id`, `generator_id` | Optional exact string matches, maximum 64 characters; only datasets with those columns; leading zeros are preserved |
+| `search` | Case-insensitive literal substring across every exposed column value, maximum 256 characters; `%` and `_` are ordinary characters |
+| `sort`, `direction` | Declared column and `asc`/`desc`; default first PK ascending; remaining PK columns break ties ascending; nulls always last |
+| `filters` | Up to eight typed AND conditions: `{column, op, value?, upper?}`; array in POST, JSON-encoded text in GET |
 | `limit` | Page size, integer 1–1,000; default 100 |
 | `model_id` | Optional immutable model pin |
 | `cursor` | Signed continuation token from the preceding page |
 
 For example, an Analyst can request `/api/v1/data/generator_daily?start=2026-09-01&end=2026-09-30&facility_id=3166&limit=100`. Filtering a dataset that lacks the requested date/facility column returns `400 unsupported_filter`.
 
-A preview returns `dataset_id`, both publication IDs, `columns`, `rows`, `returned_rows`, `next_cursor`, and the effective `filters`. Rows are ordered by the dataset's full primary key. Pagination uses **keyset continuation**, not a caller-controlled SQL offset. Repeat the original filters and limit and add the returned cursor; stop when `next_cursor` is null. Preview pages can traverse the permitted dataset beyond 1,000 total rows; the limit applies to each page.
+A browse response returns `dataset_id`, both publication IDs, `columns`, `rows`, `returned_rows`, `next_cursor`, legacy quick `filters`, and canonical applied `query` (`search`, sorted/deduplicated `filters`, complete `order`). Search, filters and ordering apply to the **whole selected dataset before paging**. `returned_rows` counts this page, not all matches; no matching `COUNT(*)` runs on every request.
+
+Conditions support `eq`/`ne`; numeric/date columns also support `lt`, `lte`, `gt`, `gte`, and inclusive `between`. Literal text conditions support `contains`, `not_contains`, and `starts_with` and match case; global search ignores case using DuckDB's Unicode `lower`. Every type supports `is_null`/`not_null` without values. `between` requires `value` and `upper`; other value predicates require only `value`. Decimal/date operands use exact strings without rounding or exponent syntax; booleans accept `true`/`false`. All conditions AND together, including quick dates/IDs. Dates and numbers participate in global search through their canonical database string representation. No accent folding, Unicode normalization, regular-expression or wildcard interpretation occurs.
+
+```json
+{"search":"station","sort":"outage_mw","direction":"desc","filters":[{"column":"capacity_mw","op":"gte","value":"100.25"},{"column":"outage_mw","op":"not_null"}],"limit":100}
+```
+
+Signed seek cursors preserve exact sort values and unique primary-key ties. Repeat the effective specification and limit, adding the cursor; stop when it is null. Equivalent predicate order and numeric spellings normalize together. Tokens bind actor/session/persona, query, page size and immutable source/model publication for 15 minutes. A new current publication does not redirect a pinned investigation. Pages can traverse beyond 1,000 total matches without OFFSET or browser result accumulation. POST cursors are bounded to 16,384 characters; GET retains its 4,096-character bound. Oversized sort values return a safe `413` instead of a truncated continuation; use POST or another sort column.
+
+Structured browsing uses an isolated native DuckDB reader with Parquet projection/predicate pushdown and bounded top-N ordering. Search and arbitrary sort/seek combinations may still scan qualifying input; there is no text or seek index. It verifies SHA-256 on a bounded stat-identity cache miss and checks identity on every request. Admission, deadlines, response caps and final authorization checks remain shared. See the [structured browse boundary](QUERY_SECURITY.md#structured-browsing-has-a-separate-trusted-reader). User-written SQL keeps the restricted compiler/WASM path below.
+
+### Explore interaction
+
+Explore keeps three separate states: the last applied database specification, its bounded loaded page, and current form/text edits. **Filter loaded rows** immediately narrows only that page in memory, including input, paste and cut. Typing and plain Enter send no analytical request. Matching is case-insensitive and literal over individual canonical cell values: ISO dates, exact unformatted numbers, textual IDs and `true`/`false`. Nulls do not supply searchable text. Outer whitespace remains literal, matching the database API; display-only date/number formatting is not an additional search representation.
+
+**Apply query** explicitly submits the current text and typed conditions to the full dataset, resetting continuation history. Conditions, date scope and entity IDs share one collapsible field/operator/value editor. Next/Previous and header sorting always retain the applied database specification, even when edits are pending. Local text remains in place across new pages and sorting; a completed request is filtered using the latest text without overwriting it or promoting it into that request.
+
+The grid reports **shown rows out of loaded rows**, independently of the dataset's metadata total. Zero local matches do not imply zero database matches and do not discard a raw page's continuation. **Clear filter** restores the loaded page; **Reset query** clears the draft clauses/text and restores primary-key ordering. Both require Apply before changing an applied database search. **Export visible rows** exports the locally visible subset, in the displayed server order, preserving exact values and CSV protections. A new dataset resets this local state; explicit model adoption resets cursors while preserving compatible draft intent separately from the applied query.
 
 ## SQL queries
 
@@ -117,7 +139,7 @@ The supported language is an explicit **single-table SELECT subset**, not unrest
 - `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, aggregate `DISTINCT`, `ABS`, `ROUND`, `COALESCE`, and supported scalar casts. For example, `SELECT COUNT(*) AS days FROM fleet_daily` is valid.
 - No joins, CTEs, subqueries, windows, set operations/`UNION`, `SELECT DISTINCT`, SQL `OFFSET`, DDL/DML, `COPY`, `ATTACH`, `PRAGMA`, `SET`, extensions, table/file/network functions, or arbitrary user-defined functions. Constructs such as `CASE` and `NULLIF` are also outside this implemented subset.
 
-The selected source is authorized first. A separate, bounded Python compiler process discovers all named references, validates the SQLGlot AST allowlist and regenerates SQL; the web process authorizes every returned reference before opening analytical data. References inside unsupported nested constructs are included, so an unauthorized reference can return `403` before the shape is rejected as unsupported SQL. Original submitted SQL is not executed directly. The compiler has a two-second subdeadline and no in-process fallback. The grammar is explicit in [sql_policy.py](../src/outage_explorer/sql_policy.py); its process boundary is [sql_compiler.py](../src/outage_explorer/sql_compiler.py).
+The selected source is authorized first. A separate, bounded Python compiler process discovers all named references, validates the SQLGlot AST allowlist and regenerates SQL; the web process authorizes every returned reference before opening analytical data. References inside unsupported nested constructs are included, so an unauthorized reference can return `403` before the shape is rejected as unsupported SQL. Original submitted SQL is not executed directly. The compiler has a two-second subdeadline and no in-process fallback. The grammar is explicit in [sql_policy.py](../src/outage_explorer/query/sql_policy.py); its process boundary is [sql_compiler.py](../src/outage_explorer/query/sql_compiler.py).
 
 The compiler appends primary-key or group-key tie breakers to support reproducible paging over immutable data. An explicit SQL `LIMIT` keeps its ordinary meaning. The server retains at most `max_rows` plus one internal sentinel; `truncated: true` means that sentinel proved more rows existed beyond the total result cap. A result cap limits returned rows, not all work needed for an aggregate or sort.
 
@@ -133,7 +155,9 @@ Queries and previews, **including cache hits**, use process-shared admission: **
 
 An active Admin submits `POST /api/v1/refresh` with `{"mode":"recent"}` or `{"mode":"full"}`. Omitted mode defaults to `recent`; no date, key or path override is accepted. The optional `Idempotency-Key` header is 1–128 case-sensitive ASCII characters from letters, digits, `.`, `_`, `:`, `-`.
 
-`202` means the durable job was **queued**, not that new data is available. The body includes `id`, `mode`, `status`, creation/start/finish times, `error_code`, safe `message`, `result`, and `status_url`; `Location` points to that status endpoint. Poll it as the same Admin. `GET /api/v1/refresh?limit=10` lists only that Admin's jobs; `limit` is 1–50. A missing or differently owned job returns `404 job_not_found`.
+`202` means the durable job was **queued**, not that new data is available. The body includes `id`, `mode`, `status`, creation/start/finish times, `error_code`, safe `message`, `result`, `progress`, and `status_url`; `Location` points to that status endpoint. Poll it as the same Admin. `GET /api/v1/refresh?limit=10` lists only that Admin's jobs; `limit` is 1–50. A missing or differently owned job returns `404 job_not_found`.
+
+`progress` is `{}` for queued or older jobs without measurements. Otherwise it contains an allowlisted `stage`, `updated_at` (the last actual milestone), `rows_received` and `pages_fetched`, with optional logical `route` and per-grain `routes` counts. Received counts include deletion-confirmation rereads; they are not unique published row counts. Extraction totals are unknown, so provider-advertised totals never drive a percentage. Only `exporting_model` includes `completed` and `total` for the fixed set of model outputs; this percentage describes export alone. Source checks, individual model-building phases, model verification and publication each report their current stage. Count-only writes are throttled to one attempt per second, with immediate stage transitions and a final flush. Snapshots survive reloads and remain on failed/interrupted jobs. `updated_at` is not a heartbeat or proof a worker is live; unchanged progress may mean slow work or an unavailable worker. No provider URLs, diagnostics, credentials, SQL or paths are included.
 
 The same owner/key/mode returns the original job with `200`, including after completion/failure. Reusing the key with a different mode returns `409 idempotency_conflict`. Use a new key for an intentional new operation. Only one job may be queued/running globally; competing new requests return `409 refresh_busy` and `Retry-After: 5`.
 
@@ -175,3 +199,11 @@ Errors use `application/problem+json`:
 Engine diagnostics, SQL text, credentials and filesystem paths are not returned in error details. Use `request_id` to correlate safe operational logs. Liveness only confirms the HTTP process responds. Admin readiness checks the selected current model reference and pinned runtime availability; it is not a live EIA call, a full workload benchmark, or a guarantee that every future query will fit its resource budget.
 
 Historical implementation reference: [Django CSRF protection](https://docs.djangoproject.com/en/5.2/howto/csrf/). This records the original guidance; no new external-source verification is claimed.
+
+## Named saved views
+
+`GET/POST /api/v1/saved-views`, `GET/PUT/DELETE /api/v1/saved-views/{view_id}` and `POST /api/v1/saved-views/{view_id}/run` manage named SQL/table/chart definitions. Analyst/Admin may create and share; mutations require ownership, and deletion remains available to an owner after a role downgrade when the dataset is still permitted. All reads require owner/audience visibility plus current dataset access. Unauthorized and unknown definitions use the same 404.
+
+Definitions contain a name, dataset, SQL, retained-row cap, optional typed time-chart fields, explicit shared roles and a revision. Private is the default. Result rows are never persisted in a definition. Create/update validates the supported SQL and, for graphs, actual output types. `model_id` pins validation/execution to the reader's adopted publication; `created_model_id` records provenance. PUT, DELETE and run require the current revision. Execution rechecks definition visibility/revision after the existing SQL sandbox returns, using the reader's session and permissions throughout.
+
+The list uses signed actor/limit-bound creation-order cursors (15-minute expiry), default20/max50 items; each owner may retain50 definitions. Request/response, query admission, SQL grammar, 1,000-retained-row and sandbox limits remain in force. See the packaged OpenAPI document for exact strict body and response schemas.

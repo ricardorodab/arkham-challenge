@@ -38,7 +38,25 @@ test('overview, explorer and SQL remain accessible and contain body overflow at3
   await expect(page.locator('#metric-offline-share')).toContainText(/20/);
   for (const view of ['overview', 'explore', 'sql']) {
     await navigate(page, view);
-    if (view === 'explore') await expect(page.locator('#explore-table')).toBeVisible();
+    if (view === 'explore') {
+      await expect(page.locator('#explore-table')).toBeVisible();
+      await expect(page.getByRole('searchbox', { name: 'Filter loaded rows', exact: true })).toBeVisible();
+      await expect(page.locator('#explore-result-meta')).toHaveAttribute('role', 'status');
+      const editor = page.locator('#explore-advanced > summary');
+      await editor.focus(); await editor.press('Enter');
+      expect(await page.locator('#explore-advanced').evaluate(details => details.open)).toBe(true);
+      await expect(page.locator('#explore-apply')).toBeVisible();
+      await page.locator('#explore-search').fill('=2+3');
+      await expect(page.locator('#explore-table tbody tr:visible')).toHaveCount(3);
+      await expect(page.locator('#explore-table').getByRole('row')).toHaveCount(4);
+      await page.locator('#explore-search').fill('NO_LOADED_MATCH');
+      await expect(page.locator('#explore-local-empty')).toBeVisible();
+      await audit(page, testInfo, 'explore-editor-local-empty-desktop');
+      await page.locator('#explore-local-reset').focus();
+      await page.locator('#explore-local-reset').press('Space');
+      await expect(page.locator('#explore-search')).toBeFocused();
+      await expect(page.locator('#explore-table tbody tr:visible')).toHaveCount(6);
+    }
     if (view === 'overview') await expectChartAxisContrast(page, testInfo, 'desktop');
     await audit(page, testInfo, `${view}-desktop`);
     await page.screenshot({ path: testInfo.outputPath(`${view}-1440.png`), fullPage: true });

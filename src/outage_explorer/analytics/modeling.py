@@ -23,8 +23,15 @@ from typing import Any
 
 import duckdb
 
-from .domain import ROUTES, DataValidationError, canonical_json, identifier
-from .model_contracts import DATASETS, METRICS, MODEL_VERSION, MW_TOLERANCE, PCT_TOLERANCE
+from outage_explorer.analytics.model_contracts import (
+    DATASETS,
+    METRICS,
+    MODEL_VERSION,
+    MW_TOLERANCE,
+    PCT_TOLERANCE,
+)
+from outage_explorer.data.domain import ROUTES, DataValidationError, canonical_json, identifier
+from outage_explorer.progress import ProgressCallback, ProgressEvent, emit_progress
 
 
 class ModelError(DataValidationError):
@@ -687,7 +694,12 @@ def validate_model_tables(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def build_model(
-    source_paths: dict[str, Path], source_snapshot_id: str, destination: Path, *, model_id: str
+    source_paths: dict[str, Path],
+    source_snapshot_id: str,
+    destination: Path,
+    *,
+    model_id: str,
+    progress: ProgressCallback | None = None,
 ) -> ModelBundle:
     """Write a complete fresh analytical candidate from three pinned source files.
 
@@ -711,18 +723,25 @@ def build_model(
     destination = Path(destination).resolve()
     if destination.exists() and any(destination.iterdir()):
         raise ModelError("Model destination must be fresh and empty.")
+    emit_progress(progress, ProgressEvent("model_sources"))
     destination.mkdir(parents=True, exist_ok=True)
     database = destination / "_model.duckdb"
     con = duckdb.connect(str(database), config={"threads": 1, "memory_limit": "256MB"})
     try:
         source_files = _source_contract(con, source_paths)
+        emit_progress(progress, ProgressEvent("model_facts"))
         _facts_and_dimensions(con)
+        emit_progress(progress, ProgressEvent("model_fleet"))
         _fleet(con, destination)
+        emit_progress(progress, ProgressEvent("model_reconciliation"))
         _reconciliation(con, destination)
+        emit_progress(progress, ProgressEvent("model_quality"))
         _events(con, destination)
+        emit_progress(progress, ProgressEvent("validating_model"))
         validate_model_tables(con)
         outputs = {}
-        for dataset, spec in DATASETS.items():
+        emit_progress(progress, ProgressEvent("exporting_model", completed=0, total=len(DATASETS)))
+        for completed, (dataset, spec) in enumerate(DATASETS.items(), start=1):
             ordering = ",".join(identifier(name) for name in spec.primary_key)
             path = destination / f"{dataset}.parquet"
             con.execute(
@@ -748,6 +767,10 @@ def build_model(
                 "min_period": minimum.isoformat() if minimum else None,
                 "max_period": maximum.isoformat() if maximum else None,
             }
+            emit_progress(
+                progress,
+                ProgressEvent("exporting_model", completed=completed, total=len(DATASETS)),
+            )
         rules = dict(
             con.execute(
                 "SELECT rule_id,count(*) FROM data_quality_events GROUP BY rule_id ORDER BY rule_id"

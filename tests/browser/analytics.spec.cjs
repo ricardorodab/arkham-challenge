@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  test, expect, fixture, login, navigate, readDownload, parseCSV,
+  test, expect, fixture, login, navigate, readDownload, parseCSV, sqlEditor, fillSql,
 } = require('./helpers.cjs');
 
 async function rowsReady(page, table, minimum = 1) {
@@ -37,36 +37,45 @@ test('US-08 latest metrics and table reflect actual observations; missing day is
   await expect(page.locator('#overview-table tbody tr:visible')).toHaveCount(0);
 });
 
-test('explorer applies date/facility filters and real keyset next/previous pages; CSV contains only displayed rows safely', async ({ page }) => {
+test('explorer applies unified date/ID conditions and real seek pages; CSV contains only locally visible rows safely', async ({ page }) => {
   await login(page, 'analyst');
   await navigate(page, 'explore');
   await page.locator('#dataset-select').selectOption('generator_daily');
+  await expect(page.locator('#explore-table tbody tr')).toHaveCount(25);
+  await page.locator('#explore-advanced > summary').click();
   const size = await choosePageSize(page, '#explore-page-size');
-  await page.locator('#explore-start').fill(fixture.periods[0]);
-  await page.locator('#explore-end').fill(fixture.periods.at(-1));
-  await page.locator('#explore-form').evaluate(form => form.requestSubmit());
+  const dateCondition = page.locator('[data-filter-index="0"]');
+  await dateCondition.locator('[data-filter-part="value"]').fill(fixture.periods[0]);
+  await dateCondition.locator('[data-filter-part="upper"]').fill(fixture.periods.at(-1));
+  await page.locator('#explore-apply').click();
   await rowsReady(page, '#explore-table', size);
   const initial = await page.locator('#explore-table tbody tr').first().textContent();
   const label = await page.locator('#explore-page-label').innerText();
   const [nextRequest] = await Promise.all([
     page.waitForRequest(request => {
       const url = new URL(request.url());
-      return url.pathname === '/api/v1/data/generator_daily' && url.searchParams.has('cursor');
+      return url.pathname === '/api/v1/data/generator_daily' && request.method() === 'POST' && !!request.postDataJSON()?.cursor;
     }),
     page.locator('#explore-next').click(),
   ]);
-  expect([null, '']).toContain(new URL(nextRequest.url()).searchParams.get('facility_id'));
+  expect([undefined, null, '']).toContain(nextRequest.postDataJSON().facility_id);
   await expect(page.locator('#explore-page-label')).not.toHaveText(label);
   await expect(page.locator('#explore-table tbody tr').first()).not.toHaveText(initial);
   await page.locator('#explore-prev').click();
   await expect(page.locator('#explore-table tbody tr').first()).toHaveText(initial);
-  // Pending filters deliberately disable pagination until explicitly applied.
-  await page.locator('#explore-facility').selectOption('001');
-  await expect(page.locator('#explore-next')).toBeDisabled();
-  await page.locator('#explore-form').evaluate(form => form.requestSubmit());
+  // Paging remains attached to applied conditions while the editor holds drafts.
+  await page.locator('#explore-add-filter').click();
+  const entity = page.locator('[data-filter-index="1"]');
+  await entity.locator('[data-filter-part="column"]').selectOption('facility_id');
+  await entity.locator('[data-filter-part="op"]').selectOption('eq');
+  await entity.locator('[data-filter-part="value"]').fill('001');
+  await expect(page.locator('#explore-next')).toBeEnabled();
+  await page.locator('#explore-apply').click();
   await rowsReady(page, '#explore-table', size);
   await expect(page.locator('#explore-table')).toContainText('=2+3');
-  const displayed = await page.locator('#explore-table tbody tr').count();
+  await page.locator('#explore-search').fill(fixture.periods[0]);
+  await expect(page.locator('#explore-table tbody tr:visible')).toHaveCount(20);
+  const displayed = await page.locator('#explore-table tbody tr:visible').count();
   const [download] = await Promise.all([
     page.waitForEvent('download'), page.locator('#explore-export').click(),
   ]);
@@ -89,12 +98,11 @@ test('SQL runs with Ctrl+Enter, supports column insertion, scoped history, liter
   await page.keyboard.press('Enter');
   await expect(page.locator('#view-sql')).toBeVisible();
   await page.locator('#sql-dataset').selectOption('facility_daily');
-  await page.locator('#sql-complete').fill('facility_name');
-  await page.locator('#sql-insert').click();
+  await page.locator('#sql-schema').getByRole('button', { name: 'Insert column facility_name', exact: true }).click();
   await expect(page.locator('#sql-editor')).toHaveValue(/facility_name/);
   const statement = 'SELECT period, facility_id, facility_name FROM facility_daily ORDER BY period, facility_id';
-  await page.locator('#sql-editor').fill(statement);
-  await page.locator('#sql-editor').press('Control+Enter');
+  await fillSql(page, statement);
+  await sqlEditor(page).press('Control+Enter');
   await rowsReady(page, '#sql-table', 6);
   await expect(page.locator('#sql-table')).toContainText('<img src=x onerror="window.__browserXss=1">');
   await expect(page.locator('#sql-table img')).toHaveCount(0);
@@ -102,7 +110,7 @@ test('SQL runs with Ctrl+Enter, supports column insertion, scoped history, liter
   const stored = await page.evaluate(() => Object.values(sessionStorage).join('\n'));
   expect(stored).toContain(statement);
   expect(stored).not.toContain('=2+3');
-  await page.locator('#sql-editor').fill('DELETE FROM facility_daily');
+  await fillSql(page, 'DELETE FROM facility_daily');
   await page.locator('#sql-run').click();
   await expect(page.locator('#sql-error')).toBeVisible();
   await expect(page.locator('#sql-error')).toContainText(/SELECT|supported|read.only/i);
@@ -118,7 +126,7 @@ test('query results are capped and paginated, and CSV never exports off-page row
   await login(page, 'analyst');
   await navigate(page, 'sql');
   await page.locator('#sql-dataset').selectOption('generator_daily');
-  await page.locator('#sql-editor').fill('SELECT period, facility_id, generator_id FROM generator_daily ORDER BY period, facility_id, generator_id');
+  await fillSql(page, 'SELECT period, facility_id, generator_id FROM generator_daily ORDER BY period, facility_id, generator_id');
   await page.locator('#sql-max-rows').selectOption('100');
   if (await page.locator('#sql-page-size').evaluate(node => node.tagName) === 'SELECT') {
     await page.locator('#sql-page-size').selectOption('25');

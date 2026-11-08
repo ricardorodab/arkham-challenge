@@ -8,8 +8,8 @@ import time
 
 import pytest
 
-from outage_explorer import sql_compiler, sql_policy
-from outage_explorer.query_sandbox import SandboxError
+from outage_explorer.query import sql_compiler, sql_policy
+from outage_explorer.query.query_sandbox import SandboxError
 
 
 def test_select_compiles_in_child_without_calling_parent_parser(monkeypatch):

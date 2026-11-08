@@ -14,8 +14,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from outage_explorer.domain import ROUTES, validate_row
-from outage_explorer.eia import REDACTED, EIAClient, EIAClientError
+from outage_explorer.data.domain import ROUTES, validate_row
+from outage_explorer.data.eia import REDACTED, EIAClient, EIAClientError
 
 RECORDED = Path(__file__).parent / "fixtures" / "recorded"
 START = date(2026, 9, 1)

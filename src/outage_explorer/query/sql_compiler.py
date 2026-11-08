@@ -20,8 +20,15 @@ import sys
 import time
 from dataclasses import dataclass
 
-from .query_sandbox import ASSETS, SandboxError, _capture, _environment, _kill, _WindowsJob
-from .sql_policy import MAX_ROWS, MAX_SQL_BYTES, SQLPolicyError, ValidatedQuery
+from outage_explorer.query.query_sandbox import (
+    ASSETS,
+    SandboxError,
+    _capture,
+    _environment,
+    _kill,
+    _WindowsJob,
+)
+from outage_explorer.query.sql_policy import MAX_ROWS, MAX_SQL_BYTES, SQLPolicyError, ValidatedQuery
 
 MAX_INPUT_BYTES = 32 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024
@@ -159,7 +166,7 @@ def compile_sql(
         # the trusted venv prefix/site-packages in isolated interpreter mode.
         executable = sys._base_executable
         environment["__PYVENV_LAUNCHER__"] = sys.executable
-    args = [executable, "-I", "-B", "-m", "outage_explorer.sql_compile_worker"]
+    args = [executable, "-I", "-B", "-m", "outage_explorer.query.sql_compile_worker"]
     if os.name != "nt":
         args = [sys.executable, "-I", "-S", str(ASSETS / "posix_launcher.py"), *args]
     job = None

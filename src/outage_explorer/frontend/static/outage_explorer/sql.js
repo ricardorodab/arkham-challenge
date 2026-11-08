@@ -19,6 +19,9 @@ import {
   schema,
 } from './dom.js';
 import { renderTable, exportPage } from './table.js';
+import { sqlExamples } from './sql_examples.js';
+import { collectRetainedResult } from './query_results.js';
+import { chartOptions, renderQueryChart } from './query_chart.js';
 
 export const HISTORY_PREFIX = 'outage-explorer:history:';
 /**
@@ -114,6 +117,40 @@ export class SqlController {
     this.history = [];
     this.drafts = new Map();
     this.working = false;
+    this.editor = null;
+    this.disposed = false;
+    this.examples = [];
+    this.chartGeneration = 0;
+    this.chartSelectionGeneration = 0;
+    this.chartPossible = false;
+    this.completePacket = null;
+    this.firstPacket = null;
+    this.chartShownConfig = null;
+    this.chartWidth = 0;
+    this.chartObserver =
+      typeof ResizeObserver === 'function'
+        ? new ResizeObserver((entries) => {
+            const width = entries[0]?.contentRect.width;
+            if (
+              width > 0 &&
+              Math.abs(width - this.chartWidth) > 1 &&
+              this.completePacket &&
+              this.chartShownConfig
+            ) {
+              this.chartWidth = width;
+              renderQueryChart(
+                byId('sql-query-chart'),
+                this.completePacket,
+                this.chartShownConfig,
+                {
+                  title: 'Query results over time',
+                  tableId: 'sql-table',
+                },
+              );
+            }
+          })
+        : null;
+    this.chartObserver?.observe(byId('sql-query-chart'));
     this.historyKey = HISTORY_PREFIX + context.scope.session_scope;
     try {
       retireHistoryScopes(sessionStorage, this.historyKey);
@@ -125,7 +162,7 @@ export class SqlController {
       this.run();
     });
     byId('sql-dataset').addEventListener('change', () => this.selectDataset());
-    byId('sql-editor').addEventListener('input', () => this.updatePager());
+    byId('sql-editor').addEventListener('input', () => this.draftChanged());
     for (const id of ['sql-max-rows', 'sql-page-size'])
       byId(id).addEventListener('change', () => this.updatePager());
     byId('sql-editor').addEventListener('keydown', (event) => {
@@ -133,16 +170,12 @@ export class SqlController {
         event.preventDefault();
         if (!byId('sql-run').disabled) this.run();
       }
-      if (event.ctrlKey && event.code === 'Space') {
-        event.preventDefault();
-        byId('sql-complete').focus();
-      }
     });
     byId('sql-example').addEventListener('click', () => {
       if (this.dataset()) {
-        byId('sql-editor').value = exampleSql(this.dataset());
-        this.updatePager();
-        byId('sql-editor').focus();
+        this.savedViewEditing = null;
+        this.setSql(this.examples[0]?.sql ?? exampleSql(this.dataset()));
+        this.focusEditor();
       }
     });
     byId('sql-prev').addEventListener('click', () => this.send(this.page - 1));
@@ -150,14 +183,85 @@ export class SqlController {
     byId('sql-export').addEventListener('click', () =>
       exportPage(this.packet, this.applied?.dataset_id, this.catalog?.model_id),
     );
-    byId('sql-insert').addEventListener('click', () => this.complete());
-    byId('sql-complete').addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        this.complete();
-      }
-    });
     byId('sql-load-history').addEventListener('click', () => this.restoreHistory());
+    byId('sql-chart-show').addEventListener('click', () => this.showChart());
+    byId('sql-save-view').addEventListener('click', () => this.saveView());
+    for (const id of ['sql-chart-date', 'sql-chart-value', 'sql-chart-series'])
+      byId(id).addEventListener('change', () => {
+        this.chartSelectionGeneration++;
+        this.chartShownConfig = null;
+        byId('sql-query-chart').replaceChildren();
+        visible('sql-chart-status', false);
+      });
+    this.initEditor();
+  }
+
+  /** Enhance the synchronized textarea with a local editor, retaining a usable fallback. */
+  async initEditor() {
+    try {
+      const { createSqlEditor } = await import('./sql_editor.bundle.js');
+      if (this.disposed || !this.context.alive()) return;
+      this.editor = createSqlEditor({
+        textarea: byId('sql-editor'),
+        styleNonce: byId('sql-editor-host').dataset.styleNonce,
+        onChange: () => this.draftChanged(),
+        onRun: () => {
+          if (!byId('sql-run').disabled) this.run();
+        },
+      });
+      this.editor.setDataset(this.dataset() ?? null);
+      visible('sql-editor-fallback', false);
+    } catch {
+      // Loading failure leaves the ordinary labeled textarea and server validation available.
+      this.editor?.destroy();
+      this.editor = null;
+      if (!this.disposed) visible('sql-editor-fallback', true);
+    }
+  }
+
+  /** Synchronize programmatic changes with the enhanced editor and its plain-text backing. */
+  setSql(value, options = {}) {
+    if (this.editor) this.editor.setValue(value, options);
+    else byId('sql-editor').value = value;
+    this.draftChanged();
+  }
+
+  /** Keep the draft indicator and starter selection independent of the last executed query. */
+  draftChanged() {
+    this.updatePager();
+    for (const button of byId('sql-examples').querySelectorAll('[data-example-level]')) {
+      const example = this.examples.find((item) => item.level === button.dataset.exampleLevel);
+      button.setAttribute('aria-pressed', String(example?.sql === byId('sql-editor').value));
+    }
+  }
+
+  /** Move focus to the active editing surface after explicit insertion or query loading. */
+  focusEditor() {
+    if (this.editor) this.editor.focus();
+    else byId('sql-editor').focus();
+  }
+
+  /** Render three schema-compatible starters without adding fabricated execution history. */
+  renderExamples(dataset) {
+    this.examples = sqlExamples(dataset);
+    const container = byId('sql-examples');
+    container.replaceChildren();
+    for (const example of this.examples) {
+      const button = element('button', 'sql-example-card');
+      button.type = 'button';
+      button.dataset.exampleLevel = example.level;
+      button.setAttribute('aria-pressed', 'false');
+      button.append(
+        element('strong', '', example.title),
+        element('span', 'sql-example-description', example.description),
+      );
+      button.addEventListener('click', () => {
+        this.savedViewEditing = null;
+        this.setSql(example.sql);
+        this.focusEditor();
+      });
+      container.append(button);
+    }
   }
 
   /**
@@ -197,6 +301,8 @@ export class SqlController {
    * @param {string|null} [draft] Explicit text loaded from current-session history.
    */
   selectDataset(draft = null) {
+    this.savedViewEditing = null;
+    this.resetChart();
     if (this.selected) this.drafts.set(this.selected, byId('sql-editor').value);
     this.selected = byId('sql-dataset').value;
     this.sequence++;
@@ -205,15 +311,15 @@ export class SqlController {
     this.working = false;
     const dataset = this.dataset();
     if (!dataset) return;
-    byId('sql-editor').value = draft ?? this.drafts.get(this.selected) ?? exampleSql(dataset);
+    this.renderExamples(dataset);
+    this.editor?.setDataset(dataset);
+    this.setSql(
+      draft ?? this.drafts.get(this.selected) ?? this.examples[0]?.sql ?? exampleSql(dataset),
+      {
+        resetHistory: true,
+      },
+    );
     schema(byId('sql-schema'), dataset, (name) => this.insert(name));
-    const suggestions = byId('sql-suggestions');
-    suggestions.replaceChildren();
-    for (const name of [dataset.id, ...dataset.schema.map((column) => column[0])]) {
-      const option = element('option');
-      option.value = name;
-      suggestions.append(option);
-    }
     state('sql', 'empty');
     setText('sql-empty', 'Your query results will appear here. Run a read-only SELECT to begin.');
     visible('sql-truncated', false);
@@ -225,25 +331,15 @@ export class SqlController {
    * Insert one quoted schema identifier at the editor selection and invalidate incompatible paging.
    */
   insert(name) {
+    if (this.editor) {
+      this.editor.insertIdentifier(name);
+      this.draftChanged();
+      return;
+    }
     const editor = byId('sql-editor');
     editor.setRangeText(quoteIdentifier(name), editor.selectionStart, editor.selectionEnd, 'end');
     editor.focus();
-    this.updatePager();
-  }
-  /**
-   * Accept only a selected catalog identifier; completion is insertion assistance, not SQL validation.
-   */
-  complete() {
-    const value = byId('sql-complete').value.trim();
-    const dataset = this.dataset();
-    if (!dataset || ![dataset.id, ...dataset.schema.map((column) => column[0])].includes(value)) {
-      byId('sql-complete').setCustomValidity('Choose a column or dataset from the suggestions.');
-      byId('sql-complete').reportValidity();
-      return;
-    }
-    byId('sql-complete').setCustomValidity('');
-    this.insert(value);
-    byId('sql-complete').value = '';
+    this.draftChanged();
   }
 
   /**
@@ -265,6 +361,7 @@ export class SqlController {
       state('sql', 'error', new Error('Keep the query within 16 KiB.'));
       return;
     }
+    this.resetChart();
     // Freeze the question for paging/history; editing the draft does not mutate an in-flight payload.
     this.applied = {
       dataset_id: byId('sql-dataset').value,
@@ -305,6 +402,11 @@ export class SqlController {
       );
       if (!isCurrent()) return;
       this.packet = verifyPage(result, applied.dataset_id, applied.model_id);
+      if (page === 0) {
+        const firstExecutionPage = !this.firstPacket;
+        this.firstPacket = this.packet;
+        if (firstExecutionPage) this.configureChart(this.packet);
+      }
       this.page = page;
       this.cursors[page + 1] = result.next_cursor;
       this.cursors.length = page + 2;
@@ -353,6 +455,14 @@ export class SqlController {
     byId('sql-prev').disabled = this.working || !this.packet || this.page === 0 || !!changed;
     byId('sql-next').disabled = this.working || !this.packet?.next_cursor || !!changed;
     byId('sql-export').disabled = this.working || !this.packet?.rows.length;
+    byId('sql-save-view').disabled =
+      this.working || !this.packet || !!changed || !this.context.savedViews?.canCreate();
+    visible('sql-save-view', !!this.context.savedViews?.canCreate());
+    setText('sql-save-view', this.savedViewEditing ? 'Update saved view' : 'Save to overview');
+    byId('sql-save-view').title = changed
+      ? 'Run the edited query before saving it.'
+      : 'Save the last successful query as a named view.';
+    byId('sql-chart-show').disabled = this.working || !this.packet || !this.chartPossible;
     setText(
       'sql-page-label',
       this.packet
@@ -420,12 +530,164 @@ export class SqlController {
     const entry = this.history[Number(index)];
     byId('sql-dataset').value = entry.dataset_id;
     this.selectDataset(entry.sql);
-    byId('sql-editor').focus();
+    this.focusEditor();
+  }
+
+  /** Retire result/chart state whenever the source or executed SQL question changes. */
+  resetChart() {
+    this.chartGeneration++;
+    this.chartSelectionGeneration++;
+    this.chartPossible = false;
+    this.completePacket = null;
+    this.firstPacket = null;
+    this.chartShownConfig = null;
+    byId('sql-query-chart').replaceChildren();
+    visible('sql-chart-status', false);
+  }
+
+  /** Offer only date/numeric/category columns present in the actual SQL output. */
+  configureChart(packet) {
+    const options = chartOptions(packet);
+    for (const [id, fields, optional] of [
+      ['sql-chart-date', options.date_columns, false],
+      ['sql-chart-value', options.numeric_columns, false],
+      ['sql-chart-series', options.series_columns, true],
+    ]) {
+      const select = byId(id);
+      select.replaceChildren();
+      if (optional) {
+        const option = element('option', '', 'One series');
+        option.value = '';
+        select.append(option);
+      }
+      for (const field of fields) {
+        const name = typeof field === 'string' ? field : field.name;
+        const option = element('option', '', name);
+        option.value = name;
+        select.append(option);
+      }
+    }
+    const possible = options.date_columns.length && options.numeric_columns.length;
+    const savedChart = this.savedViewEditing?.chart;
+    if (savedChart?.enabled) {
+      for (const [id, key] of [
+        ['sql-chart-date', 'date_column'],
+        ['sql-chart-value', 'value_column'],
+        ['sql-chart-series', 'series_column'],
+      ]) {
+        const select = byId(id);
+        if ([...select.options].some((item) => item.value === (savedChart[key] ?? '')))
+          select.value = savedChart[key] ?? '';
+      }
+    }
+    this.chartPossible = !!possible;
+    byId('sql-chart-show').disabled = !possible;
+    setText(
+      'sql-chart-hint',
+      possible
+        ? 'Charts use all retained query rows, sorted by time. Repeated dates need a series field.'
+        : 'For a time graph, return a date column and a numeric value. This query can still be saved as a table.',
+    );
+  }
+
+  /** Describe a chart independently from the SQL result's exact-value table. */
+  chartConfig() {
+    return {
+      enabled: true,
+      date_column: byId('sql-chart-date').value,
+      value_column: byId('sql-chart-value').value,
+      series_column: byId('sql-chart-series').value || null,
+    };
+  }
+
+  /** Load the captured query's complete retained result, never a partial result page. */
+  async retainedResult() {
+    if (this.completePacket) return this.completePacket;
+    if (!this.applied || !this.firstPacket) throw new Error('Run the query before charting it.');
+    const applied = { ...this.applied };
+    const generation = this.chartGeneration;
+    const current = () =>
+      this.context.alive() &&
+      generation === this.chartGeneration &&
+      this.catalog?.model_id === applied.model_id;
+    const complete = await collectRetainedResult(
+      this.firstPacket,
+      (cursor) =>
+        this.context.queue.run(
+          () =>
+            this.context.client.request('/query', {
+              method: 'POST',
+              body: { ...applied, cursor },
+            }),
+          current,
+        ),
+      current,
+    );
+    if (!current()) throw new StaleRequest();
+    this.completePacket = complete;
+    return complete;
+  }
+
+  /** Draw the last run with explicit axes; incompatible outputs remain usable as tables. */
+  async showChart() {
+    const generation = this.chartGeneration;
+    const selection = ++this.chartSelectionGeneration;
+    const config = this.chartConfig();
+    visible('sql-chart-status', true);
+    setText('sql-chart-status', 'Loading the retained result for its time graph…');
+    try {
+      const packet = await this.retainedResult();
+      if (
+        generation !== this.chartGeneration ||
+        selection !== this.chartSelectionGeneration ||
+        !this.context.alive()
+      )
+        return;
+      renderQueryChart(byId('sql-query-chart'), packet, config, {
+        title: 'Query results over time',
+        tableId: 'sql-table',
+      });
+      this.chartShownConfig = { ...config };
+      this.chartWidth = byId('sql-query-chart').clientWidth;
+      setText(
+        'sql-chart-status',
+        `${packet.rows.length} retained rows · Version ${packet.model_id.slice(0, 8)}`,
+      );
+    } catch (error) {
+      if (
+        error instanceof StaleRequest ||
+        generation !== this.chartGeneration ||
+        selection !== this.chartSelectionGeneration
+      )
+        return;
+      setText(
+        'sql-chart-status',
+        error.message || 'The query cannot be plotted with these fields.',
+      );
+    }
+  }
+
+  /** Save a named definition of the last run; edited drafts must be executed first. */
+  saveView() {
+    if (!this.packet || byId('sql-save-view').disabled) return;
+    this.context.savedViews?.openSave(
+      {
+        dataset_id: this.applied.dataset_id,
+        sql: this.applied.sql,
+        max_rows: this.applied.max_rows,
+        packet: this.completePacket ?? this.firstPacket,
+        chart: byId('sql-query-chart').childElementCount
+          ? this.chartConfig()
+          : (this.savedViewEditing?.chart ?? { enabled: false }),
+      },
+      this.savedViewEditing ?? null,
+    );
   }
   /**
    * Invalidate pending render work and clear captured execution, rendered results and pager state.
    */
   invalidate() {
+    this.resetChart();
     this.sequence++;
     this.working = false;
     this.packet = null;
@@ -437,9 +699,17 @@ export class SqlController {
    * Clear query results, drafts, editor text and scoped history on workspace/session disposal.
    */
   dispose() {
+    this.disposed = true;
+    this.chartObserver?.disconnect();
     this.invalidate();
     this.history = [];
     this.drafts.clear();
+    this.editor?.clear();
+    this.editor?.destroy();
+    this.editor = null;
+    this.examples = [];
+    byId('sql-examples').replaceChildren();
+    byId('sql-schema').replaceChildren();
     byId('sql-editor').value = '';
     this.renderHistory();
     clearPrivateHistory();

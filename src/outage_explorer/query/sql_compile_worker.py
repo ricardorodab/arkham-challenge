@@ -24,8 +24,12 @@ def main() -> None:
     returning SQL/parser diagnostics. Oversized output becomes a fixed error frame;
     stdout is flushed once and parser logging remains disabled.
     """
-    from .sql_compiler import ERROR_MESSAGES, MAX_INPUT_BYTES, MAX_OUTPUT_BYTES
-    from .sql_policy import SQLPolicyError, referenced_dataset_ids, validate_sql
+    from outage_explorer.query.sql_compiler import ERROR_MESSAGES, MAX_INPUT_BYTES, MAX_OUTPUT_BYTES
+    from outage_explorer.query.sql_policy import (
+        SQLPolicyError,
+        referenced_dataset_ids,
+        validate_sql,
+    )
 
     response = {"dataset_ids": [], "query": None, "error": {"code": "invalid_sql"}}
     try:

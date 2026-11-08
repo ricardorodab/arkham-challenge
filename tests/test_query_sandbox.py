@@ -15,7 +15,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from outage_explorer import query_sandbox as sandbox
+from outage_explorer.query import query_sandbox as sandbox
 
 pytestmark = pytest.mark.skipif(
     not sandbox.is_available(), reason="Node 24.13+ and npm ci are required for WASM execution"

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from outage_explorer import query_sandbox as sandbox
+from outage_explorer.query import query_sandbox as sandbox
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX resource-limit boundary")

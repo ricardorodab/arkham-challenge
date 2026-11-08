@@ -4,12 +4,144 @@
  *
  * HTTP enqueue does not run ingestion. A separate backend worker consumes jobs.
  * Mode-bound idempotency survives unknown POST outcomes; generation/job guards
- * protect against stale history and polling replies. Progress is indeterminate.
+ * protect against stale history and polling replies. Worker events describe actual
+ * stages/counts; only the fixed model-export step has a percentage.
  */
 import { StaleRequest } from './api.js';
 import { byId, setText, visible, showError, element } from './dom.js';
 
 const ACTIVE = new Set(['queued', 'running']);
+
+const STAGES = Object.freeze({
+  preparing: 'Preparing the refresh',
+  metadata: 'Reading source metadata',
+  extracting: 'Downloading observations',
+  validating_source: 'Validating source observations',
+  model_sources: 'Preparing model sources',
+  model_facts: 'Building daily facts',
+  model_fleet: 'Calculating fleet metrics',
+  model_reconciliation: 'Reconciling source totals',
+  model_quality: 'Checking data quality',
+  validating_model: 'Validating the model',
+  exporting_model: 'Exporting model datasets',
+  verifying_model: 'Verifying model files',
+  publishing: 'Publishing verified data',
+  completed: 'Refresh completed',
+});
+const ROUTES = Object.freeze({
+  national: 'National',
+  facility: 'Facility',
+  generator: 'Generator',
+});
+const count = (value) => Number.isSafeInteger(value) && value >= 0;
+
+/** Format only reported, nonnegative integer counters; absent is not zero. */
+function sourceCounts(value) {
+  const parts = [];
+  if (count(value?.rows_received))
+    parts.push(
+      `${value.rows_received.toLocaleString('en-US')} ${value.rows_received === 1 ? 'row' : 'rows'} received`,
+    );
+  if (count(value?.pages_fetched))
+    parts.push(
+      `${value.pages_fetched.toLocaleString('en-US')} ${value.pages_fetched === 1 ? 'page' : 'pages'} fetched`,
+    );
+  return parts.join(' · ');
+}
+
+/**
+ * Derive text-only presentation from allowlisted stages/routes and typed counters.
+ * Unknown/legacy snapshots remain indeterminate; queued jobs report no work.
+ */
+export function refreshProgress(job) {
+  const value = job?.progress;
+  const progress =
+    job?.status !== 'queued' &&
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    typeof value.stage === 'string' &&
+    Object.hasOwn(STAGES, value.stage)
+      ? value
+      : {};
+  const stage = STAGES[progress.stage] || '';
+  const route =
+    typeof progress.route === 'string' && Object.hasOwn(ROUTES, progress.route)
+      ? ROUTES[progress.route]
+      : '';
+  const stageText =
+    stage +
+    (route && ['metadata', 'extracting', 'validating_source'].includes(progress.stage)
+      ? ` — ${route}`
+      : '');
+  const routes = [];
+  if (progress.routes && typeof progress.routes === 'object' && !Array.isArray(progress.routes))
+    for (const [id, label] of Object.entries(ROUTES)) {
+      if (!Object.hasOwn(progress.routes, id)) continue;
+      const text = sourceCounts(progress.routes[id]);
+      if (text) routes.push(`${label}: ${text}`);
+    }
+  // This denominator describes a small fixed export list, never overall work.
+  const determinate =
+    progress.stage === 'exporting_model' &&
+    count(progress.completed) &&
+    count(progress.total) &&
+    progress.total > 0 &&
+    progress.total <= 1000 &&
+    progress.completed <= progress.total;
+  return {
+    stageKey: progress.stage || '',
+    stage: stageText,
+    counts: sourceCounts(progress),
+    routes,
+    completed: determinate ? progress.completed : null,
+    total: determinate ? progress.total : null,
+    exportLabel: determinate
+      ? `Model export ${Math.floor((progress.completed / progress.total) * 100)}%`
+      : '',
+    updatedAt:
+      typeof progress.updated_at === 'string' && Number.isFinite(Date.parse(progress.updated_at))
+        ? progress.updated_at
+        : null,
+  };
+}
+
+/** Render a bounded elapsed duration without estimating remaining work. */
+function duration(milliseconds) {
+  const seconds = Math.floor(Math.max(0, milliseconds) / 1000);
+  const hours = Math.floor(seconds / 3600),
+    minutes = Math.floor((seconds % 3600) / 60);
+  return [hours ? `${hours}h` : '', minutes || hours ? `${minutes}m` : '', `${seconds % 60}s`]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/**
+ * Use server event times for elapsed/last-update text, never worker-liveness claims.
+ * Terminal elapsed time ends at finished_at; its last event is an absolute timestamp.
+ */
+export function refreshTimes(job, now = Date.now()) {
+  if (!job || job.status === 'queued') return { elapsed: '', updated: '', updatedAt: null };
+  const started = typeof job.started_at === 'string' ? Date.parse(job.started_at) : NaN;
+  const end =
+    job.status === 'running'
+      ? now
+      : typeof job.finished_at === 'string'
+        ? Date.parse(job.finished_at)
+        : NaN;
+  const progress = refreshProgress(job);
+  const elapsed =
+    Number.isFinite(started) && Number.isFinite(end) && end >= started
+      ? duration(end - started)
+      : '';
+  const updated = progress.updatedAt
+    ? job.status === 'running'
+      ? `${duration(now - Date.parse(progress.updatedAt))} ago`
+      : new Date(progress.updatedAt).toLocaleString('en-US')
+    : '';
+  return { elapsed, updated, updatedAt: progress.updatedAt };
+}
+
 /**
  * Present Admin-owned job lifecycle independently of the active analytical model.
  */
@@ -30,7 +162,7 @@ export class RefreshController {
     });
     byId('refresh-check').addEventListener('click', () => this.poll());
     byId('refresh-use-latest').addEventListener('click', () => context.applyLatest());
-    byId('refresh-message').setAttribute('aria-live', 'polite');
+    byId('refresh-message').setAttribute('aria-live', 'off');
   }
   /**
    * Load owned recent history once, selecting an active job without replacing newer local work.
@@ -128,6 +260,7 @@ export class RefreshController {
       this.job = job;
       visible('refresh-error', false);
       this.render();
+      if (this.history) this.renderJobs(this.history);
       if (changed && job.status === 'succeeded') await this.context.checkLatest();
       if (changed && !ACTIVE.has(job.status)) {
         const history = await this.context.client.request('/refresh?limit=10');
@@ -143,54 +276,119 @@ export class RefreshController {
     }
   }
 
+  /** Update only non-live timing text; this clock makes no worker-health inference. */
+  renderTiming() {
+    const timing = refreshTimes(this.job);
+    setText('refresh-elapsed', timing.elapsed);
+    visible('refresh-elapsed-row', !!timing.elapsed);
+    setText('refresh-updated', timing.updated);
+    visible('refresh-updated-row', !!timing.updated);
+    if (timing.updatedAt) byId('refresh-updated').dateTime = timing.updatedAt;
+  }
+
   /**
-   * Render lifecycle state with indeterminate active progress and an explicit adoption action.
-   *
-   * A progress percentage is not inferred from elapsed time or unrelated row counts.
+   * Render every progress snapshot, announcing stage/status changes without count chatter.
+   * Only model export uses a denominator; all other running work is indeterminate.
    */
   render() {
     const job = this.job;
     if (!job) return;
+    const detail = refreshProgress(job);
     visible('refresh-use-latest', job.status === 'succeeded' && this.context.hasUpdate());
-    // Do not replace accessible status content when the observed job state has not changed.
-    const signature = `${job.id}:${job.status}:${job.message}`;
-    if (signature === this.renderedSignature) return;
-    this.renderedSignature = signature;
     visible('refresh-status');
     const messages = {
       queued: 'Refresh queued. Waiting for the refresh worker.',
-      running:
-        'Refresh is running. The published data stays available while the new version is checked.',
+      running: 'Refresh is running.',
       succeeded: 'Refresh completed. A verified data version is ready.',
       failed: job.message || 'Refresh failed. Review the outcome before trying again.',
       interrupted:
         job.message || 'Refresh was interrupted. Review publication status before retrying.',
     };
-    setText('refresh-message', messages[job.status] || job.message);
+    const message = messages[job.status] || 'Refresh status is unavailable.';
+    const announcement = `${message}${detail.stageKey ? ` ${STAGES[detail.stageKey]}.` : ''}`;
+    const signature = JSON.stringify([job.id, job.status, message, detail.stageKey]);
+    if (signature !== this.announcementSignature) {
+      setText('refresh-announcement', announcement);
+      this.announcementSignature = signature;
+    }
+    setText('refresh-message', message);
     setText('refresh-job-id', `Job ${job.id}`);
+    setText('refresh-step-label', ACTIVE.has(job.status) ? 'Current step' : 'Last reported step');
+    setText(
+      'refresh-step',
+      detail.stage || (job.status === 'queued' ? 'Not started' : 'No step details reported'),
+    );
+    setText('refresh-counts', detail.counts);
+    visible('refresh-counts', !!detail.counts);
+    const routes = byId('refresh-routes');
+    const routeSignature = JSON.stringify(detail.routes);
+    if (routeSignature !== this.routeSignature) {
+      routes.replaceChildren(...detail.routes.map((text) => element('li', '', text)));
+      this.routeSignature = routeSignature;
+    }
+    visible(routes, detail.routes.length > 0);
+    setText('refresh-progress-label', detail.exportLabel);
+    visible('refresh-progress-label', !!detail.exportLabel);
     const progress = byId('refresh-progress');
-    progress.max = 1;
-    if (ACTIVE.has(job.status)) progress.removeAttribute('value');
-    else progress.value = job.status === 'succeeded' ? 1 : 0;
-    progress.setAttribute('aria-label', `Refresh ${job.status}`);
-    progress.setAttribute('aria-valuetext', messages[job.status] || job.status);
+    progress.max = detail.total || 1;
+    if (detail.total) progress.value = detail.completed;
+    else progress.removeAttribute('value');
+    progress.setAttribute('aria-label', detail.total ? 'Model export' : 'Refresh activity');
+    progress.setAttribute(
+      'aria-valuetext',
+      detail.exportLabel || 'Total refresh work is not known.',
+    );
+    visible(progress, job.status === 'running' || !!detail.total);
+    setText(
+      'refresh-progress-note',
+      detail.total
+        ? 'Dataset export only; this is not overall refresh progress.'
+        : 'The total amount of work is not known.',
+    );
+    visible('refresh-progress-note', job.status === 'running' || !!detail.total);
     byId('refresh-status').dataset.status = job.status;
     byId('refresh-start').disabled = ACTIVE.has(job.status) || this.busy;
+    this.renderTiming();
+    if (job.status === 'running' && !this.clock)
+      this.clock = setInterval(() => {
+        if (this.context.alive()) this.renderTiming();
+      }, 1000);
+    else if (job.status !== 'running') {
+      clearInterval(this.clock);
+      this.clock = null;
+    }
   }
 
   /**
    * Render owned job history while merging the fresher currently tracked job by ID.
    */
   renderJobs(jobs) {
+    this.history = jobs;
+    const current = jobs.map((item) => (item.id === this.job?.id ? this.job : item));
+    const signature = JSON.stringify(
+      current.map((job) => {
+        const progress = refreshProgress(job);
+        return [
+          job.id,
+          job.mode,
+          job.created_at,
+          job.status,
+          progress.stage,
+          progress.counts,
+          progress.exportLabel,
+        ];
+      }),
+    );
+    if (signature === this.historySignature) return;
+    this.historySignature = signature;
     const container = byId('refresh-jobs');
     container.replaceChildren();
     if (!jobs.length) {
       container.append(element('p', 'empty-state', 'No refresh jobs yet.'));
       return;
     }
-    for (const item of jobs) {
-      // History may be older than the last poll/POST response for the currently tracked job.
-      const job = item.id === this.job?.id ? this.job : item;
+    for (const job of current) {
+      // The tracked job contributes its latest status and progress without another HTTP request.
       const row = element('div', 'refresh-job');
       const detail = element('div', 'refresh-job-detail');
       detail.append(
@@ -204,6 +402,11 @@ export class RefreshController {
       );
       stamp.dateTime = job.created_at;
       detail.append(stamp);
+      const progress = refreshProgress(job);
+      const summary = [progress.stage, progress.counts, progress.exportLabel]
+        .filter(Boolean)
+        .join(' · ');
+      if (summary) detail.append(element('p', 'refresh-job-progress', summary));
       const status = element('span', 'badge', job.status);
       status.dataset.status = job.status;
       row.append(detail, status);
@@ -216,10 +419,16 @@ export class RefreshController {
   dispose() {
     this.sequence++;
     clearTimeout(this.timer);
+    clearInterval(this.clock);
+    this.clock = null;
     this.job = null;
     this.idempotency = null;
+    this.history = null;
+    this.historySignature = null;
     byId('refresh-jobs').replaceChildren();
     setText('refresh-message', '');
     setText('refresh-job-id', '');
+    setText('refresh-announcement', '');
+    visible('refresh-status', false);
   }
 }

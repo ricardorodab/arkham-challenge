@@ -19,9 +19,9 @@ from typing import Any
 
 import duckdb
 
-from .model_contracts import DATASETS
-from .model_store import open_model_connection
-from .storage import StorageError
+from outage_explorer.analytics.model_contracts import DATASETS
+from outage_explorer.analytics.model_store import open_model_connection
+from outage_explorer.data.storage import StorageError
 
 
 def report_queries() -> dict[str, tuple[str, str]]:
@@ -33,7 +33,9 @@ def report_queries() -> dict[str, tuple[str, str]]:
     """
     result: dict[str, tuple[str, str]] = {}
     for name in ("reconciliation.sql", "part2_findings.sql"):
-        text = files("outage_explorer").joinpath(f"sql/{name}").read_text(encoding="utf-8")
+        text = (
+            files("outage_explorer.analytics").joinpath(f"sql/{name}").read_text(encoding="utf-8")
+        )
         sections = re.split(r"(?m)^-- name:\s*([a-z][a-z0-9_]*)\s*$", text)
         if len(sections) < 3:
             raise StorageError("Report SQL has no named statements.", code="invalid_report")

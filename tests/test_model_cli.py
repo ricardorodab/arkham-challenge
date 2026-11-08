@@ -8,8 +8,8 @@ import logging
 import pytest
 
 from outage_explorer import cli
-from outage_explorer.model_contracts import MODEL_VERSION
-from outage_explorer.storage import Catalog
+from outage_explorer.analytics.model_contracts import MODEL_VERSION
+from outage_explorer.data.storage import Catalog
 from tests.test_cli import forbid_client
 from tests.test_model_store import seed
 

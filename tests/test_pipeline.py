@@ -7,11 +7,11 @@ from datetime import date
 import duckdb
 import pytest
 
-from outage_explorer import pipeline
-from outage_explorer.domain import ROUTES, DataValidationError
-from outage_explorer.eia import EIAClientError
-from outage_explorer.pipeline import IngestConfig, ingest
-from outage_explorer.storage import Catalog, StorageError
+from outage_explorer.data import pipeline
+from outage_explorer.data.domain import ROUTES, DataValidationError
+from outage_explorer.data.eia import EIAClientError
+from outage_explorer.data.pipeline import IngestConfig, ingest
+from outage_explorer.data.storage import Catalog, StorageError
 from tests.helpers import SECRET, FakeClient, source_rows
 
 

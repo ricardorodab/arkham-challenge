@@ -12,9 +12,17 @@ import { element, columnTitle, numericType, scalarLabel } from './dom.js';
  * Replace a semantic table from a validated positional packet, using only text nodes.
  *
  * Exact scalar strings remain unchanged in cell titles; null is explicitly
- * undefined/unreported, never zero. Headers retain SQL types and column scope.
+ * undefined/unreported, never zero. Headers retain column scope; compact headers
+ * keep SQL types in titles while the caller provides the full accessible schema.
+ * Optional sort buttons delegate whole-query ordering to the caller; this renderer
+ * never reorders the received page, so display and CSV retain identical server order.
  */
-export function renderTable(table, data, caption) {
+export function renderTable(
+  table,
+  data,
+  caption,
+  { sort, direction, onSort, showTypes = true } = {},
+) {
   table.replaceChildren();
   table.append(element('caption', 'sr-only', caption));
   const head = document.createElement('thead'),
@@ -22,10 +30,33 @@ export function renderTable(table, data, caption) {
   for (const column of data.columns) {
     const cell = element('th', numericType(column.type) ? 'cell-number' : '');
     cell.scope = 'col';
-    cell.append(
-      element('span', 'column-name', columnTitle(column.name)),
-      element('span', 'column-type', column.type),
-    );
+    const name = element('span', 'column-name', columnTitle(column.name));
+    if (onSort) {
+      const active = sort === column.name,
+        next = active && direction === 'asc' ? 'desc' : 'asc';
+      cell.setAttribute(
+        'aria-sort',
+        active ? (direction === 'asc' ? 'ascending' : 'descending') : 'none',
+      );
+      const button = element('button', 'table-sort');
+      button.type = 'button';
+      button.dataset.sortColumn = column.name;
+      button.setAttribute(
+        'aria-label',
+        `Sort current results by ${columnTitle(column.name)}, ${next === 'asc' ? 'ascending' : 'descending'}, across the dataset`,
+      );
+      const indicator = element(
+        'span',
+        'sort-indicator',
+        active ? (direction === 'asc' ? '↑' : '↓') : '↕',
+      );
+      indicator.setAttribute('aria-hidden', 'true');
+      button.append(name, indicator);
+      button.addEventListener('click', () => onSort(column.name));
+      cell.append(button);
+    } else cell.append(name);
+    if (showTypes) cell.append(element('span', 'column-type', column.type));
+    else cell.title = `${columnTitle(column.name)} · ${column.type}`;
     heading.append(cell);
   }
   head.append(heading);

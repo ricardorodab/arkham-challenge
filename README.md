@@ -21,15 +21,20 @@ Start with the project tour, then follow the data and request paths. These are t
 
 Test-specific instructions stay with [browser acceptance](tests/browser/README.md), [synthetic fixtures](tests/fixtures/README.md) and [recorded source responses](tests/fixtures/recorded/README.md). Runtime [extension provenance](src/outage_explorer/sandbox/PROVENANCE.md) remains beside its packaged asset.
 
+Application code is grouped by responsibility: [`data/`](src/outage_explorer/data/) for ingestion/publication, [`analytics/`](src/outage_explorer/analytics/) for modeling/reports, and [`query/`](src/outage_explorer/query/) for query validation/execution. The existing `frontend/`, `service/`, `web/` and `sandbox/` folders retain their roles. See the [repository map](docs/PROJECT_TOUR.md#what-each-root-folder-and-configuration-file-does) for the full reading guide.
+
 ## Run with Docker
 
-With Docker running Linux containers and the Compose plugin, start from the repository root:
+With Docker running Linux containers and the Compose plugin, work from the repository root. **For live data or Admin refresh, set your own EIA API key in the same terminal before the first `docker compose up`.** In PowerShell:
 
-```sh
+```powershell
+$env:EIA_API_KEY = [System.Net.NetworkCredential]::new('', (Read-Host 'EIA API key' -AsSecureString)).Password
 docker compose up --build -d app
 ```
 
-Open [the login page](http://127.0.0.1:8000/login/). Initialization generates private random account passwords and persists application state. The app starts its separate continuous refresh worker automatically; no EIA key is needed for startup. A fresh workspace has no analytical data, and refresh requires a key configured only for the worker. Follow [the Docker guide](docs/DOCKER.md) to view passwords privately, load data, configure refresh or move persisted volumes. Local data and credentials are excluded from the image.
+Open [the login page](http://127.0.0.1:8000/login/). Compose initializes private random account passwords and starts the app plus its separate refresh worker. Only the worker receives the key. [View your generated passwords privately](docs/DOCKER.md#start-a-fresh-workspace). A fresh workspace has no analytical data: [load a bounded initial dataset](docs/DOCKER.md#load-data-explicitly), or request a refresh as Admin and choose **Use latest** after it succeeds.
+
+For login or reading existing data only, you may omit the key prompt; keyless startup is valid, but live extraction and refresh need the key. [Bash setup and key sources](docs/DOCKER.md#before-startup-configure-live-data-access) are documented separately. **Already started without the key?** Leave the app running, set the key, then [recreate only the worker](docs/DOCKER.md#already-started-without-the-key); a simple restart does not update its environment. Local data and credentials are excluded from the image.
 
 ## Run without Docker
 

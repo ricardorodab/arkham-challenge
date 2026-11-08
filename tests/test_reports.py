@@ -10,12 +10,12 @@ from decimal import Decimal
 import duckdb
 import pytest
 
-from outage_explorer import reports
-from outage_explorer.domain import ROUTES
-from outage_explorer.model_contracts import MODEL_VERSION
-from outage_explorer.pipeline import IngestConfig, ingest
-from outage_explorer.reports import findings_report, json_value, report_queries
-from outage_explorer.storage import Catalog, StorageError
+from outage_explorer.analytics import reports
+from outage_explorer.analytics.model_contracts import MODEL_VERSION
+from outage_explorer.analytics.reports import findings_report, json_value, report_queries
+from outage_explorer.data.domain import ROUTES
+from outage_explorer.data.pipeline import IngestConfig, ingest
+from outage_explorer.data.storage import Catalog, StorageError
 from tests.helpers import FakeClient
 from tests.test_modeling import observation
 

@@ -27,8 +27,8 @@ from typing import Any
 
 import duckdb
 
-from . import __version__
-from .domain import (
+from outage_explorer import __version__
+from outage_explorer.data.domain import (
     ROUTES,
     SCHEMA_VERSION,
     DataValidationError,
@@ -37,8 +37,9 @@ from .domain import (
     identifier,
     validate_row,
 )
-from .eia import EIAClient, EIAClientError, RouteMetadata
-from .storage import Catalog, SnapshotRef, StorageError, writer_lock
+from outage_explorer.data.eia import EIAClient, EIAClientError, RouteMetadata
+from outage_explorer.data.storage import Catalog, SnapshotRef, StorageError, writer_lock
+from outage_explorer.progress import ProgressCallback, ProgressEvent, emit_progress
 
 LOG = logging.getLogger(__name__)
 
@@ -172,6 +173,8 @@ def _extract(
     stage: Path,
     recording: Path | None,
     cancelled: threading.Event,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Populate typed incoming/clean staging tables from one paginated extraction.
 
@@ -223,6 +226,12 @@ def _extract(
             )
             count += len(page.rows)
             pages += 1
+            emit_progress(
+                progress,
+                ProgressEvent(
+                    "extracting", route=spec.name, rows_received=len(page.rows), pages_fetched=1
+                ),
+            )
     finally:
         page_file.unlink(missing_ok=True)
     if not count:
@@ -284,6 +293,8 @@ def _route(
     stage: Path,
     run_dir: Path,
     cancelled: threading.Event,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Prepare one route's replacement dataset and manifest entry without publishing.
 
@@ -310,7 +321,17 @@ def _route(
         con.execute("SET threads=1")
         con.execute("SET memory_limit='256MB'")
         extracted = _extract(
-            con, spec, client, config, start, end, "incoming", stage, record_dir, cancelled
+            con,
+            spec,
+            client,
+            config,
+            start,
+            end,
+            "incoming",
+            stage,
+            record_dir,
+            cancelled,
+            progress=progress,
         )
         first_period, last_period = con.execute(
             "SELECT min(period),max(period) FROM incoming_clean"
@@ -359,6 +380,7 @@ def _route(
                 stage,
                 confirm_record,
                 cancelled,
+                progress=progress,
             )
             first_digest, _ = _logical_summary(con, "incoming_clean", spec)
             second_digest, _ = _logical_summary(con, "confirmation_clean", spec)
@@ -440,7 +462,9 @@ def _route(
     return result
 
 
-def ingest(config: IngestConfig, client: EIAClient) -> dict[str, Any]:
+def ingest(
+    config: IngestConfig, client: EIAClient, *, progress: ProgressCallback | None = None
+) -> dict[str, Any]:
     """Fetch, validate, model and jointly publish all source grains under one lock.
 
     Recover abandoned run/build records, verify the prior source, validate every
@@ -456,6 +480,7 @@ def ingest(config: IngestConfig, client: EIAClient) -> dict[str, Any]:
     become safe ``StorageError`` values. This function does not complete the separate
     Django application refresh job or make EIA pages transactionally consistent.
     """
+    emit_progress(progress, ProgressEvent("preparing"))
     root = config.data_dir.resolve()
     with writer_lock(root), Catalog(root) as catalog:
         recovered = catalog.recover_interrupted()
@@ -484,11 +509,13 @@ def ingest(config: IngestConfig, client: EIAClient) -> dict[str, Any]:
         candidate_model = None
         LOG.info("run_started", extra={"run_id": run_id, "mode": config.mode})
         try:
+            emit_progress(progress, ProgressEvent("metadata"))
             metadata = {spec.name: client.fetch_metadata(spec.route) for spec in ROUTES}
             # Validate all intervals before starting the first data request.
             for spec in ROUTES:
                 prior = current.manifest["routes"][spec.name] if current else None
                 _bounds(config, metadata[spec.name], prior)
+            emit_progress(progress, ProgressEvent("extracting"))
             with ThreadPoolExecutor(max_workers=config.workers) as pool:
                 futures = {
                     pool.submit(
@@ -501,6 +528,7 @@ def ingest(config: IngestConfig, client: EIAClient) -> dict[str, Any]:
                         stage,
                         run_dir,
                         cancelled,
+                        progress=progress,
                     ): spec
                     for spec in ROUTES
                 }
@@ -512,6 +540,7 @@ def ingest(config: IngestConfig, client: EIAClient) -> dict[str, Any]:
                     for future in futures:
                         future.cancel()
                     raise
+            emit_progress(progress, ProgressEvent("validating_source"))
             manifest = client.sanitize(
                 {
                     "schema_version": SCHEMA_VERSION,
@@ -545,10 +574,14 @@ def ingest(config: IngestConfig, client: EIAClient) -> dict[str, Any]:
             _sync_directory(snapshot.parent)
             # Build from closed immutable sources; publish both generations in
             # one catalog transaction only after all transformations validate.
-            from .model_store import prepare_model
+            from outage_explorer.analytics.model_store import prepare_model
 
-            candidate_model = prepare_model(catalog, SnapshotRef(run_id, snapshot, manifest))
+            candidate_model = prepare_model(
+                catalog, SnapshotRef(run_id, snapshot, manifest), progress=progress
+            )
+            emit_progress(progress, ProgressEvent("publishing"))
             catalog.publish(run_id, snapshot, manifest, model=candidate_model)
+            emit_progress(progress, ProgressEvent("completed"))
             LOG.info(
                 "run_succeeded",
                 extra={"run_id": run_id, "duration_seconds": round(time.monotonic() - timer, 3)},

@@ -87,6 +87,8 @@ Without a worker in this direct host workflow, jobs remain queued; Docker Compos
 
 Validation/extraction failures **before** publication leave the previous pair current. Catalog publication and application-job completion are separate transactions. If interrupted, inspect both authoritative histories: a job marked interrupted may already have published data. Do not promise exactly-once refresh or infer no change from job status alone.
 
+Refresh activity shows persisted download counts and the current source/model/publication stage. Download totals remain unknown; the only percentage describes the fixed set of model exports. Elapsed time and the last reported milestone help identify long waits without asserting worker liveness. Failed or interrupted jobs retain their last observed progress, and older jobs may have no measurements. After upgrading, new workers report progress for new jobs; let active refreshes finish before recreating their worker. Publication adoption still requires **Use latest**.
+
 ## 5. Inspect and reproduce retained results
 
 These commands need no EIA key:

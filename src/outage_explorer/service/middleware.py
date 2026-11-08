@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import time
 import uuid
 
@@ -29,9 +30,14 @@ class RequestMiddleware(MiddlewareMixin):
     """Apply consistent correlation, cache policy and security/error formatting."""
 
     def process_request(self, request):
-        """Assign an opaque request ID and monotonic start time for this request only."""
+        """Assign correlation, timing and a fresh style-only nonce for this response.
+
+        The nonce permits CodeMirror's generated style sheets without authorizing inline
+        scripts or unrestricted inline CSS. It is never persisted or logged.
+        """
         request.request_id = uuid.uuid4().hex
         request._outage_started = time.monotonic()
+        request.outage_style_nonce = secrets.token_urlsafe(24)
 
     def process_response(self, request, response):
         """Attach correlation/security headers and emit one bounded request event.
@@ -45,8 +51,12 @@ class RequestMiddleware(MiddlewareMixin):
         if not getattr(response, "_outage_public_asset", False):
             response["Cache-Control"] = "no-store"
         response["X-Content-Type-Options"] = "nosniff"
+        html_csp = HTML_CSP.replace(
+            "style-src 'self'",
+            f"style-src 'self' 'nonce-{request.outage_style_nonce}'",
+        )
         response["Content-Security-Policy"] = (
-            HTML_CSP
+            html_csp
             if response.get("Content-Type", "").startswith("text/html")
             else "default-src 'none'; frame-ancestors 'none'"
         )

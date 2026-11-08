@@ -18,10 +18,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .domain import DataValidationError, parse_date
-from .eia import EIAClient, EIAClientError, sanitize
-from .pipeline import IngestConfig, ingest
-from .storage import Catalog, StorageError
+from outage_explorer.data.domain import DataValidationError, parse_date
+from outage_explorer.data.eia import EIAClient, EIAClientError, sanitize
+from outage_explorer.data.pipeline import IngestConfig, ingest
+from outage_explorer.data.storage import Catalog, StorageError
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -130,7 +130,12 @@ def _model_command(args: argparse.Namespace) -> dict[str, Any]:
     over a selected model. Report output must be outside the immutable data directory. Local
     inspection needs no upstream API key; no user SQL is accepted.
     """
-    from .model_store import analytical_catalog, rebuild_model, resolve_model, verify_model
+    from outage_explorer.analytics.model_store import (
+        analytical_catalog,
+        rebuild_model,
+        resolve_model,
+        verify_model,
+    )
 
     root = args.data_dir.resolve()
     if args.model_action == "build":
@@ -147,8 +152,8 @@ def _model_command(args: argparse.Namespace) -> dict[str, Any]:
         with Catalog(root) as catalog:
             return {"builds": catalog.model_history(args.limit)}
     if args.model_action == "report":
-        from .pipeline import write_json
-        from .reports import findings_report
+        from outage_explorer.analytics.reports import findings_report
+        from outage_explorer.data.pipeline import write_json
 
         report = findings_report(root, args.start, args.end, model_id=args.model_id)
         if args.output:
