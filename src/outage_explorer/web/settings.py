@@ -3,13 +3,15 @@
 No dotenv file is loaded. Direct setup requires a strong Django secret; web.local instead
 supplies its generated key and explicit state path. Import resolves paths and creates the
 state directory. web.sqlite3 stores users/sessions/jobs/cache, separate from
-data/catalog.sqlite3 and immutable Parquet. Local HTTP is intended for the loopback launcher;
-hosted HTTPS/proxy configuration needs separate review.
+data/catalog.sqlite3 and immutable Parquet. Hosted deployments supply explicit allowed hosts
+and disable local HTTP; the Waitress launcher validates its optional trusted proxy separately.
 """
 
 from __future__ import annotations
 
 import os
+import re
+from ipaddress import ip_address
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
@@ -23,7 +25,36 @@ if len(SECRET_KEY) < 50 or len(set(SECRET_KEY)) < 5 or SECRET_KEY.startswith("dj
     )
 
 DEBUG = os.environ.get("OUTAGE_DJANGO_DEBUG", "0") == "1"
-ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+
+
+def _allowed_hosts(value: str) -> list[str]:
+    """Accept explicit host names/IPs, never URL prefixes, ports or wildcard hosts."""
+    hosts = [host.strip().lower() for host in value.split(",")]
+    for host in hosts:
+        if host.startswith("[") and host.endswith("]"):
+            try:
+                valid = ip_address(host[1:-1]).version == 6
+            except ValueError:
+                valid = False
+        else:
+            valid = len(host) <= 253 and re.fullmatch(
+                r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+                r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*",
+                host,
+            )
+        if not valid:
+            raise ImproperlyConfigured(
+                "OUTAGE_ALLOWED_HOSTS must contain comma-separated explicit host names or IPs."
+            )
+    return list(dict.fromkeys(hosts))
+
+
+ALLOWED_HOSTS = _allowed_hosts(os.environ.get("OUTAGE_ALLOWED_HOSTS", "127.0.0.1,localhost"))
+OUTAGE_DEPLOY_REVISION = os.environ.get("OUTAGE_DEPLOY_REVISION", "").strip().lower()
+if OUTAGE_DEPLOY_REVISION and not re.fullmatch(
+    r"[0-9a-f]{40}|[0-9a-f]{64}", OUTAGE_DEPLOY_REVISION
+):
+    raise ImproperlyConfigured("OUTAGE_DEPLOY_REVISION must be a full hexadecimal Git object ID.")
 OUTAGE_LOCAL_HTTP = os.environ.get("OUTAGE_LOCAL_HTTP", "1") == "1"
 OUTAGE_DATA_DIR = Path(os.environ.get("OUTAGE_DATA_DIR", BASE_DIR / "data")).resolve()
 OUTAGE_STATE_DIR = Path(os.environ.get("OUTAGE_STATE_DIR", BASE_DIR / ".service")).resolve()
@@ -102,6 +133,8 @@ CSRF_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SECURE = not OUTAGE_LOCAL_HTTP
 CSRF_FAILURE_VIEW = "outage_explorer.service.views.csrf_failure"
 SECURE_SSL_REDIRECT = not OUTAGE_LOCAL_HTTP
+# The private container health probe uses HTTP and never creates a session or reads data.
+SECURE_REDIRECT_EXEMPT = [r"^api/v1/health/live$"]
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"

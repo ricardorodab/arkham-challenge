@@ -1,0 +1,15 @@
+{
+    admin off
+}
+
+{$OUTAGE_PUBLIC_HOST} {
+    encode zstd gzip
+    reverse_proxy app:8000 {
+        # Always replace client forwarding headers at the sole trusted proxy.
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+        header_up -Forwarded
+    }
+    header Strict-Transport-Security "max-age=31536000"
+}

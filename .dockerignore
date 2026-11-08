@@ -12,8 +12,18 @@
 !LICENSE.*
 !src/
 !src/outage_explorer/
-!src/outage_explorer/contracts/
+!src/outage_explorer/analytics/
+!src/outage_explorer/analytics/contracts/
+!src/outage_explorer/analytics/sql/
+!src/outage_explorer/data/
+!src/outage_explorer/query/
 !src/outage_explorer/frontend/
+!src/outage_explorer/frontend/editor/
+!src/outage_explorer/frontend/locales/
+!src/outage_explorer/frontend/locales/es/
+!src/outage_explorer/frontend/locale/
+!src/outage_explorer/frontend/locale/es/
+!src/outage_explorer/frontend/locale/es/LC_MESSAGES/
 !src/outage_explorer/frontend/static/
 !src/outage_explorer/frontend/static/outage_explorer/
 !src/outage_explorer/frontend/templates/
@@ -23,12 +33,14 @@
 !src/outage_explorer/service/management/
 !src/outage_explorer/service/management/commands/
 !src/outage_explorer/service/migrations/
-!src/outage_explorer/sql/
 !src/outage_explorer/web/
+# Re-exclude descendants after the directory traversal exceptions. Docker applies
+# a directory exception to its children, so only the file rules below may admit bytes.
+src/**
 !src/outage_explorer/**/*.py
-!src/outage_explorer/contracts/*.json
+!src/outage_explorer/analytics/contracts/*.json
 !src/outage_explorer/service/openapi.json
-!src/outage_explorer/sql/*.sql
+!src/outage_explorer/analytics/sql/*.sql
 !src/outage_explorer/sandbox/*.cjs
 !src/outage_explorer/sandbox/*.wasm
 !src/outage_explorer/sandbox/PROVENANCE.md
@@ -37,6 +49,10 @@
 !src/outage_explorer/frontend/static/outage_explorer/*.js
 !src/outage_explorer/frontend/static/outage_explorer/*.css
 !src/outage_explorer/frontend/static/outage_explorer/*.svg
+!src/outage_explorer/frontend/static/outage_explorer/*.LICENSE.txt
+!src/outage_explorer/frontend/editor/*.js
+!src/outage_explorer/frontend/locales/es/*.json
+!src/outage_explorer/frontend/locale/es/LC_MESSAGES/*.mo
 **/__pycache__/
 **/*.py[cod]
 **/.env*

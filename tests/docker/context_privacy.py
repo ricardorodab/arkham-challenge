@@ -40,6 +40,8 @@ BLOCKED = (
     "TODO.md",
     "PLAN.md",
     "src/outage_explorer/private/key.py",
+    "src/outage_explorer/operator.pem",
+    "src/outage_explorer/operator-notes.txt",
     ".venv/canary.txt",
     "node_modules/canary.txt",
 )

@@ -1,6 +1,6 @@
 # Outage Explorer
 
-Outage Explorer turns published U.S. nuclear-outage observations into a local, reproducible analytical workspace. A Python connector downloads the EIA's national, facility and generator data; a verified Parquet model supports an authenticated Django API and browser interface. Public hosting remains future work.
+Outage Explorer turns published U.S. nuclear-outage observations into a reproducible analytical workspace. A Python connector downloads the EIA's national, facility and generator data; a verified Parquet model supports an authenticated Django API and browser interface. Run it locally or deploy the containerized application to one persistent Linux VM.
 
 ## Documentation
 
@@ -16,6 +16,7 @@ Start with the project tour, then follow the data and request paths. These are t
 | [Browser workspace](docs/BROWSER_WORKSPACE.md) | User flows, product choices, version consistency, sessions, export and accessibility |
 | [Engineering decisions](docs/DECISIONS.md) | The seven required challenge choices and all 31 detailed design decisions |
 | [Docker workflow](docs/DOCKER.md) | Portable build/startup, private credentials, ingestion, refresh-worker configuration and persistent volumes |
+| [VM deployment](deploy/README.md) | HTTPS hosting, GitHub Actions releases, persistent state, rollback and operator configuration |
 | [Local operations](docs/LOCAL_OPERATIONS.md) | Installation, ingestion, model inspection, reports, checks and recovery |
 | [Engineering notes and verification](docs/NOTES.md) | Implementation stages, actual corrections, contribution disclosure, verification and remaining limits |
 

@@ -343,6 +343,15 @@ def test_public_liveness_wire_shape_is_metadata_free_and_matches_the_spec(
     assert payload["status"] == schema["properties"]["status"]["const"]
 
 
+def test_liveness_contract_documents_optional_git_revision_header(specification):
+    headers = specification["paths"]["/api/v1/health/live"]["get"]["responses"]["200"]["headers"]
+    schema = headers["X-Outage-Revision"]["schema"]
+    assert schema["type"] == "string"
+    assert re.fullmatch(schema["pattern"], "a1" * 20)
+    assert re.fullmatch(schema["pattern"], "b2" * 32)
+    assert not re.fullmatch(schema["pattern"], "main")
+
+
 @pytest.mark.django_db
 def test_session_wire_scope_is_opaque_and_matches_the_required_schema(
     specification, authenticated_client, monkeypatch

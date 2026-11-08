@@ -122,3 +122,68 @@ def test_weak_deployment_secrets_fail_closed(tmp_path, weak_secret):
     )
     assert result.returncode != 0 and "OUTAGE_DJANGO_SECRET_KEY must be configured" in result.stderr
     assert weak_secret not in result.stderr
+
+
+def deployed_settings(tmp_path, **values):
+    """Import deployed settings in an isolated process, without local configuration files."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"PYTHONPATH", "PYTHONHOME", "OUTAGE_ALLOWED_HOSTS", "OUTAGE_DEPLOY_REVISION"}
+    }
+    env.update(
+        OUTAGE_DJANGO_SECRET_KEY="synthetic-deployment-key-only-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        OUTAGE_STATE_DIR=str(tmp_path / "state"),
+        OUTAGE_LOCAL_HTTP="0",
+        **values,
+    )
+    return subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import json; from outage_explorer.web import settings as s; "
+            "print(json.dumps([s.ALLOWED_HOSTS,s.OUTAGE_DEPLOY_REVISION]))",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+@pytest.mark.parametrize("revision", ["a1" * 20, "b2" * 32])
+def test_hosted_hosts_and_full_git_revision_are_explicit(tmp_path, revision):
+    result = deployed_settings(
+        tmp_path,
+        OUTAGE_ALLOWED_HOSTS=" Arkham.example,127.0.0.1,[::1],arkham.example ",
+        OUTAGE_DEPLOY_REVISION=revision,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [["arkham.example", "127.0.0.1", "[::1]"], revision]
+
+
+@pytest.mark.parametrize(
+    "hosts",
+    [
+        "",
+        "*",
+        ".example.com",
+        "https://arkham.example",
+        "arkham.example:443",
+        "good.example,",
+        "[bad]",
+    ],
+)
+def test_hosted_hosts_reject_missing_or_unbounded_host_configuration(tmp_path, hosts):
+    result = deployed_settings(tmp_path, OUTAGE_ALLOWED_HOSTS=hosts)
+    assert result.returncode != 0
+    assert "OUTAGE_ALLOWED_HOSTS must contain" in result.stderr
+
+
+@pytest.mark.parametrize("revision", ["main", "a1" * 19, "z" * 40, "a" * 40 + "\nsecret"])
+def test_deployment_revision_rejects_arbitrary_metadata_without_printing_it(tmp_path, revision):
+    result = deployed_settings(tmp_path, OUTAGE_DEPLOY_REVISION=revision)
+    assert result.returncode != 0
+    assert "OUTAGE_DEPLOY_REVISION must be a full hexadecimal Git object ID" in result.stderr
+    assert revision not in result.stderr

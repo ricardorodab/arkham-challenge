@@ -971,7 +971,7 @@
       "get": {
         "operationId": "getLiveness",
         "summary": "Check that the HTTP service responds",
-        "description": "Public, constant status only. Performs no model, catalog, query, source-network or credential access and discloses no data/version metadata.",
+        "description": "Public, constant status body. Performs no model, catalog, query, source-network or credential access and discloses no dataset version metadata. Hosted deployments may include the public Git revision in X-Outage-Revision for rollout verification.",
         "x-allowed-personas": [],
         "responses": {
           "200": {
@@ -989,6 +989,13 @@
               },
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
+              },
+              "X-Outage-Revision": {
+                "description": "Optional full public Git object ID of the deployed application; absent for ordinary local runs.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
               }
             }
           },

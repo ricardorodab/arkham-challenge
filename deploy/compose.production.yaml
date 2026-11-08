@@ -1,0 +1,101 @@
+name: arkham
+
+x-runtime: &runtime
+  image: ${OUTAGE_IMAGE:?An immutable release image is required}
+  user: "10001:10001"
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=128m,mode=1777
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  pids_limit: 128
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  env_file:
+    - /etc/arkham/runtime.env
+  environment: &environment
+    OUTAGE_LOCAL_HTTP: "0"
+    OUTAGE_ALLOWED_HOSTS: ${OUTAGE_PUBLIC_HOST:?A public DNS hostname is required},127.0.0.1,localhost
+    OUTAGE_TRUSTED_PROXY: "172.30.89.2"
+    OUTAGE_DEPLOY_REVISION: ${OUTAGE_DEPLOY_REVISION:?A release revision is required}
+    OUTAGE_DATA_DIR: /appdata/data
+    OUTAGE_STATE_DIR: /appdata/state
+  volumes:
+    - /srv/arkham/data:/appdata/data
+    - /srv/arkham/state:/appdata/state
+    - ${OUTAGE_RELEASE_DIR:?A release directory is required}/deploy/app-control.py:/deployment/app-control.py:ro
+  networks: [backend]
+
+services:
+  init:
+    <<: *runtime
+    command: [python, /deployment/app-control.py, init]
+    env_file:
+      - /etc/arkham/runtime.env
+      - /etc/arkham/bootstrap.env
+    restart: "no"
+    profiles: [maintenance]
+
+  app:
+    <<: *runtime
+    command: [python, -m, outage_explorer.web.serve, --host, 0.0.0.0, --port, "8000"]
+    mem_limit: 1536m
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks:
+      backend:
+        ipv4_address: 172.30.89.3
+    healthcheck:
+      test: [CMD, python, /deployment/app-control.py, health]
+      interval: 5s
+      timeout: 5s
+      start_period: 10s
+      retries: 12
+    restart: unless-stopped
+
+  worker:
+    <<: *runtime
+    command: [python, -m, outage_explorer.web.manage, run_refresh_worker]
+    env_file:
+      - /etc/arkham/runtime.env
+      - /etc/arkham/worker.env
+    mem_limit: 1792m
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  proxy:
+    # Official multi-platform Caddy 2.11.9-alpine index, verified from Docker Hub.
+    image: caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    logging: *logging
+    mem_limit: 160m
+    environment:
+      OUTAGE_PUBLIC_HOST: ${OUTAGE_PUBLIC_HOST}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${OUTAGE_RELEASE_DIR}/deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/arkham/caddy/data:/data
+      - /srv/arkham/caddy/config:/config
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    networks:
+      backend:
+        ipv4_address: 172.30.89.2
+    restart: unless-stopped
+
+networks:
+  backend:
+    name: arkham_backend
+    ipam:
+      config:
+        - subnet: 172.30.89.0/29

@@ -53,6 +53,11 @@ jobs:
     name: Docker build and acceptance
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,8 +66,86 @@ jobs:
         with:
           python-version: '3.14'
       - name: Build the pinned production image
-        run: docker build --pull --tag arkham:ci .
+        run: >-
+          docker build --pull
+          --label "org.opencontainers.image.revision=$GITHUB_SHA"
+          --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY"
+          --tag arkham:ci .
       - name: Verify private files are excluded from the build context
         run: python tests/docker/context_privacy.py --image arkham:ci
       - name: Exercise isolated containers through host HTTP
         run: python tests/docker/acceptance.py --image arkham:ci
+      - name: Publish the accepted image without rebuilding
+        id: publish
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
+        run: |
+          set -Eeuo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d "$RUNNER_TEMP/arkham-registry.XXXXXXXX")
+          trap 'rm -f "$DOCKER_CONFIG/config.json"; rmdir "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USERNAME" --password-stdin
+          unset GHCR_TOKEN
+          docker tag arkham:ci "$image:$GITHUB_SHA"
+          docker push "$image:$GITHUB_SHA"
+          reference=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$GITHUB_SHA")
+          [[ "$reference" =~ ^${image}@sha256:[0-9a-f]{64}$ ]]
+          printf 'image=%s\n' "$reference" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy the accepted digest to Azure VM
+    needs: [test, container]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: arkham-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Skip a release superseded on main
+        id: current
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          latest=$(git ls-remote origin refs/heads/main)
+          latest=${latest%%$'\t'*}
+          if [[ "$latest" == "$GITHUB_SHA" ]]; then
+            printf 'current=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'current=false\n' >> "$GITHUB_OUTPUT"
+            printf 'Skipped deployment: this commit was superseded on main.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.current.outputs.current == 'true'
+        with:
+          python-version: '3.14'
+      # OIDC uses the main-branch ref subject configured on the Azure identity.
+      - name: Sign in to Azure with GitHub OIDC
+        if: steps.current.outputs.current == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Apply the immutable release and verify public HTTPS
+        if: steps.current.outputs.current == 'true'
+        run: python deploy/invoke-managed-run-command.py
+        env:
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          AZURE_VM_NAME: ${{ vars.AZURE_VM_NAME }}
+          OUTAGE_PUBLIC_HOST: ${{ vars.OUTAGE_PUBLIC_HOST }}
+          OUTAGE_IMAGE: ${{ needs.container.outputs.image }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

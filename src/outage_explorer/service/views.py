@@ -375,8 +375,11 @@ def refresh_status(request, actor, job_id):
 
 @endpoint("GET", authenticated=False)
 def live(request, actor):
-    """Report process liveness without requiring a session or analytical availability."""
-    return response({"status": "ok"})
+    """Report liveness and an optional public deployment revision without data access."""
+    result = response({"status": "ok"})
+    if settings.OUTAGE_DEPLOY_REVISION:
+        result["X-Outage-Revision"] = settings.OUTAGE_DEPLOY_REVISION
+    return result
 
 
 @endpoint("GET")

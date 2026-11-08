@@ -401,6 +401,17 @@ def test_public_health_is_metadata_free_and_readiness_is_admin_only(
         denied(client.get("/api/v1/health/ready"), 403, "admin_required")
 
 
+def test_public_health_revision_comes_from_deployment_configuration(settings, no_analytical_io):
+    settings.OUTAGE_DEPLOY_REVISION = "a1" * 20
+    result = Client().get("/api/v1/health/live", HTTP_X_OUTAGE_REVISION="spoofed")
+    assert result.status_code == 200
+    assert result.json() == {"status": "ok"}
+    assert result["X-Outage-Revision"] == settings.OUTAGE_DEPLOY_REVISION
+    assert result["Cache-Control"] == "no-store"
+    settings.OUTAGE_DEPLOY_REVISION = ""
+    assert "X-Outage-Revision" not in Client().get("/api/v1/health/live")
+
+
 @pytest.mark.parametrize(
     "payload",
     [

@@ -1,4 +1,4 @@
-"""Launch the local Django project through Waitress and its WSGI application.
+"""Launch the Django project through Waitress and its WSGI application.
 
 Frontend HTML/assets and JSON service routes share this server and origin. The ASGI
 application is an alternate integration entry point, not the server selected by web.local
@@ -18,7 +18,9 @@ def main():
     """Validate the bind address/port and serve with bounded HTTP/concurrency settings.
 
     Use twelve request threads and explicit body/header/connection/time limits; discard
-    untrusted proxy headers and suppress tracebacks. This launcher does not provision HTTPS,
+    untrusted proxy headers and suppress tracebacks. An explicitly configured proxy IP may
+    supply only X-Forwarded-Proto; Waitress translates it into the WSGI scheme for Django.
+    This launcher does not provision HTTPS,
     start a refresh worker or install the analytical runtime. Loopback remains the
     default; containers explicitly select their internal 0.0.0.0 interface.
     """
@@ -28,6 +30,18 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
+    proxy_options = {}
+    trusted_proxy = os.environ.get("OUTAGE_TRUSTED_PROXY", "").strip()
+    if trusted_proxy:
+        try:
+            trusted_proxy = str(ip_address(trusted_proxy))
+        except ValueError:
+            parser.error("OUTAGE_TRUSTED_PROXY must be a single explicit IP address")
+        proxy_options = {
+            "trusted_proxy": trusted_proxy,
+            "trusted_proxy_count": 1,
+            "trusted_proxy_headers": {"x-forwarded-proto"},
+        }
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "outage_explorer.web.settings")
     from .wsgi import application
 
@@ -42,6 +56,7 @@ def main():
         channel_timeout=30,
         clear_untrusted_proxy_headers=True,
         expose_tracebacks=False,
+        **proxy_options,
     )
 
 
