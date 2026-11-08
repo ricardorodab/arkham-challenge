@@ -1,4 +1,4 @@
-"""Exercise protected credential transport and actual deployment success boundaries offline."""
+"""Exercise credential-free VM deployment and actual success boundaries offline."""
 
 from __future__ import annotations
 
@@ -31,8 +31,6 @@ def values():
             "OUTAGE_IMAGE": "ghcr.io/example/repository-vm@sha256:" + "b" * 64,
             "GITHUB_REPOSITORY": "example/repository",
             "GITHUB_SHA": "a" * 40,
-            "GHCR_USERNAME": "synthetic-user",
-            "GHCR_TOKEN": "synthetic-registry-token-never-use",
         }
     )
 
@@ -55,29 +53,23 @@ def test_deployment_inputs_reject_mutable_or_injected_public_identifiers(values,
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_protected_json_body_is_private_removed_and_never_in_argv(monkeypatch, values, fail):
+def test_management_json_body_is_private_removed_and_not_passed_in_argv(monkeypatch, fail):
     observed = {}
 
     def request(arguments):
-        assert values["GHCR_TOKEN"] not in str(arguments)
+        assert "synthetic-public-script" not in str(arguments)
         path = Path(arguments[arguments.index("--body") + 1][1:])
         observed["path"] = path
         if os.name != "nt":
             assert path.stat().st_mode & 0o777 == 0o600
             assert path.parent.stat().st_mode & 0o777 == 0o700
-        assert json.loads(path.read_text())["properties"]["protectedParameters"] == [
-            {"name": "GHCR_TOKEN", "value": values["GHCR_TOKEN"]}
-        ]
+        assert json.loads(path.read_text()) == payload
         if fail:
             raise command.DeploymentError("Synthetic Azure failure.")
         return {}
 
     monkeypatch.setattr(command, "az_json", request)
-    payload = {
-        "properties": {
-            "protectedParameters": [{"name": "GHCR_TOKEN", "value": values["GHCR_TOKEN"]}]
-        }
-    }
+    payload = {"properties": {"source": {"script": "synthetic-public-script"}}}
     if fail:
         with pytest.raises(command.DeploymentError):
             command.submit("https://management.azure.com/synthetic", payload)
@@ -87,22 +79,20 @@ def test_protected_json_body_is_private_removed_and_never_in_argv(monkeypatch, v
     assert not observed["path"].parent.exists()
 
 
-def test_azure_errors_do_not_echo_secret_adjacent_output(monkeypatch, values, capsys):
-    token = values["GHCR_TOKEN"]
-    monkeypatch.setenv("GHCR_TOKEN", token)
+def test_azure_errors_do_not_echo_raw_guest_diagnostics(monkeypatch, capsys):
+    private_diagnostic = "synthetic-operator-diagnostic-do-not-print"
 
     def run(arguments, **options):
-        assert token not in str(arguments)
-        assert "GHCR_TOKEN" not in options["env"]
+        assert private_diagnostic not in str(arguments)
         assert options["capture_output"] is True
-        return SimpleNamespace(returncode=1, stdout=token, stderr=token)
+        return SimpleNamespace(returncode=1, stdout=private_diagnostic, stderr=private_diagnostic)
 
     monkeypatch.setattr(command.subprocess, "run", run)
     with pytest.raises(command.DeploymentError) as error:
         command.az_json(["--method", "get", "--url", "https://management.azure.com/synthetic"])
-    assert token not in str(error.value)
+    assert private_diagnostic not in str(error.value)
     captured = capsys.readouterr()
-    assert token not in captured.out + captured.err
+    assert private_diagnostic not in captured.out + captured.err
 
 
 def result(revision, **overrides):
@@ -138,7 +128,7 @@ def test_completion_requires_this_revision_and_a_terminal_guest_result(values):
         command.completed(result("c" * 40), revision)
 
 
-def test_deployment_binds_protected_token_exact_source_digest_and_public_verification(
+def test_deployment_binds_public_source_digest_and_https_without_registry_credentials(
     monkeypatch, values
 ):
     observed = {}
@@ -167,14 +157,13 @@ def test_deployment_binds_protected_token_exact_source_digest_and_public_verific
     receipt = command.deploy(values)
     assert receipt == {"deployment": "healthy", "revision": values["GITHUB_SHA"], "https": True}
     properties = observed["body"]["properties"]
-    assert properties["protectedParameters"] == [
-        {"name": "GHCR_TOKEN", "value": values["GHCR_TOKEN"]}
-    ]
-    assert properties["parameters"] == [{"name": "GHCR_USERNAME", "value": values["GHCR_USERNAME"]}]
+    assert "parameters" not in properties
+    assert "protectedParameters" not in properties
+    assert "GHCR_TOKEN" not in json.dumps(observed["body"])
+    assert "GHCR_USERNAME" not in json.dumps(observed["body"])
     assert properties["treatFailureAsDeploymentFailure"] is True
     script = properties["source"]["script"]
     assert script.startswith("/bin/bash <<'ARKHAM_MANAGED_RUN'\n")
-    assert values["GHCR_TOKEN"] not in script
     assert values["GITHUB_SHA"] in script and values["OUTAGE_IMAGE"] in script
     assert "https://codeload.github.com/" in script
     assert "archive.extractall" not in script

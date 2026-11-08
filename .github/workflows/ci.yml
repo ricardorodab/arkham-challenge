@@ -108,7 +108,6 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      packages: read
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -148,5 +147,3 @@ jobs:
           AZURE_VM_NAME: ${{ vars.AZURE_VM_NAME }}
           OUTAGE_PUBLIC_HOST: ${{ vars.OUTAGE_PUBLIC_HOST }}
           OUTAGE_IMAGE: ${{ needs.container.outputs.image }}
-          GHCR_USERNAME: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,9 +1,8 @@
-"""Deploy a tested digest using Azure OIDC and a protected, short-lived GHCR token.
+"""Deploy a tested public image digest using Azure OIDC and Managed Run Command.
 
-Azure Managed Run Command delivers named Linux parameters as environment variables.
-The registry token exists in a private temporary REST body, never command arguments or
-printed responses. No SSH access, GitHub artifact containing secrets, or static Azure
-credential is needed. The public source archive supplies only the deployment files.
+No registry credential, SSH access, GitHub artifact containing secrets, or static Azure
+credential is needed. A private temporary REST body carries the guest script. The public
+source archive supplies only deployment files; runtime secrets and data stay on the VM.
 """
 
 from __future__ import annotations
@@ -49,8 +48,6 @@ def inputs(environment):
         "OUTAGE_IMAGE",
         "GITHUB_REPOSITORY",
         "GITHUB_SHA",
-        "GHCR_USERNAME",
-        "GHCR_TOKEN",
     )
     values = {}
     for name in names:
@@ -64,7 +61,6 @@ def inputs(environment):
         "AZURE_VM_NAME": r"[A-Za-z0-9_.-]{1,64}",
         "GITHUB_REPOSITORY": r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*",
         "GITHUB_SHA": r"[0-9a-f]{40}",
-        "GHCR_USERNAME": r"[A-Za-z0-9][A-Za-z0-9_.\[\]-]*",
         "OUTAGE_PUBLIC_HOST": (
             r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
             r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+"
@@ -132,17 +128,15 @@ with tarfile.open(fileobj=io.BytesIO(content), mode='r:gz') as archive:
         "python3 - <<'ARKHAM_SOURCE'\n" + download + "ARKHAM_SOURCE\n"
         f"bash {shlex.quote(release + '/deploy/bootstrap-vm.sh')} "
         f"{shlex.quote(values['OUTAGE_PUBLIC_HOST'])}\n"
-        "export GHCR_USERNAME GHCR_TOKEN\n"
         f"bash {shlex.quote(release + '/deploy/release.sh')} "
         f"{shlex.quote(revision)} {shlex.quote(values['OUTAGE_IMAGE'])}\n"
-        "unset GHCR_TOKEN GHCR_USERNAME\n"
         "ARKHAM_MANAGED_RUN\n"
     )
 
 
 def az_json(arguments, *, allow_empty=False):
     """Capture Azure CLI responses and errors; never echo secret-adjacent Azure output."""
-    environment = {key: value for key, value in os.environ.items() if key != "GHCR_TOKEN"}
+    environment = dict(os.environ)
     environment["AZURE_CORE_ONLY_SHOW_ERRORS"] = "true"
     try:
         result = subprocess.run(
@@ -169,7 +163,7 @@ def az_json(arguments, *, allow_empty=False):
 
 
 def submit(command_url, payload):
-    """Transport protected parameters through a mode-0600 file and remove it immediately."""
+    """Transport the management request through a mode-0600 file and remove it immediately."""
     with tempfile.TemporaryDirectory(prefix="arkham-run-command-") as directory:
         path = Path(directory) / "request.json"
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -249,8 +243,6 @@ def deploy(values):
             "location": location,
             "properties": {
                 "source": {"script": guest_script(values)},
-                "parameters": [{"name": "GHCR_USERNAME", "value": values["GHCR_USERNAME"]}],
-                "protectedParameters": [{"name": "GHCR_TOKEN", "value": values["GHCR_TOKEN"]}],
                 "asyncExecution": True,
                 "treatFailureAsDeploymentFailure": True,
                 "timeoutInSeconds": SCRIPT_TIMEOUT_SECONDS,

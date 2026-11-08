@@ -3,8 +3,8 @@
 The production stack is separate from `compose.yaml`. It runs a fixed image digest with
 independent web and refresh-worker processes, and Caddy terminates public HTTPS. The app
 port is published only on loopback. Only Caddy's static private address is trusted for
-forwarding HTTPS headers. Inbound Azure NSG rules need TCP 80 and 443; public SSH is not
-required because deployments use Azure Managed Run Command.
+forwarding the HTTPS scheme and client address. Inbound Azure NSG rules need TCP 80 and 443;
+public SSH is not required because deployments use Azure Managed Run Command.
 
 The host keeps `/srv/arkham/data` and `/srv/arkham/state` across every release, including
 SQLite databases, committed WAL, users, password hashes, sessions, saved views, refresh
@@ -17,7 +17,7 @@ publication exists. Live ingestion needs an operator-provided EIA key.
 
 The [CI workflow](../.github/workflows/ci.yml) runs the Python, JavaScript, browser and
 container checks before deployment. For a push to `main`, it publishes the already accepted
-image to private GHCR without rebuilding, records its immutable digest, signs in to Azure
+image to public GHCR without rebuilding, records its immutable digest, signs in to Azure
 using OIDC, and invokes Azure Managed Run Command on the VM. Deployment succeeds only after
 certificate-validated public HTTPS returns the exact commit in `X-Outage-Revision`.
 Pull requests and other branches run checks without publishing or deploying.
@@ -55,9 +55,9 @@ VM read plus managed-command read/write/delete and automatically deletes complet
 records. It retains any command whose terminal state is unknown, allowing an in-progress
 upgrade to finish. [Azure's Compute permissions](https://learn.microsoft.com/en-us/azure/role-based-access-control/permissions/compute)
 lists these actions. No open SSH port, Azure client secret, stored registry PAT or GitHub
-credential secret is needed. The workflow's short-lived `GITHUB_TOKEN` pulls the private
-package through a protected Run Command parameter. Keep the GHCR package private and linked
-to this repository so its workflow token can read it.
+credential secret is needed. The workflow's short-lived `GITHUB_TOKEN` publishes the public
+code image. The VM pulls its exact digest anonymously; no GitHub or registry credential
+is sent through Run Command or retained on the VM.
 
 Push to `main` and follow the CI run's deployment job. Upgrades are serialized. If deployment
 is deferred because a refresh is queued/running, let that work complete and use **Re-run
@@ -84,11 +84,12 @@ Account changes in the application do not rewrite the initial-password file.
 
 ## Release contract
 
-GitHub Actions publishes the accepted image to the dedicated
-`ghcr.io/<owner>/<repo>-vm` package. Before promoting its digest, the workflow checks
-authenticated package metadata for private visibility and an exact source-repository
-association, then verifies that an anonymous registry token exchange cannot retrieve the
-image manifest. A failed or inconclusive privacy check stops deployment.
+GitHub Actions publishes the accepted image to the dedicated public
+`ghcr.io/<owner>/<repo>-vm` package. Before promoting its digest, the workflow completes
+an anonymous registry token exchange and requires the exact manifest's
+`Docker-Content-Digest` header to match. The image contains audited public source and
+dependencies; runtime credentials, operator files and application data are excluded.
+The separate Docker context privacy and functional acceptance checks remain mandatory.
 
 Extract the exact commit's source archive under `/opt/arkham/releases/<full-commit-sha>`.
 Build and publish an image with OCI label `org.opencontainers.image.revision` equal to that
@@ -98,8 +99,9 @@ SHA. Invoke as root:
 bash /opt/arkham/releases/<sha>/deploy/release.sh <sha> ghcr.io/<owner>/<image>@sha256:<digest>
 ```
 
-For a private GHCR image, supply `GHCR_USERNAME` and a short-lived `GHCR_TOKEN` through
-Azure Managed Run Command **protected parameters**. The deployment uses an ephemeral
+Operators invoking `release.sh` with a separate private GHCR image may supply
+`GHCR_USERNAME` and a short-lived `GHCR_TOKEN` through Azure Managed Run Command
+**protected parameters**. That optional operator path uses an ephemeral
 root-only Docker configuration, pulls the immutable digest, then removes that configuration
 and unsets the token before Compose. It never writes a registry credential to persistent
 Docker configuration. A local `docker save` archive can optionally be a third argument,

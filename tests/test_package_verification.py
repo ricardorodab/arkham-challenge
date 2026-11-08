@@ -1,9 +1,8 @@
-"""Check package privacy using authenticated metadata and a real anonymous-token flow."""
+"""Check anonymous registry-token exchange and exact immutable public-image verification."""
 
 from __future__ import annotations
 
 import importlib.util
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,143 +14,90 @@ SPEC = importlib.util.spec_from_file_location(
 )
 package = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(package)
+DIGEST = "sha256:" + "a" * 64
 
 
 @pytest.fixture
 def environment():
     return {
         "GITHUB_REPOSITORY": "example/repository",
-        "GITHUB_REPOSITORY_ID": "12345",
-        "GHCR_TOKEN": "synthetic-job-token-never-use",
-        "OUTAGE_IMAGE": "ghcr.io/example/repository-vm@sha256:" + "a" * 64,
+        "OUTAGE_IMAGE": "ghcr.io/example/repository-vm@" + DIGEST,
     }
 
 
-def metadata(owner_type="User"):
-    owner = {"login": "example", "id": 6789, "type": owner_type}
-    source = {"id": 12345, "full_name": "example/repository", "owner": owner}
-    image = {
-        "name": "repository-vm",
-        "package_type": "container",
-        "visibility": "private",
-        "repository": {"id": 12345},
-        "owner": owner,
-    }
-    return source, image
-
-
-@pytest.mark.parametrize("owner_type,owner_route", [("User", "users"), ("Organization", "orgs")])
-def test_private_package_requires_metadata_and_denied_anonymous_pull(
-    monkeypatch, environment, owner_type, owner_route
+def test_public_image_verifies_full_anonymous_flow_without_job_credentials(
+    monkeypatch, environment
 ):
-    source, image = metadata(owner_type)
     calls = []
 
     def fetch(url, headers):
         calls.append((url, headers))
-        if url == "https://api.github.com/repos/example/repository":
-            assert headers["Authorization"] == "Bearer " + environment["GHCR_TOKEN"]
-            return 200, json.dumps(source).encode()
-        if url == f"https://api.github.com/{owner_route}/example/packages/container/repository-vm":
-            assert headers["Authorization"] == "Bearer " + environment["GHCR_TOKEN"]
-            return 200, json.dumps(image).encode()
-        assert url.startswith("https://ghcr.io/token?")
-        assert "Authorization" not in headers
-        assert environment["GHCR_TOKEN"] not in str(headers)
-        return 403, b""
+        assert not url.startswith("https://api.github.com/")
+        if "/token?" in url:
+            assert headers == {}
+            assert "repository%3Aexample%2Frepository-vm%3Apull" in url
+            return 200, b'{"token":"synthetic-anonymous-token"}', {}
+        assert url == "https://ghcr.io/v2/example/repository-vm/manifests/" + DIGEST
+        assert headers["Authorization"] == "Bearer synthetic-anonymous-token"
+        assert "application/vnd.oci.image.manifest.v1+json" in headers["Accept"]
+        return 200, b"synthetic-manifest", {"docker-content-digest": DIGEST}
 
     monkeypatch.setattr(package, "fetch", fetch)
     assert package.verify(environment) == {
-        "package": "private",
+        "package": "public",
         "image": environment["OUTAGE_IMAGE"],
-        "anonymous_pull": "denied",
+        "anonymous_pull": "verified",
     }
-    assert len(calls) == 3
-
-
-@pytest.mark.parametrize(
-    "changed",
-    [
-        {"visibility": "public"},
-        {"visibility": "internal"},
-        {"repository": {"id": 54321}},
-        {"repository": None},
-        {"owner": {"id": 9876, "login": "someone-else"}},
-        {"name": "repository"},
-        {"package_type": "npm"},
-    ],
-)
-def test_public_or_unassociated_package_is_never_promoted(monkeypatch, environment, changed):
-    source, image = metadata()
-    image.update(changed)
-    responses = iter([source, image])
-    monkeypatch.setattr(package, "github", lambda *_: next(responses))
-    monkeypatch.setattr(
-        package, "anonymous_pull_denied", lambda *_: pytest.fail("Metadata failed open")
-    )
-    with pytest.raises(package.VerificationError):
-        package.verify(environment)
-
-
-@pytest.mark.parametrize("status", [200, 429, 500, 302])
-def test_anonymous_bearer_manifest_success_or_ambiguous_status_fails(monkeypatch, status):
-    calls = []
-
-    def fetch(url, headers):
-        calls.append(url)
-        if "/token?" in url:
-            assert headers == {}
-            return 200, b'{"token":"synthetic-anonymous-token"}'
-        assert "/manifests/sha256:" in url
-        assert headers["Authorization"] == "Bearer synthetic-anonymous-token"
-        assert "application/vnd.oci.image.manifest.v1+json" in headers["Accept"]
-        return status, b""
-
-    monkeypatch.setattr(package, "fetch", fetch)
-    with pytest.raises(package.VerificationError):
-        package.anonymous_pull_denied("example/repository-vm", "sha256:" + "a" * 64)
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize("status", [401, 403, 404])
-def test_anonymous_bearer_manifest_denial_is_accepted(monkeypatch, status):
-    responses = iter([(200, b'{"token":"synthetic-anonymous-token"}'), (status, b"")])
+@pytest.mark.parametrize("status", [401, 403, 404, 429, 500, 302])
+def test_manifest_denial_or_ambiguous_status_blocks_credential_free_deployment(monkeypatch, status):
+    responses = iter([(200, b'{"token":"synthetic-anonymous-token"}', {}), (status, b"", {})])
     monkeypatch.setattr(package, "fetch", lambda *_: next(responses))
-    package.anonymous_pull_denied("example/repository-vm", "sha256:" + "a" * 64)
+    with pytest.raises(package.VerificationError, match=f"HTTP {status}"):
+        package.verify_anonymous_pull("example/repository-vm", DIGEST)
 
 
-@pytest.mark.parametrize("status,body", [(429, b""), (500, b""), (200, b"{}"), (200, b"not JSON")])
-def test_token_service_outage_or_malformed_response_cannot_count_as_privacy(
-    monkeypatch, status, body
-):
-    monkeypatch.setattr(package, "fetch", lambda *_: (status, body))
-    with pytest.raises(package.VerificationError):
-        package.anonymous_pull_denied("example/repository-vm", "sha256:" + "a" * 64)
+@pytest.mark.parametrize("reported_digest", [None, "sha256:" + "b" * 64])
+def test_manifest_must_report_the_exact_accepted_digest(monkeypatch, reported_digest):
+    responses = iter(
+        [
+            (200, b'{"token":"synthetic-anonymous-token"}', {}),
+            (200, b"manifest", {"docker-content-digest": reported_digest}),
+        ]
+    )
+    monkeypatch.setattr(package, "fetch", lambda *_: next(responses))
+    with pytest.raises(package.VerificationError, match="exact accepted digest"):
+        package.verify_anonymous_pull("example/repository-vm", DIGEST)
 
 
 @pytest.mark.parametrize(
-    "path,phase",
+    "status,body",
+    [(401, b""), (403, b""), (429, b""), (500, b""), (200, b"{}"), (200, b"not JSON")],
+)
+def test_token_service_failure_or_malformed_response_cannot_pass(monkeypatch, status, body):
+    monkeypatch.setattr(package, "fetch", lambda *_: (status, body, {}))
+    with pytest.raises(package.VerificationError):
+        package.verify_anonymous_pull("example/repository-vm", DIGEST)
+
+
+@pytest.mark.parametrize(
+    "image",
     [
-        ("repos/example/repository", "repository"),
-        ("users/example/packages/container/repository-vm", "package"),
+        "ghcr.io/example/repository-vm:latest",
+        "ghcr.io/example/repository@" + DIGEST,
+        "ghcr.io/another/repository-vm@" + DIGEST,
     ],
 )
-def test_metadata_access_failure_identifies_phase_without_response_or_token(
-    monkeypatch, environment, capsys, path, phase
-):
-    token = environment["GHCR_TOKEN"]
-    monkeypatch.setattr(package, "fetch", lambda *_: (403, token.encode()))
-    with pytest.raises(package.VerificationError) as error:
-        package.github(path, token)
-    assert f"Authenticated {phase} metadata" in str(error.value)
-    assert "HTTP 403" in str(error.value)
-    assert token not in str(error.value)
-    captured = capsys.readouterr()
-    assert token not in captured.out + captured.err
+def test_only_the_dedicated_repository_image_digest_is_accepted(monkeypatch, environment, image):
+    monkeypatch.setattr(package, "fetch", lambda *_: pytest.fail("Invalid image reached registry"))
+    with pytest.raises(package.VerificationError):
+        package.verify({**environment, "OUTAGE_IMAGE": image})
 
 
-def test_transport_errors_never_reveal_an_authorization_header(monkeypatch, environment, capsys):
-    token = environment["GHCR_TOKEN"]
+def test_transport_errors_never_reveal_an_anonymous_authorization_header(monkeypatch, capsys):
+    token = "synthetic-anonymous-token"
 
     def fail(*_args, **_kwargs):
         raise ValueError("Synthetic invalid Authorization header: Bearer " + token)
@@ -160,7 +106,31 @@ def test_transport_errors_never_reveal_an_authorization_header(monkeypatch, envi
         package.urllib.request, "build_opener", lambda *_: SimpleNamespace(open=fail)
     )
     with pytest.raises(package.VerificationError) as error:
-        package.github("repos/example/repository", token)
+        package.fetch("https://ghcr.io/synthetic", {"Authorization": "Bearer " + token})
     assert token not in str(error.value)
     captured = capsys.readouterr()
     assert token not in captured.out + captured.err
+
+
+def test_manifest_digest_header_is_normalized_case_insensitively(monkeypatch):
+    class Response:
+        status = 200
+        headers = {"Docker-Content-Digest": DIGEST}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def read(self, _):
+            return b"manifest"
+
+    monkeypatch.setattr(
+        package.urllib.request,
+        "build_opener",
+        lambda *_: SimpleNamespace(open=lambda *_args, **_kwargs: Response()),
+    )
+    status, body, headers = package.fetch("https://ghcr.io/synthetic", {})
+    assert status == 200 and body == b"manifest"
+    assert headers["docker-content-digest"] == DIGEST
