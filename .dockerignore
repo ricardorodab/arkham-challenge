@@ -54,9 +54,12 @@ src/**
 !src/outage_explorer/frontend/locales/es/*.json
 !src/outage_explorer/frontend/locale/es/LC_MESSAGES/*.mo
 **/__pycache__/
+**/__pycache__/**
 **/*.py[cod]
 **/.env*
 **/key.txt
 **/local-config.json
 **/private/
+**/private/**
 **/.service/
+**/.service/**
