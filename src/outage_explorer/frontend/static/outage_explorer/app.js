@@ -195,10 +195,10 @@ export class Workspace {
       byId('page-title').focus({ preventScroll: true });
       window.scrollTo({ top: 0, behavior: 'instant' });
     }
+    if (this.view === 'refresh') this.refresh.load();
     if (!this.catalog) return;
     if (this.view === 'overview') this.overview.load();
     if (this.view === 'explore') this.explore.activate();
-    if (this.view === 'refresh') this.refresh.load();
   }
 
   /**
@@ -213,19 +213,19 @@ export class Workspace {
   }
 
   /**
-   * Coalesce freshness checks and store a newer catalog as a candidate, without adopting it.
+   * Discover a first or newer catalog as an explicit-adoption candidate, coalescing checks.
    *
    * A failed check leaves the active immutable investigation usable.
    */
   async checkLatest() {
-    if (this.ended || !this.catalog) return;
+    if (this.ended) return;
     if (this.latestPromise) return this.latestPromise;
     // Deduplicate overlapping freshness checks without switching the active investigation.
     this.latestPromise = (async () => {
       try {
         const latest = await this.client.request('/catalog');
         if (this.ended) return;
-        this.candidate = latest.model_id !== this.catalog.model_id ? latest : null;
+        this.candidate = latest.model_id !== this.catalog?.model_id ? latest : null;
         visible('snapshot-notice', !!this.candidate);
         this.refresh?.render();
       } catch (error) {
@@ -256,7 +256,7 @@ export class Workspace {
   }
 
   /**
-   * Confirm the persisted session scope before revealing restored private content.
+   * Confirm the persisted session scope even before the first analytical publication.
    *
    * A protective focus/restore check escalates an already-running background
    * check. Unknown network outcomes keep the shield; unchanged username/persona
@@ -264,7 +264,7 @@ export class Workspace {
    * @param {boolean} protectContent Hide content while confirmation is pending.
    */
   async checkSession(protectContent) {
-    if (this.ended || !this.catalog) return;
+    if (this.ended) return;
     // Latch protection before the in-flight check guard so focus can escalate a background check.
     if (protectContent) {
       this.protectSessionCheck = true;

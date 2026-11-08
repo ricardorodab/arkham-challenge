@@ -13,6 +13,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("reset")
+    commands.add_parser("unpublish")
     revoke = commands.add_parser("revoke")
     revoke.add_argument("username", choices=("viewer", "analyst", "admin"))
     revoke.add_argument("--kind", choices=("sessions", "inactive", "viewer"), default="sessions")
@@ -30,6 +31,16 @@ def main() -> None:
     logging.getLogger("outage_explorer.http").setLevel(logging.WARNING)
     if args.command == "reset":
         reset()
+    elif args.command == "unpublish":
+        # configure() confines this command to the run-ID browser fixture. Keep
+        # immutable bundles intact; only clear its two current publication refs.
+        import sqlite3
+
+        from django.conf import settings
+
+        with sqlite3.connect(settings.OUTAGE_DATA_DIR / "catalog.sqlite3") as database:
+            database.execute("UPDATE publication SET current_snapshot_id=NULL WHERE singleton=1")
+            database.execute("UPDATE model_publication SET current_model_id=NULL WHERE singleton=1")
     elif args.command == "revoke":
         from django.contrib.auth import get_user_model
         from django.contrib.sessions.models import Session

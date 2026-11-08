@@ -269,48 +269,56 @@ test('client signals session loss but does not mistake network failure for logou
   assert.equal(lost, 1);
 });
 
-test('focus escalates an in-flight background session check and keeps data hidden on network failure', async (t) => {
-  const original = globalThis.document;
-  t.after(() => {
-    if (original === undefined) delete globalThis.document;
-    else globalThis.document = original;
+for (const catalog of [null, { model_id: model }]) {
+  test(`focus protects ${catalog ? 'published' : 'empty'} workspaces during an in-flight session failure`, async (t) => {
+    const original = globalThis.document;
+    t.after(() => {
+      if (original === undefined) delete globalThis.document;
+      else globalThis.document = original;
+    });
+    const root = { hidden: false };
+    globalThis.document = {
+      getElementById: (id) => (id === 'app-root' ? root : null),
+    };
+    let rejectCheck,
+      shields = 0;
+    const workspace = {
+      ended: false,
+      catalog,
+      scope: {
+        username: 'viewer',
+        persona: 'viewer',
+        session_scope: 'new-scope',
+      },
+      client: {
+        request: () =>
+          new Promise((resolve, reject) => {
+            rejectCheck = reject;
+          }),
+      },
+      shield: () => {
+        shields++;
+        root.hidden = true;
+      },
+      checkLatest: () => {},
+    };
+    const pending = Workspace.prototype.checkSession.call(workspace, false);
+    await Workspace.prototype.checkSession.call(workspace, true);
+    assert.equal(root.hidden, true);
+    rejectCheck(new ApiError('offline'));
+    await pending;
+    assert.equal(root.hidden, true);
+    assert.equal(shields, 1);
+    assert.equal(workspace.sessionCheck, false);
+    workspace.client.request = async () => ({
+      user: { username: 'viewer', persona: 'viewer' },
+      session_scope: 'new-scope',
+    });
+    await Workspace.prototype.checkSession.call(workspace, false);
+    assert.equal(root.hidden, false);
+    assert.equal(workspace.protectSessionCheck, false);
   });
-  const root = { hidden: false };
-  globalThis.document = { getElementById: (id) => (id === 'app-root' ? root : null) };
-  let rejectCheck,
-    shields = 0;
-  const workspace = {
-    ended: false,
-    catalog: { model_id: model },
-    scope: { username: 'viewer', persona: 'viewer', session_scope: 'new-scope' },
-    client: {
-      request: () =>
-        new Promise((resolve, reject) => {
-          rejectCheck = reject;
-        }),
-    },
-    shield: () => {
-      shields++;
-      root.hidden = true;
-    },
-    checkLatest: () => {},
-  };
-  const pending = Workspace.prototype.checkSession.call(workspace, false);
-  await Workspace.prototype.checkSession.call(workspace, true);
-  assert.equal(root.hidden, true);
-  rejectCheck(new ApiError('offline'));
-  await pending;
-  assert.equal(root.hidden, true);
-  assert.equal(shields, 1);
-  assert.equal(workspace.sessionCheck, false);
-  workspace.client.request = async () => ({
-    user: { username: 'viewer', persona: 'viewer' },
-    session_scope: 'new-scope',
-  });
-  await Workspace.prototype.checkSession.call(workspace, false);
-  assert.equal(root.hidden, false);
-  assert.equal(workspace.protectSessionCheck, false);
-});
+}
 
 test('new session scopes retire old account/role histories but reload preserves the current scope', () => {
   const data = new Map([
@@ -333,34 +341,36 @@ test('new session scopes retire old account/role histories but reload preserves 
   assert.deepEqual([...data], [['unrelated-setting', 'keep']]);
 });
 
-test('a replacement session for the same account/role cannot reuse the prior workspace', async (t) => {
-  const original = globalThis.document;
-  t.after(() => {
-    if (original === undefined) delete globalThis.document;
-    else globalThis.document = original;
+for (const catalog of [null, {}]) {
+  test(`a replacement session cannot reuse the ${catalog ? 'published' : 'empty'} workspace`, async (t) => {
+    const original = globalThis.document;
+    t.after(() => {
+      if (original === undefined) delete globalThis.document;
+      else globalThis.document = original;
+    });
+    const root = { hidden: false };
+    globalThis.document = { getElementById: () => root };
+    let expired = false;
+    const workspace = {
+      ended: false,
+      catalog,
+      scope: { username: 'viewer', persona: 'viewer', session_scope: 'old' },
+      client: {
+        request: async () => ({
+          user: { username: 'viewer', persona: 'viewer' },
+          session_scope: 'new',
+        }),
+      },
+      expire: () => {
+        expired = true;
+        root.hidden = true;
+      },
+    };
+    await Workspace.prototype.checkSession.call(workspace, true);
+    assert.equal(expired, true);
+    assert.equal(root.hidden, true);
   });
-  const root = { hidden: false };
-  globalThis.document = { getElementById: () => root };
-  let expired = false;
-  const workspace = {
-    ended: false,
-    catalog: {},
-    scope: { username: 'viewer', persona: 'viewer', session_scope: 'old' },
-    client: {
-      request: async () => ({
-        user: { username: 'viewer', persona: 'viewer' },
-        session_scope: 'new',
-      }),
-    },
-    expire: () => {
-      expired = true;
-      root.hidden = true;
-    },
-  };
-  await Workspace.prototype.checkSession.call(workspace, true);
-  assert.equal(expired, true);
-  assert.equal(root.hidden, true);
-});
+}
 
 test('delayed initial refresh history cannot replace a newly queued job', async (t) => {
   const original = globalThis.document;
@@ -409,4 +419,109 @@ test('delayed initial refresh history cannot replace a newly queued job', async 
   await initial;
   assert.equal(controller.job.id, 'new-job');
   assert.equal(controller.job.status, 'queued');
+});
+
+test('a first publication is discovered without adoption, then applied across the workspace', async (t) => {
+  const original = globalThis.document;
+  t.after(() => {
+    if (original === undefined) delete globalThis.document;
+    else globalThis.document = original;
+  });
+  const nodes = new Map();
+  const node = () => ({
+    hidden: false,
+    attributes: {},
+    children: [],
+    setAttribute(name, value) {
+      this.attributes[name] = value;
+    },
+    replaceChildren(...children) {
+      this.children = children;
+    },
+  });
+  globalThis.document = {
+    getElementById: (id) => {
+      if (!nodes.has(id)) nodes.set(id, node());
+      return nodes.get(id);
+    },
+    createElement: () => node(),
+  };
+  const priorError = document.getElementById('global-notice');
+  priorError.attributes.role = 'alert';
+  priorError.children = [{ textContent: 'No analytical model is published.' }];
+  const published = { model_id: model, datasets: [] };
+  const configured = [];
+  let requests = 0,
+    routed = 0;
+  const workspace = Object.assign(Object.create(Workspace.prototype), {
+    ended: false,
+    catalog: null,
+    candidate: null,
+    client: {
+      request: async (path) => {
+        assert.equal(path, '/catalog');
+        requests++;
+        return published;
+      },
+    },
+    overview: {
+      configure: (catalog) => configured.push(['overview', catalog]),
+    },
+    explore: { configure: (catalog) => configured.push(['explore', catalog]) },
+    sql: { configure: (catalog) => configured.push(['sql', catalog]) },
+    refresh: { render: () => {} },
+    route: () => routed++,
+  });
+  await workspace.checkLatest();
+  assert.equal(requests, 1);
+  assert.equal(workspace.catalog, null);
+  assert.equal(workspace.candidate, published);
+  assert.deepEqual(configured, []);
+  assert.equal(document.getElementById('snapshot-notice').hidden, false);
+  assert.equal(priorError.attributes.role, 'alert');
+
+  await workspace.applyLatest();
+  assert.equal(workspace.catalog, published);
+  assert.equal(workspace.candidate, null);
+  assert.deepEqual(
+    configured,
+    ['overview', 'explore', 'sql'].map((name) => [name, published]),
+  );
+  assert.equal(document.getElementById('snapshot-notice').hidden, true);
+  assert.equal(priorError.attributes.role, 'status');
+  assert.match(priorError.children[0].textContent, /latest verified publication/);
+  assert.equal(routed, 1);
+});
+
+test('refresh history loads without a model while analytical controllers stay idle', (t) => {
+  const originalDocument = globalThis.document,
+    originalLocation = globalThis.location;
+  t.after(() => {
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+    if (originalLocation === undefined) delete globalThis.location;
+    else globalThis.location = originalLocation;
+  });
+  globalThis.document = {
+    getElementById: () => ({}),
+    querySelectorAll: () => [],
+  };
+  globalThis.location = { hash: '#refresh' };
+  let history = 0,
+    analytics = 0;
+  const workspace = Object.assign(Object.create(Workspace.prototype), {
+    ended: false,
+    catalog: null,
+    scope: { persona: 'admin' },
+    toggleNav: () => {},
+    refresh: { load: () => history++ },
+    overview: { load: () => analytics++ },
+    explore: { activate: () => analytics++ },
+  });
+  workspace.route(false);
+  assert.equal(workspace.view, 'refresh');
+  assert.equal(history, 1);
+  location.hash = '#overview';
+  workspace.route(false);
+  assert.equal(analytics, 0);
 });

@@ -15,7 +15,7 @@ Start with the project tour, then follow the data and request paths. These are t
 | [Query security](docs/QUERY_SECURITY.md) | Authorization, isolated compilation/execution, resource limits and trust boundaries |
 | [Browser workspace](docs/BROWSER_WORKSPACE.md) | User flows, product choices, version consistency, sessions, export and accessibility |
 | [Engineering decisions](docs/DECISIONS.md) | The seven required challenge choices and all 31 detailed design decisions |
-| [Docker workflow](docs/DOCKER.md) | Portable build/startup, private credentials, ingestion, optional worker and persistent volumes |
+| [Docker workflow](docs/DOCKER.md) | Portable build/startup, private credentials, ingestion, refresh-worker configuration and persistent volumes |
 | [Local operations](docs/LOCAL_OPERATIONS.md) | Installation, ingestion, model inspection, reports, checks and recovery |
 | [Engineering notes and verification](docs/NOTES.md) | Implementation stages, actual corrections, contribution disclosure, verification and remaining limits |
 
@@ -29,7 +29,7 @@ With Docker running Linux containers and the Compose plugin, start from the repo
 docker compose up --build -d app
 ```
 
-Open [the login page](http://127.0.0.1:8000/login/). Initialization generates private random account passwords and persists application state; no EIA key is needed for startup. A fresh workspace has no analytical data. Follow [the Docker guide](docs/DOCKER.md) to view passwords privately, ingest a bounded dataset, run the optional refresh worker or move persisted volumes. Local data and credentials are excluded from the image.
+Open [the login page](http://127.0.0.1:8000/login/). Initialization generates private random account passwords and persists application state. The app starts its separate continuous refresh worker automatically; no EIA key is needed for startup. A fresh workspace has no analytical data, and refresh requires a key configured only for the worker. Follow [the Docker guide](docs/DOCKER.md) to view passwords privately, load data, configure refresh or move persisted volumes. Local data and credentials are excluded from the image.
 
 ## Run without Docker
 

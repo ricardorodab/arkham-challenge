@@ -28,6 +28,8 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
+      worker:
+        condition: service_started
     ports:
       - "127.0.0.1:${OUTAGE_PORT:-8000}:8000"
     healthcheck:
@@ -45,7 +47,6 @@ services:
   worker:
     <<: *runtime
     mem_limit: 2g
-    profiles: ["worker"]
     command: ["python", "-m", "outage_explorer.web.local", "worker"]
     depends_on:
       init:

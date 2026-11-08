@@ -63,6 +63,16 @@ class RefreshValidationError(RefreshServiceError):
     public_message = "Choose full or recent and provide a valid optional idempotency key."
 
 
+class RefreshConfigurationError(RefreshServiceError):
+    """Report missing worker-only credentials without exposing or accepting their value."""
+
+    code = "refresh_not_configured"
+    public_message = (
+        "Refresh is not configured. Set EIA_API_KEY for the refresh worker, "
+        "recreate the worker, and queue a new refresh."
+    )
+
+
 class IdempotencyConflictError(RefreshServiceError):
     """Reject reusing an owner's key for a different extraction mode."""
 
@@ -166,6 +176,8 @@ def perform_ingest(mode: str) -> dict[str, str]:
     does not finish the Django job row.
     """
     api_key = os.environ.get("EIA_API_KEY", "").strip()
+    if not api_key:
+        raise RefreshConfigurationError
     client = EIAClient(api_key)
     manifest = ingest(IngestConfig(data_dir=Path(settings.OUTAGE_DATA_DIR), mode=mode), client)
     with Catalog(Path(settings.OUTAGE_DATA_DIR)) as catalog:
@@ -195,6 +207,8 @@ def _public_failure(error: Exception) -> tuple[str, str]:
     status because failure to record a job outcome does not roll back an already committed
     data-catalog publication.
     """
+    if isinstance(error, RefreshConfigurationError):
+        return error.code, error.public_message
     if isinstance(error, EIAClientError):
         return (
             "upstream_refresh_failed",

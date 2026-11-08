@@ -10,6 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Barrier
+from unittest.mock import Mock
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -161,11 +162,12 @@ def test_worker_revalidates_owner_before_any_ingest(refresh_admin, control_direc
     assert job.status == "failed" and job.error_code == "owner_permission_revoked"
 
 
-def test_worker_failure_never_persists_exception_text(refresh_admin, control_directory):
+@pytest.mark.parametrize("code", ["network", "configuration"])
+def test_worker_failure_never_persists_exception_text(refresh_admin, control_directory, code):
     job, _ = enqueue_refresh(refresh_admin, "full")
 
     def failed(mode):
-        raise EIAClientError("network", "synthetic-sensitive-exception-value")
+        raise EIAClientError(code, "synthetic-sensitive-exception-value")
 
     with RefreshWorker(executor=failed) as worker:
         worker.run_once()
@@ -174,6 +176,41 @@ def test_worker_failure_never_persists_exception_text(refresh_admin, control_dir
     assert "synthetic-sensitive-exception-value" not in job.public_message
     assert job.result == {}
     assert enqueue_refresh(refresh_admin, "recent")[1]
+
+
+@pytest.mark.parametrize("key", [None, "", " \t\n "], ids=["absent", "empty", "whitespace"])
+def test_unconfigured_worker_fails_job_without_source_io_and_accepts_next_job(
+    refresh_admin, control_directory, settings, tmp_path, monkeypatch, key
+):
+    """Persist an actionable terminal failure while keeping a keyless worker usable."""
+    settings.OUTAGE_DATA_DIR = tmp_path / "untouched-data"
+    if key is None:
+        monkeypatch.delenv("EIA_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("EIA_API_KEY", key)
+    client = Mock(side_effect=AssertionError("Missing credentials must fail before client setup."))
+    ingestion = Mock(side_effect=AssertionError("Missing credentials must not start ingestion."))
+    monkeypatch.setattr(refresh, "EIAClient", client)
+    monkeypatch.setattr(refresh, "ingest", ingestion)
+    with RefreshWorker() as worker:
+        job, created = enqueue_refresh(refresh_admin, "recent")
+        assert created and job.status == "queued"
+        completed = worker.run_once()
+        job.refresh_from_db()
+        assert completed.pk == job.pk and job.status == "failed"
+        assert job.error_code == "refresh_not_configured"
+        assert job.public_message == (
+            "Refresh is not configured. Set EIA_API_KEY for the refresh worker, "
+            "recreate the worker, and queue a new refresh."
+        )
+        assert job.started_at is not None and job.finished_at >= job.started_at
+        assert job.result == {}
+        assert worker.run_once() is None
+        following, following_created = enqueue_refresh(refresh_admin, "full")
+        assert following_created and following.pk != job.pk and following.status == "queued"
+    client.assert_not_called()
+    ingestion.assert_not_called()
+    assert not settings.OUTAGE_DATA_DIR.exists()
 
 
 def test_worker_publishes_source_and_model_together_and_preserves_both_on_failure(

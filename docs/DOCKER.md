@@ -9,7 +9,7 @@ docker compose up --build -d app
 docker compose ps
 ```
 
-The one-shot `init` service generates a private Django signing key and independent random passwords, runs migrations and creates `viewer`, `analyst` and `admin`. The app starts after initialization succeeds. Repeated initialization preserves the signing key and account passwords; password reset is an explicit operator action.
+The one-shot `init` service generates a private Django signing key and independent random passwords, runs migrations and creates `viewer`, `analyst` and `admin`. The app starts after initialization succeeds and its separate continuous refresh worker starts. The worker is a normal dependency, so the command above starts it without an optional profile. Repeated initialization preserves the signing key and account passwords; password reset is an explicit operator action.
 
 Open [the login page](http://127.0.0.1:8000/login/). To display the generated account passwords **only in your private terminal**, run this explicit operator command. It does not print the Django signing key:
 
@@ -19,7 +19,7 @@ docker compose exec -T app python -c "import json,os; from pathlib import Path; 
 
 Do not include that output in shared logs or screenshots. The application does not print passwords during normal startup. [The API contract](API_CONTRACT.md) defines the three personas and their permissions.
 
-A new workspace has accounts but **no analytical publication**. Login and process health can succeed before ingestion; analytical requests need data. No EIA credential or download is required to build the image or start the app.
+A new workspace has accounts but **no analytical publication**. Login and process health can succeed before ingestion; analytical requests need data. No EIA credential or download is required to build the image or start the app and worker. If a refresh is requested while the worker has no key, it ends as `failed` with `refresh_not_configured` and configuration guidance; existing data remains unchanged.
 
 ## Load data explicitly
 
@@ -56,23 +56,29 @@ For a later correction-window refresh, replace the ingest options with `--mode r
 
 Remove the key from the shell when finished: `Remove-Item Env:EIA_API_KEY` in PowerShell, or `unset EIA_API_KEY` in Bash. The normal app service is not configured with an EIA key. Runtime environment values remain inspectable by Docker operators; do not bake credentials into an image, Dockerfile or build arguments.
 
-## Run the optional refresh worker
+## Configure the refresh worker
 
-Admin refresh requests enqueue durable jobs. They do not perform ingestion inside the HTTP process. With `EIA_API_KEY` set in your shell as above, enable the separate worker:
+Admin refresh requests enqueue durable jobs. The default app startup command also starts the continuous worker that consumes them; ingestion still runs outside the HTTP process. To apply this configuration to an older workspace, rerun `docker compose up --build -d app`. Existing volumes and queued jobs are retained for the worker to process.
+
+Only the worker receives the Compose-configured EIA key. With `EIA_API_KEY` set privately in your shell using the prompt above, recreate it to apply the value:
 
 ```sh
-docker compose --profile worker up -d
+docker compose up -d --force-recreate worker
 ```
 
-Only the worker receives the Compose-configured EIA key. It shares the same data, application database and generated Django configuration as the app. One worker owns the control lock; additional workers cannot consume concurrently. Without a worker, queued jobs remain queued.
+`docker compose restart worker` does not apply a changed shell environment. The worker shares the app's data, application database and generated Django configuration. One worker owns the control lock; additional workers cannot consume concurrently.
 
-You may clear the shell key after startup; the running worker retains its process environment. Supply the key again before recreating the worker. To stop refresh execution while leaving the app running:
+Keyless startup remains usable for login and existing data. A missing or blank worker key makes a claimed refresh fail with `refresh_not_configured` before extraction, rather than wait indefinitely. After configuring the key, **queue a new refresh**. Completed failed jobs are not reset or automatically requeued; replaying an old idempotency key still returns that original failed outcome.
+
+You may clear the shell key after recreation; the running worker retains its process environment. Supply it again before a later worker recreation. If a job remains queued, inspect `docker compose ps worker` and `docker compose logs worker`. Starting the worker allows it to claim existing queued jobs.
+
+To pause refresh execution while leaving the app running:
 
 ```sh
 docker compose stop worker
 ```
 
-An interrupted job may already have published data because catalog publication and Django job completion are separate transactions. Inspect publication history before retrying. [Refresh operations](LOCAL_OPERATIONS.md#4-execute-admin-refresh-jobs) explains recovery and idempotency.
+A later `docker compose up -d app` starts that dependency again. An interrupted job may already have published data because catalog publication and Django job completion are separate transactions. Inspect publication history before retrying. [Refresh operations](LOCAL_OPERATIONS.md#4-execute-admin-refresh-jobs) explains recovery and idempotency.
 
 ## Ports, paths and persisted state
 

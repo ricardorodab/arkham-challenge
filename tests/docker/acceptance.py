@@ -129,8 +129,6 @@ class Acceptance:
                 str(ROOT / "compose.yaml"),
                 "-f",
                 "-",
-                "--profile",
-                "worker",
             ]
         result = subprocess.run(
             [*prefix, *arguments],
@@ -206,6 +204,17 @@ class Acceptance:
                 if time.monotonic() >= deadline:
                     raise AssertionError("Published HTTP service did not become live.") from None
                 time.sleep(0.25)
+
+    @staticmethod
+    def wait_terminal_job(browser, status_url):
+        """Allow normal queue polling while bounding a missing or stalled consumer."""
+        deadline = time.monotonic() + 30
+        while True:
+            job = browser.request(status_url)
+            if job["status"] not in {"queued", "running"}:
+                return job
+            require(time.monotonic() < deadline, "Automatic worker did not finish the queued job.")
+            time.sleep(0.25)
 
     def check_image(self):
         self.stage = "image metadata and privacy"
@@ -399,6 +408,52 @@ class Acceptance:
             clients["admin"].request("/api/v1/health/ready", expected=503)["status"] == 503,
             "Empty data must not report analytical readiness.",
         )
+        self.completed.append(self.stage)
+
+        self.stage = "automatic worker reports missing configuration"
+        worker_id = self.command(["ps", "-q", "worker"], compose=True)
+        require(
+            re.fullmatch(r"[0-9a-f]{64}", worker_id),
+            "Standard app startup did not create a worker.",
+        )
+        worker_state = json.loads(
+            self.command(["inspect", worker_id, "--format", "{{json .State}} "])
+        )
+        require(worker_state["Running"], "Standard app startup did not start the worker.")
+        admin = clients["admin"]
+        unconfigured_job = admin.request("/api/v1/refresh", {"mode": "recent"}, expected=202)
+        unconfigured = self.wait_terminal_job(admin, unconfigured_job["status_url"])
+        require(
+            unconfigured["status"] == "failed"
+            and unconfigured["error_code"] == "refresh_not_configured"
+            and unconfigured["message"]
+            == (
+                "Refresh is not configured. Set EIA_API_KEY for the refresh worker, "
+                "recreate the worker, and queue a new refresh."
+            )
+            and unconfigured["result"] == {}
+            and unconfigured["started_at"] is not None
+            and unconfigured["finished_at"] is not None,
+            "Missing EIA key did not produce an actionable terminal job failure.",
+        )
+        worker_state = json.loads(
+            self.command(["inspect", worker_id, "--format", "{{json .State}} "])
+        )
+        require(worker_state["Running"], "Missing EIA key stopped the continuous worker.")
+        require(
+            anonymous.request("/api/v1/health/live") == {"status": "ok"},
+            "Missing EIA key stopped the app.",
+        )
+        unconfigured_state = self.state()
+        require(
+            unconfigured_state["snapshot_id"] is None
+            and unconfigured_state["model_id"] is None
+            and unconfigured_state["configuration_sha256"] == before["configuration_sha256"]
+            and unconfigured_state["accounts_sha256"] == before["accounts_sha256"],
+            "Missing-key failure changed data or account configuration.",
+        )
+        # Keep the existing upstream-injection probes deterministic with one consumer.
+        self.command(["stop", "--timeout", "15", "worker"], compose=True, timeout=35)
         self.completed.append(self.stage)
 
         self.stage = "synthetic ingestion and authenticated real WASM"

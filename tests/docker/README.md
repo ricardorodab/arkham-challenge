@@ -12,13 +12,17 @@ the CLI executable. The Docker engine must publish ports on this host; remote en
 their own routing and are outside this local acceptance command.
 
 The harness creates a unique Compose project, random loopback host port and fresh named
-volumes. It starts `app` with its real `init` dependency, then repeats initialization to check
-that existing credentials are preserved. Synthetic source data passes through
+volumes. It starts `app` with its real `init` and continuous-worker dependencies, without a
+worker profile flag, then repeats initialization to check that existing credentials are
+preserved. An Admin job is consumed automatically with no EIA key and must finish with an
+actionable configuration failure while the app and worker remain running and no publication
+is created. Synthetic source data then passes through
 the real ingestion/model pipeline; HTTP checks exercise CSRF, authentication, persona
 authorization and exact dates/decimal strings in the real Node/DuckDB-WASM engine.
 
-Admin refreshes stay queued until a separate worker service runs. Its acceptance-only
-fixture replaces the upstream EIA client and delegates to the real local worker command,
+The harness stops its automatic worker before testing synthetic success and upstream failure
+with separate one-shot consumers. Their acceptance-only fixture replaces the upstream EIA
+client and delegates to the real local worker command,
 job handling, ingestion and publication. Successful and failing refreshes are checked,
 followed by bounded SIGTERM, restart and container replacement with persistent credentials,
 model references and job history. No EIA key or upstream network request is needed.

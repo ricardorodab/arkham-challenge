@@ -2,7 +2,7 @@
 
 All commands below run from the repository root in PowerShell. They are instructions for a future operator; this documentation rewrite did not execute them. Read [the project tour](PROJECT_TOUR.md) for the file/configuration explanation, [the API contract](API_CONTRACT.md) for request semantics, and [verification](NOTES.md) for dated outcomes rather than assuming these commands currently pass.
 
-For a packaged Linux-container workflow, use [Docker Compose operations](DOCKER.md), including first-run initialization, private credential access, persistent volumes and the optional refresh worker. The PowerShell commands below describe installation directly on the host.
+For a packaged Linux-container workflow, use [Docker Compose operations](DOCKER.md), including first-run initialization, private credential access, persistent volumes and the automatically started refresh worker. The PowerShell commands below describe installation directly on the host.
 
 ## Choose the work you need
 
@@ -83,7 +83,7 @@ Admin's POST queues a durable job and returns `202` with its status URL; it does
 .\.venv\Scripts\python.exe -m outage_explorer.web.local worker --once
 ```
 
-Without a worker, jobs remain queued. The same Admin can poll its returned status URL. Idempotency keys make uncertain retry outcomes recoverable; see the [exact refresh contract](API_CONTRACT.md#asynchronous-refresh). Database uniqueness, worker control locking and ingestion writer locking protect different concurrency boundaries. Revocation before execution prevents start; changing the Admin after extraction starts does not cancel extraction.
+Without a worker in this direct host workflow, jobs remain queued; Docker Compose starts its worker automatically. A running worker with no EIA key records `failed` with `refresh_not_configured` before extraction. Configure the worker, restart its process (recreate its container for Docker), and queue a new job. The same Admin can poll its returned status URL. Idempotency keys make uncertain retry outcomes recoverable; see the [exact refresh contract](API_CONTRACT.md#asynchronous-refresh). Database uniqueness, worker control locking and ingestion writer locking protect different concurrency boundaries. Revocation before execution prevents start; changing the Admin after extraction starts does not cancel extraction.
 
 Validation/extraction failures **before** publication leave the previous pair current. Catalog publication and application-job completion are separate transactions. If interrupted, inspect both authoritative histories: a job marked interrupted may already have published data. Do not promise exactly-once refresh or infer no change from job status alone.
 
