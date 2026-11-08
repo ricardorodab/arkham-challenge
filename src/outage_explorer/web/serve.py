@@ -19,7 +19,8 @@ def main():
 
     Use twelve request threads and explicit body/header/connection/time limits; discard
     untrusted proxy headers and suppress tracebacks. An explicitly configured proxy IP may
-    supply only X-Forwarded-Proto; Waitress translates it into the WSGI scheme for Django.
+    supply X-Forwarded-Proto and X-Forwarded-For; Waitress translates these into Django's
+    WSGI scheme and client address so login limits remain per client behind the proxy.
     This launcher does not provision HTTPS,
     start a refresh worker or install the analytical runtime. Loopback remains the
     default; containers explicitly select their internal 0.0.0.0 interface.
@@ -40,7 +41,7 @@ def main():
         proxy_options = {
             "trusted_proxy": trusted_proxy,
             "trusted_proxy_count": 1,
-            "trusted_proxy_headers": {"x-forwarded-proto"},
+            "trusted_proxy_headers": {"x-forwarded-proto", "x-forwarded-for"},
         }
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "outage_explorer.web.settings")
     from .wsgi import application

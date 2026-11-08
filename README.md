@@ -37,6 +37,15 @@ Open [the login page](http://127.0.0.1:8000/login/). Compose initializes private
 
 For login or reading existing data only, you may omit the key prompt; keyless startup is valid, but live extraction and refresh need the key. [Bash setup and key sources](docs/DOCKER.md#before-startup-configure-live-data-access) are documented separately. **Already started without the key?** Leave the app running, set the key, then [recreate only the worker](docs/DOCKER.md#already-started-without-the-key); a simple restart does not update its environment. Local data and credentials are excluded from the image.
 
+## Deploy from GitHub
+
+Pushes to `main` run the Python, JavaScript, browser and Docker checks. After all checks
+pass, GitHub Actions deploys the accepted image digest to the configured Azure VM and
+verifies its Git revision over HTTPS. Superseded commits and pull requests do not deploy.
+Accounts, saved views, datasets and secrets stay on the host across releases. An active
+refresh defers an upgrade; rerun the failed deployment job after the refresh finishes.
+See [VM deployment](deploy/README.md) for identity permissions, configuration and recovery.
+
 ## Run without Docker
 
 Use Python **3.12–3.14** and Node **24.x, at least 24.13.0**, with npm. Install both package sets: Django runs in Python, while the server's isolated analytical engine runs in Node. No frontend build step is required.

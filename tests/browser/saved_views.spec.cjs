@@ -225,12 +225,14 @@ test('shared views preserve dataset permissions and ownership for Viewer and non
     shared_roles: ['analyst', 'admin'],
   });
   await page.locator('#logout-button').click();
+  await expect(page).toHaveURL(/\/login\/(?:\?.*)?$/);
   await login(page, 'admin');
   await expect(card(page, shared.id)).toBeVisible();
   await expect(card(page, shared.id).getByRole('button', { name: 'Edit view', exact: true })).toHaveCount(0);
   await expect(card(page, shared.id).getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0);
   expect((await mutate(page, 'DELETE', `/saved-views/${shared.id}`, { revision: shared.revision })).status()).toBe(404);
   await page.locator('#logout-button').click();
+  await expect(page).toHaveURL(/\/login\/(?:\?.*)?$/);
   await login(page, 'viewer');
   await expect(page.locator('#saved-views-list [data-view-id]')).toHaveCount(1);
   const visible = card(page, shared.id);

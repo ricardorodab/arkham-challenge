@@ -40,7 +40,7 @@ def test_waitress_uses_explicit_bind_address_and_preserves_local_default(
     assert observed["clear_untrusted_proxy_headers"] is True
 
 
-def test_waitress_trusts_only_the_configured_proxy_and_forwarded_scheme(monkeypatch):
+def test_waitress_trusts_only_the_configured_proxy_scheme_and_client_address(monkeypatch):
     application = object()
     monkeypatch.setitem(
         sys.modules, "outage_explorer.web.wsgi", SimpleNamespace(application=application)
@@ -52,7 +52,7 @@ def test_waitress_trusts_only_the_configured_proxy_and_forwarded_scheme(monkeypa
     serve.main()
     assert observed["trusted_proxy"] == "172.30.89.2"
     assert observed["trusted_proxy_count"] == 1
-    assert observed["trusted_proxy_headers"] == {"x-forwarded-proto"}
+    assert observed["trusted_proxy_headers"] == {"x-forwarded-proto", "x-forwarded-for"}
     assert observed["clear_untrusted_proxy_headers"] is True
 
 
@@ -83,7 +83,7 @@ def test_https_proxy_translation_preserves_host_and_rejects_spoofed_headers(
             REMOTE_ADDR=peer,
             HTTP_X_FORWARDED_PROTO="https",
             HTTP_X_FORWARDED_HOST="attacker.example",
-            HTTP_X_FORWARDED_FOR="192.0.2.1",
+            HTTP_X_FORWARDED_FOR="198.51.100.99, 192.0.2.1",
             HTTP_FORWARDED="for=192.0.2.1;host=attacker.example;proto=https",
         )
         .environ
@@ -91,7 +91,8 @@ def test_https_proxy_translation_preserves_host_and_rejects_spoofed_headers(
     application = proxy_headers_middleware(
         WSGIHandler(),
         trusted_proxy="172.30.89.2",
-        trusted_proxy_headers={"x-forwarded-proto"},
+        trusted_proxy_count=1,
+        trusted_proxy_headers={"x-forwarded-proto", "x-forwarded-for"},
         clear_untrusted=True,
     )
     observed = {}
@@ -105,17 +106,18 @@ def test_https_proxy_translation_preserves_host_and_rejects_spoofed_headers(
     finally:
         result.close()
     assert environ["HTTP_HOST"] == "arkham.example"
-    assert environ["REMOTE_ADDR"] == peer
     assert "HTTP_FORWARDED" not in environ
     assert "HTTP_X_FORWARDED_HOST" not in environ
-    assert "HTTP_X_FORWARDED_FOR" not in environ
     if trusted:
         assert observed["status"].startswith("200 ")
         assert environ["wsgi.url_scheme"] == "https"
+        assert environ["REMOTE_ADDR"] == "192.0.2.1"
         assert "; Secure" in observed["headers"]["Set-Cookie"]
     else:
         assert observed["status"].startswith("301 ")
         assert environ["wsgi.url_scheme"] == "http"
+        assert environ["REMOTE_ADDR"] == peer
+        assert "HTTP_X_FORWARDED_FOR" not in environ
         assert "HTTP_X_FORWARDED_PROTO" not in environ
         assert observed["headers"]["Location"] == "https://arkham.example/api/v1/auth/csrf"
 

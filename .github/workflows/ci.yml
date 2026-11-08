@@ -84,16 +84,17 @@ jobs:
           GHCR_USERNAME: ${{ github.actor }}
         run: |
           set -Eeuo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-vm"
           export DOCKER_CONFIG
           DOCKER_CONFIG=$(mktemp -d "$RUNNER_TEMP/arkham-registry.XXXXXXXX")
           trap 'rm -f "$DOCKER_CONFIG/config.json"; rmdir "$DOCKER_CONFIG"' EXIT
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USERNAME" --password-stdin
-          unset GHCR_TOKEN
           docker tag arkham:ci "$image:$GITHUB_SHA"
           docker push "$image:$GITHUB_SHA"
           reference=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image:$GITHUB_SHA")
           [[ "$reference" =~ ^${image}@sha256:[0-9a-f]{64}$ ]]
+          OUTAGE_IMAGE="$reference" python deploy/verify-package.py
+          unset GHCR_TOKEN
           printf 'image=%s\n' "$reference" >> "$GITHUB_OUTPUT"
 
   deploy:

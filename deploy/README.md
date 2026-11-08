@@ -84,6 +84,12 @@ Account changes in the application do not rewrite the initial-password file.
 
 ## Release contract
 
+GitHub Actions publishes the accepted image to the dedicated
+`ghcr.io/<owner>/<repo>-vm` package. Before promoting its digest, the workflow checks
+authenticated package metadata for private visibility and an exact source-repository
+association, then verifies that an anonymous registry token exchange cannot retrieve the
+image manifest. A failed or inconclusive privacy check stops deployment.
+
 Extract the exact commit's source archive under `/opt/arkham/releases/<full-commit-sha>`.
 Build and publish an image with OCI label `org.opencontainers.image.revision` equal to that
 SHA. Invoke as root:

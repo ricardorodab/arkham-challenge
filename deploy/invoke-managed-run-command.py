@@ -73,7 +73,7 @@ def inputs(environment):
     for name, pattern in patterns.items():
         if not re.fullmatch(pattern, values[name]):
             raise DeploymentError(f"Invalid deployment input: {name}.")
-    image_prefix = "ghcr.io/" + values["GITHUB_REPOSITORY"].lower() + "@sha256:"
+    image_prefix = "ghcr.io/" + values["GITHUB_REPOSITORY"].lower() + "-vm@sha256:"
     if not re.fullmatch(re.escape(image_prefix) + r"[0-9a-f]{64}", values["OUTAGE_IMAGE"]):
         raise DeploymentError("The image must be this repository's immutable GHCR digest.")
     return values
