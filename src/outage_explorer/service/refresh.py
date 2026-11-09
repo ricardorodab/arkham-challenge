@@ -33,6 +33,18 @@ from .models import Persona, QueryCacheEntry, RefreshJob
 LOG = logging.getLogger(__name__)
 
 
+def configure_worker_logging(secret: str = "") -> None:
+    """Redact the exact active upstream credential from structured worker logs.
+
+    Import the shared formatter at the call boundary because its CLI module imports data
+    modules that also serve the worker. Never place the credential in a LogRecord or output.
+    """
+    from outage_explorer.cli import JsonLogFormatter
+
+    for handler in logging.getLogger("outage_explorer").handlers:
+        handler.setFormatter(JsonLogFormatter(secret))
+
+
 class RefreshServiceError(Exception):
     """Base category for safe refresh request failures, not an executable worker."""
 
@@ -187,6 +199,9 @@ def perform_ingest(mode: str, *, progress: ProgressCallback | None = None) -> di
         api_key = read_secret("EIA_API_KEY", required=True).strip()
     except SecretConfigurationError:
         raise RefreshConfigurationError from None
+    # Bind redaction to the same value passed to the client, including a file generation
+    # change after the management command's polling-time logging setup.
+    configure_worker_logging(api_key)
     client = EIAClient(api_key)
 
     def report(event: ProgressEvent) -> None:

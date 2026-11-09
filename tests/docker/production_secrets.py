@@ -302,7 +302,7 @@ class Acceptance:
             "initializer", "init", ["python", "/deployment/app-control.py", "init"]
         )
         require(
-            json.loads(output)["seeded"] is True,
+            json.loads(output.splitlines()[-1])["seeded"] is True,
             "Fresh file-secret initialization did not seed accounts.",
         )
         self.inspect(initializer, "init")
@@ -344,7 +344,7 @@ class Acceptance:
         alias.replace(self.root / "current")
         output = self.command(["start", "--attach", initializer]).stdout
         require(
-            json.loads(output)["seeded"] is False,
+            json.loads(output.splitlines()[-1])["seeded"] is False,
             "Repeated production initialization reset bootstrap accounts.",
         )
         self.command(["start", app, worker])
