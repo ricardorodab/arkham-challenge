@@ -5,6 +5,15 @@ deployment identity. Cloud resources and host installation require operator coor
 The normal backup never loads a recovery private key. No storage account key, SAS, PAT,
 GitHub token or Azure client secret is used by the backup process.
 
+Current production capture uses the version-two backup format and never reads `.env`
+files. It copies nonsecret `deployment.json`, `key-vault.json` and `release.json` metadata,
+plus the applied Django signing key from `/run/arkham-secrets/current/app/django-secret-key`.
+That signing key is required to preserve signed state in an offline recovery; its staged
+copy remains root-only and is included only inside the age-encrypted archive. Capture and
+secret-generation changes share the deployment lock, so the captured key must be the one
+applied to the running application. Initial account passwords and the EIA API key are
+excluded even though they are also materialized on tmpfs for their respective consumers.
+
 ## Storage and host prerequisites
 
 Use a dedicated StorageV2 Hot LRS account and a private `arkham-backups` container. Disable
@@ -85,9 +94,11 @@ that a recoverable backup exists forever.
 
 Included: web users/password hashes/sessions/jobs/saved views, catalog, registered immutable
 publications, run metadata, the Django signing key, hostname, exact image digest and required
-release configuration. Excluded: initial plaintext account passwords, EIA key, Caddy keys,
+release and Key Vault reference configuration. Excluded: initial plaintext account passwords,
+EIA key, Caddy keys,
 locks, query scratch, unfinished candidates and old migration backup files. Caddy can issue
-new certificates; reconfigure the EIA key privately after recovery. The archive and signing
+new certificates; reconnect the recovered host identity to Key Vault before enabling its
+refresh worker. The archive and signing
 key are encrypted using age in addition to [Azure encryption at rest](https://learn.microsoft.com/en-us/azure/storage/common/storage-service-encryption).
 
 Inspect `systemctl status arkham-backup.service arkham-backup-check.service`, timer status and
@@ -115,12 +126,19 @@ integrity/foreign keys, row fingerprints and catalog registrations. Failed/incom
 remain private and marked incomplete. It never initializes, seeds, migrates, promotes or
 overwrites a production workspace. A real recovery cutover is a separate reviewed action.
 
+Historical version-one archives remain verifiable and restorable into disposable paths.
+Those archives retain their original environment-file payloads; the current capture and
+drill do not use them as a fallback. Version-two manifests reject environment-file members
+and require the signing-key file and JSON deployment metadata.
+
 Run `restore-drill.sh` as root for an actual VM snapshot/upload/download/decrypt/restore
 exercise. It generates a **separate temporary** age key in `/run`, captures a fresh backup
 encrypted to that temporary public recipient under the `drills/` prefix, and restores it to
 `/srv/arkham-restore-tests/drill-...`. It starts the exact locally available image digest
 with isolated restored mounts, no network, no published port, no worker/EIA, no init/migrate,
-then checks internal revision health and account database readability. It removes only its
+then checks internal revision health and account database readability. The signing key is
+mounted read-only and supplied through `OUTAGE_DJANGO_SECRET_KEY_FILE`; no environment
+variable contains its value, and the drill never accesses Key Vault. It removes only its
 own verified scratch paths, container and temporary key; cloud drill artifacts expire by
 lifecycle because the VM cannot delete blobs.
 

@@ -2,6 +2,7 @@
 # Apply a previously extracted immutable source release and a matching image digest.
 set -Eeuo pipefail
 umask 077
+ulimit -c 0
 [[ ${EUID} -eq 0 ]] || { echo 'Root is required.' >&2; exit 1; }
 revision=${1:?Usage: release.sh revision immutable-image-reference [docker-save-archive]}
 image=${2:?An immutable image reference is required}
@@ -16,11 +17,11 @@ release_dir="/opt/arkham/releases/$revision"
 }
 exec 9>/run/lock/arkham-deploy.lock
 flock -n 9 || { echo '{"deployment":"busy"}'; exit 75; }
-[[ -f /etc/arkham/deployment.env ]] || { echo 'Run bootstrap-vm.sh first.' >&2; exit 1; }
-# This is a root-owned file containing only the validated public hostname.
-source /etc/arkham/deployment.env
+[[ -f /etc/arkham/deployment.json ]] || { echo 'Run bootstrap-vm.sh first.' >&2; exit 1; }
+OUTAGE_PUBLIC_HOST=$(python3 -c 'import json;print(json.load(open("/etc/arkham/deployment.json"))["public_host"])')
 export OUTAGE_PUBLIC_HOST OUTAGE_IMAGE="$image" OUTAGE_DEPLOY_REVISION="$revision"
 export OUTAGE_RELEASE_DIR="$release_dir"
+export OUTAGE_SECRET_ROOT=/run/arkham-secrets/current
 [[ "$OUTAGE_PUBLIC_HOST" =~ ^[a-z0-9][a-z0-9.-]+[a-z0-9]$ ]] || exit 1
 compose=(docker compose --project-name arkham --env-file /dev/null -f "$release_dir/deploy/compose.production.yaml")
 old_dir=''
@@ -28,10 +29,10 @@ old_image=''
 old_revision=''
 if [[ -L /opt/arkham/current ]]; then
   old_dir=$(readlink -f /opt/arkham/current)
-  [[ "$old_dir" == /opt/arkham/releases/* && -f "$old_dir/release.env" ]] || {
+  [[ "$old_dir" == /opt/arkham/releases/* && -f "$old_dir/release.json" ]] || {
     echo 'The current release reference is invalid.' >&2; exit 1;
   }
-  old_image=$(sed -n 's/^OUTAGE_IMAGE=//p' "$old_dir/release.env")
+  old_image=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["image"])' "$old_dir/release.json")
   old_revision=$(basename "$old_dir")
 elif [[ -e /opt/arkham/current ]]; then
   echo 'The current release reference must be a symlink.' >&2; exit 1
@@ -105,12 +106,40 @@ else
   docker pull "$image" >/dev/null
 fi
 unset GHCR_TOKEN GHCR_USERNAME
+python3 "$release_dir/deploy/key-vault-secrets.py" fetch
+# Pin the first authenticated signing key. Later vault changes require explicit rotation.
+python3 - <<'ARKHAM_PIN_SIGNING_KEY'
+import hashlib,json,os,tempfile
+from pathlib import Path
+path=Path('/etc/arkham/key-vault.json')
+configuration=json.loads(path.read_text())
+digest=hashlib.sha256(Path('/run/arkham-secrets/current/app/django-secret-key').read_bytes()).hexdigest()
+if configuration.get('django_sha256',digest)!=digest:
+    raise SystemExit('The Django signing key changed unexpectedly.')
+if 'django_sha256' not in configuration:
+    configuration['django_sha256']=digest
+    with tempfile.NamedTemporaryFile(mode='w',dir=path.parent,prefix='.key-vault.',delete=False) as stream:
+        temporary=Path(stream.name)
+        try:
+            os.chmod(temporary,0o600)
+            json.dump(configuration,stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    temporary.replace(path)
+ARKHAM_PIN_SIGNING_KEY
 image_revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")
 [[ "$image_revision" == "$revision" ]] || { echo 'Image revision does not match source release.' >&2; exit 1; }
 # Fetch the pinned public proxy before pausing traffic.
 "${compose[@]}" pull proxy >/dev/null
 "${compose[@]}" config --quiet
-printf 'OUTAGE_IMAGE=%s\n' "$image" > "$release_dir/release.env"
+python3 - "$release_dir/release.json" "$image" <<'ARKHAM_RELEASE_METADATA'
+import json,sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({'image':sys.argv[2]}))
+ARKHAM_RELEASE_METADATA
 
 if [[ -n "$old_image" ]]; then
   # Close enqueueing before looking at the durable queue. Leave an active worker alone.
@@ -146,7 +175,7 @@ changed=1
 "${compose[@]}" run --rm --no-deps -T init > "$result_dir/init.json"
 "${compose[@]}" run --rm --no-deps -T app python /deployment/app-control.py inspect > "$result_dir/after.json"
 python3 "$release_dir/deploy/verify-state.py" preserved "$result_dir/before.json" "$result_dir/after.json"
-"${compose[@]}" up -d --no-deps --wait --wait-timeout 100 app >/dev/null
+"${compose[@]}" up -d --no-deps --force-recreate --wait --wait-timeout 100 app >/dev/null
 "${compose[@]}" up -d --no-deps proxy >/dev/null
 # Verify the public origin, real TLS and exact application revision before promotion.
 healthy=0
@@ -163,7 +192,7 @@ for ((attempt=0; attempt<36; attempt++)); do
 done
 [[ $healthy == 1 ]] || { echo 'Public HTTPS revision health failed.' >&2; exit 1; }
 release_locks
-"${compose[@]}" up -d --no-deps worker >/dev/null
+"${compose[@]}" up -d --no-deps --force-recreate worker >/dev/null
 worker_id=$("${compose[@]}" ps -q worker)
 sleep 2
 [[ $(docker inspect --format '{{.State.Running}}:{{.RestartCount}}' "$worker_id") == true:0 ]] || {

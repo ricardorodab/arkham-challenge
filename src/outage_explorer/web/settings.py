@@ -1,7 +1,7 @@
-"""Configure the single Django project from process environment and code defaults.
+"""Configure the single Django project from explicit settings and runtime secret files.
 
-No dotenv file is loaded. Direct setup requires a strong Django secret; web.local instead
-supplies its generated key and explicit state path. Import resolves paths and creates the
+No dotenv file is loaded. Production requires a mounted signing-key secret file; web.local
+may instead supply its generated key and explicit state path. Import resolves paths and creates the
 state directory. web.sqlite3 stores users/sessions/jobs/cache, separate from
 data/catalog.sqlite3 and immutable Parquet. Hosted deployments supply explicit allowed hosts
 and disable local HTTP; the Waitress launcher validates its optional trusted proxy separately.
@@ -16,8 +16,15 @@ from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 
+from outage_explorer.runtime_secrets import SecretConfigurationError, read_secret
+
 BASE_DIR = Path(os.environ.get("OUTAGE_PROJECT_DIR", Path.cwd())).resolve()
-SECRET_KEY = os.environ.get("OUTAGE_DJANGO_SECRET_KEY", "").strip()
+try:
+    SECRET_KEY = read_secret("OUTAGE_DJANGO_SECRET_KEY", required=True).strip()
+except SecretConfigurationError:
+    raise ImproperlyConfigured(
+        "OUTAGE_DJANGO_SECRET_KEY must be configured from an approved secret source."
+    ) from None
 if len(SECRET_KEY) < 50 or len(set(SECRET_KEY)) < 5 or SECRET_KEY.startswith("django-insecure-"):
     raise ImproperlyConfigured(
         "OUTAGE_DJANGO_SECRET_KEY must be configured with at least 50 characters, "

@@ -1,7 +1,8 @@
 """Run production initialization and SQLite-safe deployment checks without credentials output.
 
 This script is mounted from each immutable source release. Normal app and worker commands
-read the Django signing key from a root-owned host env file; they never load seed passwords.
+read the Django signing key from a read-only Key Vault-backed file; they never load seed
+passwords. The initializer reads bootstrap password files only for a fresh installation.
 """
 
 from __future__ import annotations

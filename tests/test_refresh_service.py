@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -280,6 +281,51 @@ def test_worker_publishes_source_and_model_together_and_preserves_both_on_failur
     with Catalog(settings.OUTAGE_DATA_DIR) as catalog:
         assert (catalog.current().id, catalog.current_model().id) == (source_id, model_id)
     assert QueryCacheEntry.objects.count() == 1
+
+
+def test_worker_loads_rotated_file_credential_without_secret_environment_values(
+    refresh_admin, control_directory, settings, tmp_path, monkeypatch
+):
+    settings.OUTAGE_DATA_DIR = tmp_path / "synthetic-file-data"
+    secret = tmp_path / "eia-secret"
+    monkeypatch.delenv("EIA_API_KEY", raising=False)
+    monkeypatch.setenv("OUTAGE_SECRET_FILES_ONLY", "1")
+    monkeypatch.setenv("EIA_API_KEY_FILE", str(secret))
+    observed = []
+
+    def client(key):
+        observed.append(key)
+        assert "EIA_API_KEY" not in os.environ
+        return FakeClient()
+
+    monkeypatch.setattr(refresh, "EIAClient", client)
+    with RefreshWorker() as worker:
+        for key in ("synthetic-first-file-key", "synthetic-rotated-file-key"):
+            secret.write_text(key, encoding="utf-8")
+            job, _ = enqueue_refresh(refresh_admin, "full")
+            worker.run_once()
+            job.refresh_from_db()
+            assert job.status == "succeeded"
+            assert key not in json.dumps(job.result)
+    assert observed == ["synthetic-first-file-key", "synthetic-rotated-file-key"]
+
+
+def test_missing_worker_secret_file_fails_safely_before_upstream_io(
+    refresh_admin, control_directory, settings, tmp_path, monkeypatch
+):
+    settings.OUTAGE_DATA_DIR = tmp_path / "untouched-data"
+    monkeypatch.delenv("EIA_API_KEY", raising=False)
+    monkeypatch.setenv("OUTAGE_SECRET_FILES_ONLY", "1")
+    monkeypatch.setenv("EIA_API_KEY_FILE", str(tmp_path / "private-missing-path-canary"))
+    client = Mock(side_effect=AssertionError("An unavailable key must not reach EIA."))
+    monkeypatch.setattr(refresh, "EIAClient", client)
+    with RefreshWorker() as worker:
+        job, _ = enqueue_refresh(refresh_admin, "recent")
+        worker.run_once()
+    job.refresh_from_db()
+    assert job.status == "failed" and job.error_code == "refresh_not_configured"
+    assert "canary" not in job.public_message
+    client.assert_not_called()
 
 
 def test_cache_cleanup_is_best_effort_after_success(refresh_admin, control_directory, monkeypatch):

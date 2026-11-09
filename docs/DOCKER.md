@@ -1,6 +1,6 @@
 # Build and run with Docker Compose
 
-Docker packages Python, Node and the locked application dependencies together. Use Docker Engine or Docker Desktop with **Linux containers** and the Docker Compose plugin. Run the commands from the repository root. The default deployment serves this computer at `http://127.0.0.1:8000`; it does not configure public hosting, HTTPS or a reverse proxy.
+Docker packages Python, Node and the locked application dependencies together. Use Docker Engine or Docker Desktop with **Linux containers** and the Docker Compose plugin. Run the commands from the repository root. This guide covers **local development** at `http://127.0.0.1:8000`. The Azure VM uses a separate [production stack with Key Vault secret files](../deploy/README.md#production-secrets); its commands and password storage differ.
 
 ## Before startup: configure live data access
 
@@ -22,7 +22,7 @@ export EIA_API_KEY
 
 Compose resolves the worker's `EIA_API_KEY` from the shell or a project `.env` used for interpolation. A shell value takes precedence, including an explicitly empty value. If you deliberately use `--env-file` instead, supply that option consistently when creating or recreating services. Only `worker` receives the resolved key; `app` and `init` do not. A one-off ingestion container receives it only when you explicitly pass `-e EIA_API_KEY`.
 
-Neither `.env.example` nor `key.txt` is loaded automatically. The Python application does not load dotenv files, and this setup has no `_FILE` adapter or Docker secret-file mount for the key. Do not share expanded Compose configuration or put credentials in the image. If containers already exist, changing the shell or `.env` alone does not update their environment; use the [recovery steps](#already-started-without-the-key).
+Neither `.env.example` nor `key.txt` is loaded automatically. The Python application does not load dotenv files. The application also supports `_FILE` settings for production, but this local Compose stack uses its existing environment-based setup. Do not share expanded Compose configuration or put credentials in the image. If local containers already exist, changing the shell or `.env` alone does not update their environment; use the [recovery steps](#already-started-without-the-key).
 
 ## Start a fresh workspace
 

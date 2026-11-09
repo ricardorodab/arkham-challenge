@@ -176,8 +176,14 @@ def validate_publications(data, catalog):
                         raise BackupError("A published data file differs from its manifest.")
 
 
-def capture(data, state, config, release, stage):
-    """Capture under caller-held locks; seal hashes before live writers resume."""
+def capture(data, state, config, release, stage, *, secrets="/run/arkham-secrets/current"):
+    """Seal state and the live signing key; exclude API and bootstrap credentials.
+
+    The caller holds deployment/writer locks. The Key Vault helper materializes secrets
+    on tmpfs before this operation; capture never contacts the vault or reads legacy
+    environment files. Only the Django signing key is needed to preserve signed state
+    in an isolated recovery. Its staged copy is protected and encrypted with the archive.
+    """
     data, state, config, release, stage = map(Path, (data, state, config, release, stage))
     if not re.fullmatch(r"[0-9a-f]{40}", release.name):
         raise BackupError("The source release must be a full commit SHA directory.")
@@ -210,10 +216,20 @@ def capture(data, state, config, release, stage):
         marker = stage / "state/.production-initialized"
         marker.touch(mode=0o600)
         files["state/.production-initialized"] = {"bytes": 0, "sha256": digest(marker)}
-    include(config / "runtime.env", "config/runtime.env")
-    include(config / "deployment.env", "config/deployment.env")
-    include(release / "release.env", "release/release.env")
-    image = (stage / "release/release.env").read_text().strip().removeprefix("OUTAGE_IMAGE=")
+    include(config / "deployment.json", "config/deployment.json")
+    include(config / "key-vault.json", "config/key-vault.json")
+    include(release / "release.json", "release/release.json")
+    # The root-managed `current` link is the one deliberate symlink boundary. Resolve
+    # it once, then apply the ordinary no-link file contract inside that generation.
+    secret_directory = Path(secrets).resolve(strict=True)
+    signing_key = regular(secret_directory / "app/django-secret-key")
+    if not 1 <= signing_key.stat().st_size <= 16384:
+        raise BackupError("The runtime signing key has an invalid size.")
+    include(signing_key, "config/django-secret-key")
+    release_config = json.loads((stage / "release/release.json").read_text())
+    if set(release_config) != {"image"}:
+        raise BackupError("The release metadata has unexpected fields.")
+    image = release_config["image"]
     if not re.fullmatch(re.escape(IMAGE_NAMESPACE) + r"[0-9a-f]{64}", image):
         raise BackupError("The release image is not an immutable GHCR digest.")
     for name in ("compose.production.yaml", "Caddyfile", "app-control.py", "verify-state.py"):
@@ -240,7 +256,7 @@ def capture(data, state, config, release, stage):
                     include(item, "data/" + item.relative_to(data).as_posix())
         validate_publications(stage / "data", stage / "data/catalog.sqlite3")
     manifest = {
-        "format": 1,
+        "format": 2,
         "created": int(time.time()),
         "revision": release.name,
         "image": image,
