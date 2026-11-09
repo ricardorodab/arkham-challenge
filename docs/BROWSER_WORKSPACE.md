@@ -6,6 +6,10 @@ The central product choice is to keep the chart, table and SQL on **one immutabl
 
 Read [PROJECT_TOUR.md](PROJECT_TOUR.md) for the basic system and [LOCAL_OPERATIONS.md](LOCAL_OPERATIONS.md) for setup. This guide moves from the user tasks to state/lifecycle rules, implementation, tradeoffs and practice. The exact [API contract](API_CONTRACT.md), [query security boundaries](QUERY_SECURITY.md) and dated [verification record](NOTES.md) provide the references behind it.
 
+![Fleet overview with language selection, date filters, capacity metrics, an outage trend and custom views.](screenshots/overview-desktop.png)
+
+The current English interface, showing retained EIA observations for October 1–30, 2026. These are historical observations, not live plant conditions.
+
 ## Five views with server-owned permissions
 
 | View | Task and behavior |
