@@ -59,7 +59,10 @@ credential secret is needed. The workflow's short-lived `GITHUB_TOKEN` publishes
 code image. The VM pulls its exact digest anonymously; no GitHub or registry credential
 is sent through Run Command or retained on the VM.
 
-Push to `main` and follow the CI run's deployment job. Upgrades are serialized. If deployment
+Open a pull request, pass the required CI and security checks, and merge into protected
+`main`. Administrators follow the same rules; independent approvals can be required after
+another trusted reviewer joins. Follow the resulting main-branch CI run's deployment job.
+Upgrades are serialized. If deployment
 is deferred because a refresh is queued/running, let that work complete and use **Re-run
 failed jobs** in the same Actions run; it retries the accepted digest. Source releases and
 persistent application data are separate. Initial worker configuration has an empty EIA key;
@@ -139,3 +142,22 @@ data has been ingested. The protected readiness endpoint additionally checks pub
 and query-runtime availability. Never use `docker compose down --volumes` for this stack.
 Monitor the retained 30 GB OS disk and remove superseded **images/source releases** only
 after identifying current and previous references; deployments do not prune persistent data.
+
+## Security operations
+
+Required security checks audit the exact Python and npm dependencies, Git history for
+secrets, and the accepted container image. Fixable HIGH/CRITICAL image vulnerabilities
+block release. Vendor-unfixed findings remain visible for review. Scheduled scans and
+Dependabot pull requests support maintenance; updates still pass the protected PR path.
+The VM's Ubuntu security-update timers remain enabled, with no forced reboot added by
+these deployment scripts.
+
+Public HTTPS liveness is checked every fifteen minutes, on main-branch pushes and manually.
+It checks process health, a valid deployed revision, TLS and HSTS, while allowing the older
+healthy release to serve during CI. It does not require an analytical publication or restart
+services. GitHub schedules are best effort: runs can be delayed or dropped, and public
+repositories can have schedules disabled after sixty days without activity. Check Actions
+notification preferences for failures; this is not a continuous availability guarantee.
+
+See [backup and restore](backup-restore.md) for separately provisioned encrypted off-host
+recovery and the [security policy](../SECURITY.md) for access and disclosure procedures.

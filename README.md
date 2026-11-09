@@ -17,6 +17,8 @@ Start with the project tour, then follow the data and request paths. These are t
 | [Engineering decisions](docs/DECISIONS.md) | The seven required challenge choices and all 31 detailed design decisions |
 | [Docker workflow](docs/DOCKER.md) | Portable build/startup, private credentials, ingestion, refresh-worker configuration and persistent volumes |
 | [VM deployment](deploy/README.md) | HTTPS hosting, GitHub Actions releases, persistent state, rollback and operator configuration |
+| [Security policy](SECURITY.md) | Protected changes, scanning, maintainer access and private vulnerability reporting |
+| [Backup and restore](deploy/backup-restore.md) | Encrypted off-host recovery, retention, key ownership and isolated restore drills |
 | [Local operations](docs/LOCAL_OPERATIONS.md) | Installation, ingestion, model inspection, reports, checks and recovery |
 | [Engineering notes and verification](docs/NOTES.md) | Implementation stages, actual corrections, contribution disclosure, verification and remaining limits |
 
@@ -39,7 +41,9 @@ For login or reading existing data only, you may omit the key prompt; keyless st
 
 ## Deploy from GitHub
 
-Pushes to `main` run the Python, JavaScript, browser and Docker checks. After all checks
+Open a pull request for changes to the protected `main` branch. Required CI and security
+checks must pass before merging; direct pushes, force pushes and branch deletion are blocked.
+Merges to `main` run the Python, JavaScript, browser and Docker checks. After all checks
 pass, GitHub Actions deploys the accepted image digest to the configured Azure VM and
 verifies its Git revision over HTTPS. Superseded commits and pull requests do not deploy.
 Accounts, saved views, datasets and secrets stay on the host across releases. An active
@@ -102,7 +106,7 @@ The browser keeps chart, preview and SQL on one model version and adopts a newer
 
 Recent extraction replaces a 30-day overlap and can miss older revisions; the analytical model is rebuilt fully. EIA's live pages are not a transactional upstream snapshot. SQL is a small single-dataset SELECT subset with 1,000 retained rows, 2 MiB output and an eight-second admitted budget.
 
-An interrupted candidate can remain on disk. There is no automatic orphan cleanup or promotion of unfinished files. Raw/model references commit together, but refresh-job completion is a separate application transaction, so an interrupted job may already have published data. Lock-protected recovery updates abandoned run/build/job labels; it is not proof against every disk/power failure or an off-machine backup. Public hosting, off-machine restore, automatic retention and larger-volume capacity remain unverified.
+An interrupted candidate can remain on disk. There is no automatic orphan cleanup or promotion of unfinished files. Raw/model references commit together, but refresh-job completion is a separate application transaction, so an interrupted job may already have published data. Lock-protected recovery updates abandoned run/build/job labels; it is not proof against every disk/power failure or an off-machine backup. The [backup guide](deploy/backup-restore.md) describes separately configured encrypted recovery. Larger-volume capacity remains unverified.
 
 ## Verification status
 
