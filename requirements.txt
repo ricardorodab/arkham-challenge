@@ -1,8 +1,8 @@
 # Exact runtime dependencies, including Django's portable transitive packages.
 asgiref==3.13.0
-Django==5.2.18
+Django==6.1.3
 duckdb==2.0.0
-sqlglot==30.27.0
-sqlparse==0.6.0
+sqlglot==30.29.0
+sqlparse==0.6.1
 tzdata==2026.6
 waitress==3.0.2
