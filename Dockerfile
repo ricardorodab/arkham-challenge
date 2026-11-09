@@ -9,14 +9,14 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
     && find /usr/lib -name libstdc++.so.6 -exec cp -L '{}' /node-libs/ ';' \
     && find /usr/lib -name libgcc_s.so.1 -exec cp -L '{}' /node-libs/ ';'
 
-FROM python:3.14.10-slim-bookworm@sha256:3fe1a0b6c2d6b2ebb572906cdabeca75aeb558c0c17db5ffefbcf8094871c32b AS python-wheel
+FROM python:3.15.0-slim-bookworm@sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d AS python-wheel
 
 WORKDIR /build
 COPY pyproject.toml ./
 COPY src/ ./src/
 RUN python -m pip wheel --no-cache-dir --no-deps --wheel-dir /wheels .
 
-FROM python:3.14.10-slim-bookworm@sha256:3fe1a0b6c2d6b2ebb572906cdabeca75aeb558c0c17db5ffefbcf8094871c32b AS runtime
+FROM python:3.15.0-slim-bookworm@sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
