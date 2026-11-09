@@ -9,12 +9,17 @@ prepare_imds() {
   iptables -w 10 -nL DOCKER-USER >/dev/null 2>&1 || iptables -w 10 -N DOCKER-USER
   iptables -w 10 -C DOCKER-USER -d 169.254.169.254/32 -m comment --comment arkham-deny-imds -j REJECT 2>/dev/null \
     || iptables -w 10 -I DOCKER-USER 1 -d 169.254.169.254/32 -m comment --comment arkham-deny-imds -j REJECT
+  iptables -w 10 -C DOCKER-USER -d 168.63.129.16/32 -p tcp -m multiport --dports 80,32526 -m comment --comment arkham-deny-wireserver -j REJECT 2>/dev/null \
+    || iptables -w 10 -I DOCKER-USER 1 -d 168.63.129.16/32 -p tcp -m multiport --dports 80,32526 -m comment --comment arkham-deny-wireserver -j REJECT
   iptables -w 10 -C DOCKER-USER -d 169.254.169.254/32 -m comment --comment arkham-deny-imds -j REJECT
+  iptables -w 10 -C DOCKER-USER -d 168.63.129.16/32 -p tcp -m multiport --dports 80,32526 -m comment --comment arkham-deny-wireserver -j REJECT
 }
 block_imds() {
   prepare_imds
   # Fail closed when the daemon uses an unsupported backend/disconnected user chain.
   iptables -w 10 -C FORWARD -j DOCKER-USER
+  iptables -w 10 -C DOCKER-USER -d 169.254.169.254/32 -m comment --comment arkham-deny-imds -j REJECT
+  iptables -w 10 -C DOCKER-USER -d 168.63.129.16/32 -p tcp -m multiport --dports 80,32526 -m comment --comment arkham-deny-wireserver -j REJECT
 }
 case ${1:-} in
   prepare-imds) prepare_imds; exit 0 ;;
@@ -42,7 +47,7 @@ ExecStartPost=/bin/bash /opt/arkham/operations/host-security.sh block-imds
 EOF
 cat > /etc/systemd/system/arkham-host-security.service <<'EOF'
 [Unit]
-Description=Block Docker bridge access to Azure instance metadata
+Description=Block Docker bridge access to Azure privileged metadata services
 Requires=docker.service
 After=docker.service
 Before=arkham-backup.service
@@ -101,4 +106,4 @@ EOF
 systemctl daemon-reload
 systemctl enable --now arkham-host-security.service >/dev/null
 systemctl enable --now arkham-backup.timer arkham-backup-check.timer >/dev/null
-echo '{"host_security":"installed","container_imds":"blocked","timers":"enabled"}'
+echo '{"host_security":"installed","container_imds":"blocked","container_wireserver":"blocked","timers":"enabled"}'

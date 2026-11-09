@@ -21,11 +21,14 @@ and lifecycle expiration after 30 days, including old versions; apply it to `bac
 conditional commits, while retained versions provide recovery from a compromised writer.
 No irreversible locked immutability policy is installed.
 
-Before assigning any identity data access, install and verify the metadata rule. Docker
-bridge containers must not reach `169.254.169.254`; the host still needs that address for
-managed identity. `host-security.sh` adds a DOCKER-USER rejection and a Docker startup hook
-to reapply it after daemon restart. Verify denial from **each production container** and a
-successful host identity request before granting data access. Root-authorized host-network
+Before assigning any identity data access, install and verify both metadata rules. Docker
+bridge containers must not reach IMDS at `169.254.169.254` or WireServer's privileged
+bootstrap endpoints at `168.63.129.16` TCP ports 80 and 32526. `host-security.sh` prepares
+DOCKER-USER rejections before Docker starts, then verifies both rules and the forwarding
+chain after startup. These rules affect forwarded container traffic only: host OUTPUT and
+Azure DNS on UDP/TCP port 53 remain available. Verify both endpoint denials from **each
+production container**, successful host metadata access and working container DNS before
+granting data access. Root-authorized host-network
 or privileged containers can bypass host boundaries and must not be used for application
 workloads. The backup/restore drill container uses `--network none`.
 
