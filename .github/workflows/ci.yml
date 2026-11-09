@@ -38,6 +38,11 @@ jobs:
       - run: python -m pip install --no-deps -e .
       - run: python -m ruff check .
       - run: python -m ruff format --check src tests
+      - name: Install age for real backup encryption and restore tests
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --yes age
       - run: python -m pytest -q
         env:
           EIA_API_KEY: ''

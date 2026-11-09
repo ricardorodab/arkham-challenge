@@ -94,6 +94,15 @@ errors. Monitor free disk, failed timer units and the Azure lifecycle policy. Th
 unit deliberately fails when a successful remote object is stale/missing/mismatched;
 notification transport is configured separately by the operator.
 
+Disk guards preserve at least 2 GiB of free space on the destination filesystem. SQLite
+snapshots and mutable/fallback copies preflight their required bytes; hard links do not
+reserve a second complete Parquet copy. Downloads preflight encrypted Content-Length, and
+restore extraction preflights the manifest's total expanded bytes while the encrypted
+download remains on disk. Chunked writes recheck the remaining budget to detect concurrent
+disk consumption. A failed budget check stops before further writes or backup commit and
+never marks a partial restore verified. The 30 GiB archive limit is a format safety ceiling,
+not permission to consume the production disk's remaining capacity.
+
 ## Restore boundaries and drill
 
 `restore.py` downloads and authenticates an encrypted artifact into a **new** disposable

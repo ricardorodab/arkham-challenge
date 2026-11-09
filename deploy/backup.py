@@ -33,6 +33,8 @@ CHUNK = 4 * 1024 * 1024
 MAX_BYTES = 30 * 1024**3
 MAX_FILES = 100_000
 MAX_MANIFEST = 16 * 1024 * 1024
+FREE_RESERVE = 2 * 1024**3
+IO_OVERHEAD = 65536
 IMAGE_NAMESPACE = "ghcr.io/ricardorodab/arkham-challenge-vm@sha256:"
 
 
@@ -43,6 +45,43 @@ class BackupError(RuntimeError):
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, response, code, message, headers, newurl):
         raise BackupError("Credential-bearing requests must not redirect.")
+
+
+def require_space(path, required=0):
+    """Keep two GiB free on the actual destination filesystem, including concurrent use."""
+    destination = Path(path).absolute()
+    while not destination.exists():
+        destination = destination.parent
+    # Keep allocation rounding/inodes outside the operational reserve as well.
+    if required < 0 or shutil.disk_usage(destination).free < required + FREE_RESERVE + IO_OVERHEAD:
+        raise BackupError("Insufficient disk space while preserving the two GiB reserve.")
+
+
+def copy_with_reserve(source, destination):
+    expected = Path(source).stat().st_size
+    require_space(destination, expected)
+    written = 0
+    with Path(source).open("rb") as incoming, Path(destination).open("xb") as output:
+        os.chmod(destination, 0o600)
+        while block := incoming.read(CHUNK):
+            if written + len(block) > expected:
+                raise BackupError("A mutable backup input grew during its quiesced copy.")
+            require_space(destination, expected - written)
+            output.write(block)
+            written += len(block)
+    if written != expected:
+        raise BackupError("A mutable backup input changed size during its quiesced copy.")
+
+
+def write_with_reserve(path, value):
+    require_space(path, len(value))
+    with Path(path).open("xb") as output:
+        os.chmod(path, 0o600)
+        for offset in range(0, len(value), CHUNK):
+            require_space(path, len(value) - offset)
+            output.write(value[offset : offset + CHUNK])
+        output.flush()
+        os.fsync(output.fileno())
 
 
 def digest(path):
@@ -71,9 +110,19 @@ def fingerprint(path):
 
 def sqlite_snapshot(source, destination):
     regular(source)
+    require_space(destination)
     with closing(sqlite3.connect(Path(source).as_uri() + "?mode=ro", uri=True)) as live:
+        page_size = live.execute("PRAGMA page_size").fetchone()[0]
+        pages = live.execute("PRAGMA page_count").fetchone()[0]
+        require_space(destination, page_size * pages + 65536)
         with closing(sqlite3.connect(destination)) as saved:
-            live.backup(saved)
+            live.backup(
+                saved,
+                pages=64,
+                progress=lambda status, remaining, total: require_space(
+                    destination, remaining * page_size
+                ),
+            )
             if saved.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
                 raise BackupError("A SQLite snapshot failed its integrity check.")
             if saved.execute("PRAGMA foreign_key_check").fetchall():
@@ -132,6 +181,7 @@ def capture(data, state, config, release, stage):
     data, state, config, release, stage = map(Path, (data, state, config, release, stage))
     if not re.fullmatch(r"[0-9a-f]{40}", release.name):
         raise BackupError("The source release must be a full commit SHA directory.")
+    require_space(stage)
     stage.mkdir(mode=0o700, parents=False, exist_ok=False)
     files = {}
 
@@ -143,13 +193,12 @@ def capture(data, state, config, release, stage):
             sqlite_snapshot(source, target)
         elif immutable:
             try:
+                require_space(target)
                 os.link(source, target)
             except OSError:
-                shutil.copyfile(source, target)
-                os.chmod(target, 0o600)
+                copy_with_reserve(source, target)
         else:
-            shutil.copyfile(source, target)
-            os.chmod(target, 0o600)
+            copy_with_reserve(source, target)
         files[relative] = {"bytes": target.stat().st_size, "sha256": digest(target)}
         if len(files) > MAX_FILES or sum(item["bytes"] for item in files.values()) > MAX_BYTES:
             raise BackupError("The backup exceeds its configured file/size safety limit.")
@@ -203,13 +252,10 @@ def capture(data, state, config, release, stage):
         "excluded": ["bootstrap_passwords", "eia_key", "locks", "unfinished_candidates"],
     }
     path = stage / "manifest.json"
-    if len(json.dumps(manifest, sort_keys=True).encode()) > MAX_MANIFEST:
+    encoded = json.dumps(manifest, sort_keys=True).encode()
+    if len(encoded) > MAX_MANIFEST:
         raise BackupError("The sealed manifest exceeds its restore safety limit.")
-    with path.open("x", encoding="utf-8") as stream:
-        json.dump(manifest, stream, sort_keys=True)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.chmod(path, 0o600)
+    write_with_reserve(path, encoded)
     return manifest
 
 
@@ -398,6 +444,7 @@ def upload(stage, config, *, age="age", drill_recipient=None):
         age=age,
     )
     # A truncated/changed archive never gets a committed object or success receipt.
+    require_space(stage, 4096)
     client.commit(name, uploaded, manifest["revision"])
     return {
         "created": int(time.time()),
@@ -430,11 +477,7 @@ def check(config, receipt_path, max_age):
 def write_receipt(path, value):
     path = Path(path)
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".next")
-    with temporary.open("x", encoding="utf-8") as stream:
-        json.dump(value, stream, sort_keys=True)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.chmod(temporary, 0o600)
+    write_with_reserve(temporary, json.dumps(value, sort_keys=True).encode())
     temporary.replace(path)
 
 

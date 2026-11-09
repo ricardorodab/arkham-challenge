@@ -105,6 +105,7 @@ def restore(archive, identity, target, base, *, age="age"):
     target = target_path(target, base)
     backup.regular(archive)
     backup.regular(identity)
+    backup.require_space(target)
     target.mkdir(mode=0o700)
     (target / ".incomplete").touch(mode=0o600)
     process = subprocess.Popen(
@@ -125,8 +126,9 @@ def restore(archive, identity, target, base, *, age="age"):
             raw = incoming.extractfile(first).read()
             manifest = json.loads(raw)
             files = manifest_contract(manifest)
-            (target / "manifest.json").write_bytes(raw)
-            os.chmod(target / "manifest.json", 0o600)
+            remaining = sum(info["bytes"] for info in files.values())
+            backup.require_space(target, remaining + len(raw))
+            backup.write_with_reserve(target / "manifest.json", raw)
             seen = set()
             # Iteration starts with the cached first member; it is handled above only.
             for member in incoming:
@@ -138,12 +140,15 @@ def restore(archive, identity, target, base, *, age="age"):
                 if member.size != expected["bytes"]:
                     raise backup.BackupError("An archive member has the wrong size.")
                 destination = target / member.name
+                backup.require_space(target, remaining)
                 destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 checksum = hashlib.sha256()
                 with incoming.extractfile(member) as source, destination.open("xb") as output:
                     while block := source.read(backup.CHUNK):
+                        backup.require_space(target, remaining)
                         output.write(block)
                         checksum.update(block)
+                        remaining -= len(block)
                 os.chmod(destination, 0o600)
                 if checksum.hexdigest() != expected["sha256"]:
                     raise backup.BackupError("An archive member failed its sealed checksum.")
@@ -177,15 +182,17 @@ def download(config, blob, output):
         expected_hash = response.headers["x-ms-meta-sha256"]
     if not 1 <= expected_size <= backup.MAX_BYTES + backup.MAX_FILES * 1024 + CHUNK_LIMIT:
         raise backup.BackupError("The encrypted object exceeds its download safety limit.")
+    backup.require_space(output, expected_size)
     checksum, size = hashlib.sha256(), 0
     with output.open("xb") as destination, client.request("GET", blob) as source:
         os.chmod(output, 0o600)
         while block := source.read(backup.CHUNK):
+            if size + len(block) > expected_size:
+                raise backup.BackupError("The download exceeds its declared size.")
+            backup.require_space(output, expected_size - size)
             destination.write(block)
             checksum.update(block)
             size += len(block)
-            if size > expected_size:
-                raise backup.BackupError("The download exceeds its declared size.")
     if size != expected_size or checksum.hexdigest() != expected_hash:
         raise backup.BackupError("The encrypted download checksum failed.")
     return {"download": "verified", "bytes": size}

@@ -13,6 +13,7 @@ import sys
 import tarfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -269,3 +270,157 @@ def test_credential_requests_never_follow_redirects():
         backup.NoRedirect().redirect_request(
             None, None, 302, "redirect", {}, "https://attacker.example"
         )
+
+
+def disk_free(monkeypatch, free):
+    monkeypatch.setattr(backup.shutil, "disk_usage", lambda _: SimpleNamespace(free=free))
+
+
+def test_mutable_copy_budget_rejected_before_destination_creation(tmp_path, monkeypatch):
+    source, destination = tmp_path / "source", tmp_path / "copy"
+    source.write_bytes(b"12345678")
+    disk_free(monkeypatch, backup.FREE_RESERVE + backup.IO_OVERHEAD + 7)
+    with pytest.raises(backup.BackupError, match="two GiB reserve"):
+        backup.copy_with_reserve(source, destination)
+    assert not destination.exists()
+
+
+def test_sqlite_budget_rejected_before_destination_creation(source, tmp_path, monkeypatch):
+    live = source[1] / "web.sqlite3"
+    with sqlite3.connect(live) as database:
+        required = (
+            database.execute("PRAGMA page_size").fetchone()[0]
+            * database.execute("PRAGMA page_count").fetchone()[0]
+            + 65536
+        )
+    disk_free(monkeypatch, backup.FREE_RESERVE + backup.IO_OVERHEAD + required - 1)
+    destination = tmp_path / "snapshot.sqlite3"
+    with pytest.raises(backup.BackupError, match="two GiB reserve"):
+        backup.sqlite_snapshot(live, destination)
+    assert not destination.exists()
+
+
+def fake_download(monkeypatch, content):
+    calls = []
+
+    class Response(io.BytesIO):
+        headers = {
+            "Content-Length": str(len(content)),
+            "x-ms-meta-sha256": backup.hashlib.sha256(content).hexdigest(),
+        }
+
+    def request(_, method, name):
+        calls.append(method)
+        return Response(content if method == "GET" else b"")
+
+    monkeypatch.setattr(backup.Blob, "request", request)
+    return calls
+
+
+def test_download_budget_rejected_before_get_or_output_creation(tmp_path, monkeypatch):
+    calls = fake_download(monkeypatch, b"12345678")
+    disk_free(monkeypatch, backup.FREE_RESERVE + backup.IO_OVERHEAD + 7)
+    destination = tmp_path / "download.age"
+    with pytest.raises(backup.BackupError, match="two GiB reserve"):
+        restore.download(
+            {"account": "fixture", "container": "backups"},
+            "backups/fixture.tar.gz.age",
+            destination,
+        )
+    assert calls == ["HEAD"]
+    assert not destination.exists()
+
+
+def test_download_stops_when_concurrent_writes_consume_reserve(tmp_path, monkeypatch):
+    fake_download(monkeypatch, b"12345678")
+    monkeypatch.setattr(backup, "CHUNK", 4)
+    budgets = iter(
+        (
+            backup.FREE_RESERVE + backup.IO_OVERHEAD + 8,
+            backup.FREE_RESERVE + backup.IO_OVERHEAD + 8,
+            backup.FREE_RESERVE - 1,
+        )
+    )
+    monkeypatch.setattr(backup.shutil, "disk_usage", lambda _: SimpleNamespace(free=next(budgets)))
+    destination = tmp_path / "partial.age"
+    with pytest.raises(backup.BackupError, match="two GiB reserve"):
+        restore.download(
+            {"account": "fixture", "container": "backups"},
+            "backups/fixture.tar.gz.age",
+            destination,
+        )
+    assert destination.read_bytes() == b"1234"
+
+
+def test_restore_expanded_budget_rejected_before_payload_writes(
+    source, tmp_path, age_tools, monkeypatch
+):
+    stage, manifest = capture(source, tmp_path)
+    archive = tmp_path / "backup.age"
+    encrypt(stage, age_tools, archive)
+    required = (
+        sum(info["bytes"] for info in manifest["files"].values())
+        + (stage / "manifest.json").stat().st_size
+    )
+    disk_free(monkeypatch, backup.FREE_RESERVE + backup.IO_OVERHEAD + required - 1)
+    target = tmp_path / "too-large-expanded"
+    with pytest.raises(backup.BackupError, match="two GiB reserve"):
+        restore.restore(archive, age_tools[1], target, tmp_path, age=age_tools[0])
+    assert not (target / "manifest.json").exists()
+    assert not (target / "state").exists()
+    assert not (target / ".verified").exists()
+
+
+def test_restore_stops_midstream_when_concurrent_writes_consume_reserve(
+    source, tmp_path, age_tools, monkeypatch
+):
+    stage, _ = capture(source, tmp_path)
+    archive = tmp_path / "backup.age"
+    encrypt(stage, age_tools, archive)
+    target = tmp_path / "disk-shrank"
+    partial = target / "config/deployment.env"
+    checked = 0
+
+    def capacity(_):
+        nonlocal checked
+        if partial.exists():
+            checked += 1
+        return SimpleNamespace(
+            free=backup.FREE_RESERVE - 1 if checked >= 2 else 10 * backup.FREE_RESERVE
+        )
+
+    monkeypatch.setattr(backup, "CHUNK", 8)
+    monkeypatch.setattr(backup.shutil, "disk_usage", capacity)
+    with pytest.raises(backup.BackupError, match="two GiB reserve"):
+        restore.restore(archive, age_tools[1], target, tmp_path, age=age_tools[0])
+    assert partial.stat().st_size == 8
+    assert (target / ".incomplete").exists()
+    assert not (target / ".verified").exists()
+
+
+def test_low_disk_after_encryption_never_commits_remote_backup(
+    source, tmp_path, age_tools, monkeypatch
+):
+    stage, _ = capture(source, tmp_path)
+    commits = []
+
+    class FakeBlob:
+        def __init__(self, *_):
+            pass
+
+        def upload_blocks(self, name, incoming):
+            incoming.read()
+            disk_free(monkeypatch, backup.FREE_RESERVE - 1)
+            return {}
+
+        def commit(self, *args):
+            commits.append(args)
+
+    monkeypatch.setattr(backup, "Blob", FakeBlob)
+    with pytest.raises(backup.BackupError, match="two GiB reserve"):
+        backup.upload(
+            stage,
+            {"account": "fixture", "container": "backups", "recipient": age_tools[2]},
+            age=age_tools[0],
+        )
+    assert commits == []
