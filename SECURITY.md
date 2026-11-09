@@ -38,3 +38,34 @@ replace application authorization, security updates, or disaster recovery.
 See the [deployment guide](deploy/README.md) for the production trust boundary and
 operational recovery procedures. Keep Azure account MFA enabled; GitHub's noninteractive
 OIDC deployment identity does not require a stored Azure password or user MFA prompt.
+
+## Automated checks and dependency updates
+
+Pull requests, pushes and a weekly schedule run the `Security checks` gate. It fails
+when a dependency audit, secret scan, or production-container check fails, is cancelled,
+or is skipped. PR checks have read-only repository permissions; publishing permissions
+exist only in the main-branch promotion job. Promotion transfers the exact accepted
+image through a one-day artifact and verifies its image ID and source/revision labels.
+
+PyPA pip-audit checks the exact runtime, development and build requirements. npm audits
+the lockfile without running dependency scripts. Gitleaks scans Git history with full
+redaction; it does not publish secret-bearing reports or PR comments. Dependabot opens
+weekly reviewable updates for Python, npm, Docker, Compose and Actions; it does not
+automatically merge them. `requirements-dev.txt` is the canonical development pin list;
+`requirements-dev.lock` remains a compatible entry point that includes it.
+
+Trivy reports all HIGH and CRITICAL image findings, including vendor status and findings
+without an available fix. Findings with available fixes block promotion. Unfixed,
+deferred and vendor `will_not_fix` findings remain visible for maintainer review; there
+is no blanket CVE allowlist. An unavailable vendor fix does not establish that a finding
+is harmless. Review residual Debian advisories and reduce the exposed functionality or
+change the base when necessary. The runtime uses patched, digest-pinned Python and Node
+images on the same Debian ABI, and removes pip after installation and dependency checks.
+
+The initial 2026-11-08 Bookworm base audit reported residual CRITICAL
+[CVE-2025-7458](https://security-tracker.debian.org/tracker/CVE-2025-7458) for SQLite
+(`affected`, no available fix) and
+[CVE-2023-45853](https://security-tracker.debian.org/tracker/CVE-2023-45853) for zlib
+(`will_not_fix`). It also reported unfixed/deferred HIGH findings in util-linux,
+ncurses, SQLite, zlib, gzip, libacl, systemd and Perl. These are scanner/vendor statuses
+for review, and the current CI report remains the source for updated findings.

@@ -301,6 +301,13 @@ class Acceptance:
         )
         metadata = json.loads(output)
         require(metadata["uid"] != 0, "Image probe ran as root.")
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        python_pins = set(re.findall(r"^FROM python:([\d.]+)-", dockerfile, re.MULTILINE))
+        node_pins = set(re.findall(r"^FROM node:([\d.]+)-", dockerfile, re.MULTILINE))
+        require(python_pins == {metadata["python"]}, "Python runtime differs from the Docker pin.")
+        require(
+            node_pins == {metadata["node"].removeprefix("v")}, "Node differs from the Docker pin."
+        )
         require(
             re.fullmatch(r"3\.(12|13|14)\.\d+", metadata["python"]), "Unsupported Python runtime."
         )
