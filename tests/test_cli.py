@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -151,6 +152,54 @@ def test_successful_ingest_emits_json_and_secret_free_structured_logs(
     assert SECRET not in captured.out + captured.err
     for path in tmp_path.rglob("*.json"):
         assert SECRET not in path.read_text(encoding="utf-8")
+
+
+def test_file_only_cli_ingest_loads_key_and_redacts_actual_source_logs(
+    monkeypatch, tmp_path, capsys
+):
+    secret = "synthetic-cli-file-canary/+?="
+    path = tmp_path / "eia-secret"
+    path.write_text(secret, encoding="utf-8")
+    monkeypatch.delenv("EIA_API_KEY", raising=False)
+    monkeypatch.setenv("EIA_API_KEY_FILE", str(path))
+    monkeypatch.setenv("OUTAGE_SECRET_FILES_ONLY", "1")
+    received = []
+
+    def client(key):
+        received.append(key)
+        logging.getLogger("outage_explorer.data.eia").warning(
+            "source raw=%s encoded=%s https://example.invalid/?api_key=unknown-cli-query-canary",
+            key,
+            quote(key, safe=""),
+            extra={"route": key},
+        )
+        return FakeClient()
+
+    monkeypatch.setattr(cli, "EIAClient", client)
+    assert cli.main(["ingest", "--mode", "full", "--data-dir", str(tmp_path / "data")]) == 0
+    captured = capsys.readouterr()
+    assert received == [secret]
+    assert secret not in captured.out + captured.err
+    assert quote(secret, safe="") not in captured.out + captured.err
+    assert "unknown-cli-query-canary" not in captured.err
+    assert "[REDACTED]" in captured.err
+    assert json.loads(captured.out)["routes"]["national"]["rows"] == 3
+
+
+def test_file_only_cli_rejects_env_fallback_but_allows_keyless_status(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setenv("OUTAGE_SECRET_FILES_ONLY", "1")
+    monkeypatch.setenv("EIA_API_KEY", "forbidden-environment-canary")
+    monkeypatch.setenv("EIA_API_KEY_FILE", str(tmp_path / "missing-private-path-canary"))
+    monkeypatch.setattr(cli, "EIAClient", forbid_client)
+    destination = tmp_path / "data"
+    assert cli.main(["ingest", "--data-dir", str(destination)]) == 2
+    captured = capsys.readouterr()
+    assert json.loads(captured.err)["error"]["code"] == "configuration"
+    assert "canary" not in captured.err and not destination.exists()
+    assert cli.main(["status", "--data-dir", str(destination)]) == 0
+    assert json.loads(capsys.readouterr().out)["current_snapshot"] is None
 
 
 @pytest.mark.parametrize(

@@ -65,25 +65,68 @@ another trusted reviewer joins. Follow the resulting main-branch CI run's deploy
 Upgrades are serialized. If deployment
 is deferred because a refresh is queued/running, let that work complete and use **Re-run
 failed jobs** in the same Actions run; it retries the accepted digest. Source releases and
-persistent application data are separate. Initial worker configuration has an empty EIA key;
-set that key privately on the VM before using refresh. Deployment does not import local
+persistent application data are separate. Store the EIA key in the production vault before
+using refresh. Deployment does not import local
 accounts/data, reset existing accounts, or implicitly ingest analytical data.
 
 ## Host setup
 
 Run `bootstrap-vm.sh <public-DNS-hostname>` as root on Ubuntu 24.04. The script installs
-Docker and Compose if absent, enables Docker, creates private storage paths and generates
-secrets only when missing. The hostname must resolve to the VM's static public IP before
+Docker and Compose if absent, enables Docker, and creates private storage paths plus
+nonsecret JSON metadata. Production secrets must already exist in Key Vault. The hostname
+must resolve to the VM's static public IP before
 Caddy can obtain a trusted certificate. An Azure public-IP DNS label can supply this
 hostname without purchasing a domain.
 
-Root-owned `/etc/arkham/runtime.env` supplies the Django signing key. Only init receives
-`bootstrap.env`, which holds the initial random account passwords. Only the worker receives
-`worker.env`, initially `EIA_API_KEY=`. Files are mode 0600 inside a mode 0700 directory;
-their contents never enter Git, image builds, source releases or deployment results. A
-Docker/root operator can inspect process environments. Read initial account passwords
-privately using a root terminal; do not print them in Azure Run Command or Actions logs.
-Account changes in the application do not rewrite the initial-password file.
+### Production secrets
+
+The production source of truth is `arkhamkv`, reached over its approved private endpoint
+and private DNS. Public vault access stays disabled. The VM's **system-assigned runtime
+identity** has `Key Vault Secrets User` at this application vault. GitHub's deployment
+identity remains separate and has no direct vault data-plane role. It can execute root
+deployment commands, so trusted deployment code remains part of the secret-access boundary.
+
+| Vault secret | Consumer | Purpose |
+| --- | --- | --- |
+| `django-secret-key` | App, worker, initializer | Stable Django signatures and session validation |
+| `eia-api-key` | Refresh worker | Live EIA extraction; absent means refresh is not configured |
+| `bootstrap-viewer-password` | Initializer on first setup | Initial Viewer account only |
+| `bootstrap-analyst-password` | Initializer on first setup | Initial Analyst account only |
+| `bootstrap-admin-password` | Initializer on first setup | Initial Admin account only |
+
+Bootstrap secrets are not a record of current user passwords. Django stores hashes in the
+application database; account edits and resets do not update these initial values. Existing
+accounts are never reseeded during upgrades. Preserve the Django key during migration;
+changing it invalidates signatures and requires an explicit rotation plan.
+
+`key-vault-secrets.py fetch` runs only on the host, authenticates through managed identity,
+and atomically publishes complete, role-specific directories on `/run` **tmpfs**. Containers
+receive their own read-only directory at `/run/secrets`; they cannot access the VM metadata
+endpoint or obtain its identity token. Files are owned by UID10001 with mode `0400`, beneath
+role directories with mode `0500` and a root-only generation parent. The `_FILE` settings
+contain paths, never credential values. `OUTAGE_SECRET_FILES_ONLY=1` forbids secret-value
+environment variables. No production secret `.env` files are loaded or generated.
+Production commands use `--env-file /dev/null` to disable Compose's automatic `.env`
+discovery; the remaining environment settings are nonsecret paths and deployment options.
+
+Root-owned `/etc/arkham/key-vault.json` stores only the fixed vault URL, bootstrap policy,
+and a SHA-256 pin of the existing high-entropy Django key. `/etc/arkham/deployment.json`
+stores the public hostname; each release's `release.json` stores its image digest. These
+are nonsecret metadata, not alternative credential stores.
+
+Docker's systemd pre-start hook restores the tmpfs files before containers restart after a
+reboot. A cold start requires working private DNS, network connectivity, Key Vault and
+runtime identity access; there is no persistent plaintext fallback. A failed secret fetch
+during deployment happens before pausing the existing app. Retrieved values and access
+tokens never enter command arguments, deployment results or application logs. Core dumps
+are disabled for retrieval. VM root/Docker administrators can still read runtime secrets.
+
+For EIA rotation, obtain the replacement from EIA, update `eia-api-key`, then run a normal
+release (or rerun the latest deployment) to fetch a complete generation and safely recreate
+the worker. `docker compose restart` alone does not refresh its mounted generation.
+Key Vault does not issue or rotate the upstream EIA credential. Initializer passwords are
+required for a fresh installation; the EIA key is optional for login and existing data.
+Do not print any vault values in Azure Run Command, Actions logs, screenshots or chat.
 
 ## Release contract
 
@@ -132,7 +175,10 @@ Backups and result files remain local and are not a substitute for off-machine r
 
 The new app must pass its internal health check, public certificate-validated HTTPS, exact
 `X-Outage-Revision`, and worker liveness before an atomic `/opt/arkham/current` symlink update.
-`previous` retains the prior source release. An ordinary failure restores the prior image
+`previous` retains the prior compatible source release. After the one-time migration and
+retirement of legacy secret files, the old environment-based release is not a rollback
+target; the next Key Vault-based release establishes a compatible previous version.
+An ordinary failure restores the prior image
 when schema and applied migration history remain compatible. A
 schema-changing failure keeps the data intact and requires operator review instead of
 automatically downgrading the schema or restoring an older database over user changes.

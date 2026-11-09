@@ -67,6 +67,46 @@ def test_seed_refuses_an_existing_privileged_or_unclassified_name(monkeypatch):
     assert Persona.objects.count() == 0
 
 
+@pytest.mark.django_db
+def test_production_seed_reads_file_passwords_and_never_reseeds_existing_users(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("OUTAGE_SECRET_FILES_ONLY", "1")
+    passwords = {}
+    for role in Persona.Role.values:
+        setting = f"OUTAGE_{role.upper()}_PASSWORD"
+        monkeypatch.delenv(setting, raising=False)
+        passwords[role] = f"File-only-{role}-R8!synthetic-canary"
+        path = tmp_path / f"{role}-password"
+        path.write_text(passwords[role], encoding="utf-8")
+        monkeypatch.setenv(f"{setting}_FILE", str(path))
+    call_command("seed_users")
+    before = dict(get_user_model().objects.values_list("username", "password"))
+    assert all(
+        user.check_password(passwords[user.username]) for user in get_user_model().objects.all()
+    )
+    for role in Persona.Role.values:
+        monkeypatch.setenv(f"OUTAGE_{role.upper()}_PASSWORD_FILE", str(tmp_path / "missing"))
+    call_command("seed_users")
+    assert dict(get_user_model().objects.values_list("username", "password")) == before
+    assert "canary" not in capsys.readouterr().out
+
+
+@pytest.mark.django_db
+def test_production_seed_rejects_a_missing_password_file_without_partial_accounts(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OUTAGE_SECRET_FILES_ONLY", "1")
+    for role in Persona.Role.values:
+        setting = f"OUTAGE_{role.upper()}_PASSWORD"
+        monkeypatch.delenv(setting, raising=False)
+        monkeypatch.setenv(f"{setting}_FILE", str(tmp_path / "missing-private-path-canary"))
+    with pytest.raises(CommandError) as failure:
+        call_command("seed_users")
+    assert "canary" not in str(failure.value)
+    assert get_user_model().objects.count() == 0
+
+
 def test_settings_require_secret_and_production_mode_uses_secure_cookies(tmp_path):
     env = {
         k: v
@@ -100,6 +140,48 @@ def test_settings_require_secret_and_production_mode_uses_secure_cookies(tmp_pat
     )
     assert configured.returncode == 0, configured.stderr
     assert json.loads(configured.stdout) == [False, True, True, True, ["127.0.0.1", "localhost"]]
+
+
+def test_production_settings_use_signing_key_file_without_populating_environment(tmp_path):
+    secret = "synthetic-file-signing-key-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    path = tmp_path / "private-signing-path-canary"
+    path.write_text(secret, encoding="utf-8")
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"PYTHONPATH", "PYTHONHOME", "OUTAGE_DJANGO_SECRET_KEY"}
+    }
+    env.update(
+        OUTAGE_SECRET_FILES_ONLY="1",
+        OUTAGE_DJANGO_SECRET_KEY_FILE=str(path),
+        OUTAGE_STATE_DIR=str(tmp_path / "state"),
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import os; from outage_explorer.web import settings; "
+            "assert len(settings.SECRET_KEY)>50; "
+            "assert 'OUTAGE_DJANGO_SECRET_KEY' not in os.environ; print('configured')",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "configured"
+    env["OUTAGE_DJANGO_SECRET_KEY"] = "synthetic-env-canary"
+    rejected = subprocess.run(
+        [sys.executable, "-I", "-c", "import outage_explorer.web.settings"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert rejected.returncode != 0 and "must be configured" in rejected.stderr
+    assert "canary" not in rejected.stderr and secret not in rejected.stderr
 
 
 @pytest.mark.parametrize(

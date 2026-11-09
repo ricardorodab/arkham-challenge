@@ -7,7 +7,6 @@ implicit privilege or identity rewrite.
 """
 
 import json
-import os
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
@@ -15,13 +14,14 @@ from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
 from django.db import IntegrityError, transaction
 
+from outage_explorer.runtime_secrets import SecretConfigurationError, read_secret
 from outage_explorer.service.models import Persona
 
 
 class Command(BaseCommand):
     """Create validated Viewer/Analyst/Admin demo accounts in one transaction."""
 
-    help = "Create Viewer/Analyst/Admin accounts from environment-supplied passwords."
+    help = "Create Viewer/Analyst/Admin accounts from supplied secret files or local passwords."
     requires_system_checks = []
 
     def add_arguments(self, parser):
@@ -31,7 +31,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         """Validate all required passwords/identities before committing account changes.
 
-        Read environment passwords only for new or explicitly reset users, apply Django
+        Read passwords only for new or explicitly reset users, apply Django
         password policy, create hashes through create_user/set_password and assign the product
         Persona without staff/superuser privilege. Reject setup conflicts without a partial
         transaction. Return JSON action summaries, never passwords.
@@ -48,9 +48,10 @@ class Command(BaseCommand):
                     )
             password = None
             if user is None or options["reset_passwords"]:
-                password = os.environ.get(f"OUTAGE_{role.upper()}_PASSWORD", "")
-                if not password:
-                    raise CommandError(f"OUTAGE_{role.upper()}_PASSWORD is required.")
+                try:
+                    password = read_secret(f"OUTAGE_{role.upper()}_PASSWORD", required=True)
+                except SecretConfigurationError as error:
+                    raise CommandError(str(error)) from None
                 try:
                     validate_password(password, user=user or user_model(username=role))
                 except ValidationError:

@@ -100,6 +100,8 @@ jobs:
           timeout: 10m
       - name: Exercise isolated containers through host HTTP
         run: python tests/docker/acceptance.py --image arkham:ci
+      - name: Verify production secret files and restart recovery
+        run: python tests/docker/production_secrets.py --image arkham:ci
       - name: Record the exact accepted image identity
         id: identity
         shell: bash

@@ -21,11 +21,14 @@ fi
 exec 9>/run/lock/arkham-deploy.lock
 flock -n 9 || exit 75
 release=$(readlink -f /opt/arkham/current)
-[[ "$release" == /opt/arkham/releases/* && -f "$release/release.env" ]] || exit 1
-source /etc/arkham/deployment.env
-source "$release/release.env"
+[[ "$release" == /opt/arkham/releases/* && -f "$release/release.json" ]] || exit 1
+OUTAGE_PUBLIC_HOST=$(python3 -c 'import json,sys;v=json.load(open(sys.argv[1]));assert set(v)=={"public_host"};print(v["public_host"])' /etc/arkham/deployment.json)
+OUTAGE_IMAGE=$(python3 -c 'import json,sys;v=json.load(open(sys.argv[1]));assert set(v)=={"image"};print(v["image"])' "$release/release.json")
+[[ "$OUTAGE_PUBLIC_HOST" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ && "$OUTAGE_PUBLIC_HOST" == *.* ]] || exit 1
+[[ "$OUTAGE_IMAGE" =~ ^ghcr.io/ricardorodab/arkham-challenge-vm@sha256:[0-9a-f]{64}$ ]] || exit 1
 export OUTAGE_PUBLIC_HOST OUTAGE_IMAGE OUTAGE_RELEASE_DIR="$release"
 export OUTAGE_DEPLOY_REVISION="$(basename "$release")"
+export OUTAGE_SECRET_ROOT=/run/arkham-secrets/current
 compose=(docker compose --project-name arkham --env-file /dev/null -f "$release/deploy/compose.production.yaml")
 install -d -m 0700 /srv/arkham-backup-staging /var/lib/arkham-backup
 stage="/srv/arkham-backup-staging/stage-$(cat /proc/sys/kernel/random/uuid)"

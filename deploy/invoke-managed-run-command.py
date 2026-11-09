@@ -31,6 +31,11 @@ DEPLOY_FILES = (
     "Caddyfile",
     "app-control.py",
     "verify-state.py",
+    "key-vault-secrets.py",
+    "backup.py",
+    "restore.py",
+    "backup-run.sh",
+    "restore-drill.sh",
 )
 
 

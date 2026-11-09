@@ -31,19 +31,24 @@ python3 "$operations/restore.py" restore --archive "$scratch/backup.age" --ident
   --base "$scratch" --target "$scratch/restored"
 image=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["image"])' "$scratch/restored/manifest.json")
 revision=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["revision"])' "$scratch/restored/manifest.json")
+format=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["format"])' "$scratch/restored/manifest.json")
+[[ "$format" == 2 ]] || { echo 'The current drill requires a secret-file backup.' >&2; exit 1; }
 [[ "$image" =~ ^ghcr.io/ricardorodab/arkham-challenge-vm@sha256:[0-9a-f]{64}$ && "$revision" =~ ^[0-9a-f]{40}$ ]] || exit 1
 [[ $(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image") == "$revision" ]] || exit 1
 [[ $(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' "$image") == https://github.com/ricardorodab/arkham-challenge ]] || exit 1
 install -d -m 0700 "$scratch/restored/data"
 chown -R 10001:10001 "$scratch/restored/state" "$scratch/restored/data"
+chown 10001:10001 "$scratch/restored/config/django-secret-key"
+chmod 0400 "$scratch/restored/config/django-secret-key"
 container=$(docker run -d --network none --user 10001:10001 --read-only --cap-drop ALL \
   --security-opt no-new-privileges:true --pids-limit 128 --memory 1536m \
   --tmpfs /tmp:rw,noexec,nosuid,size=128m,mode=1777 \
-  --env-file "$scratch/restored/config/runtime.env" \
+  -e OUTAGE_SECRET_FILES_ONLY=1 -e OUTAGE_DJANGO_SECRET_KEY_FILE=/run/secrets/django-secret-key \
   -e OUTAGE_LOCAL_HTTP=1 -e OUTAGE_ALLOWED_HOSTS=localhost,127.0.0.1 \
   -e OUTAGE_DEPLOY_REVISION="$revision" -e OUTAGE_STATE_DIR=/appdata/state -e OUTAGE_DATA_DIR=/appdata/data \
   --mount "type=bind,src=$scratch/restored/state,dst=/appdata/state" \
   --mount "type=bind,src=$scratch/restored/data,dst=/appdata/data" \
+  --mount "type=bind,src=$scratch/restored/config/django-secret-key,dst=/run/secrets/django-secret-key,readonly" \
   --mount "type=bind,src=$operations/app-control.py,dst=/deployment/app-control.py,readonly" \
   "$image" python -m outage_explorer.web.serve --host 0.0.0.0 --port 8000)
 healthy=0

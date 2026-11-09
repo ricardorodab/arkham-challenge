@@ -10,14 +10,18 @@ x-runtime: &runtime
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
   pids_limit: 128
+  ulimits:
+    core:
+      soft: 0
+      hard: 0
   logging: &logging
     driver: json-file
     options:
       max-size: "10m"
       max-file: "3"
-  env_file:
-    - /etc/arkham/runtime.env
   environment: &environment
+    OUTAGE_SECRET_FILES_ONLY: "1"
+    OUTAGE_DJANGO_SECRET_KEY_FILE: /run/secrets/django-secret-key
     OUTAGE_LOCAL_HTTP: "0"
     OUTAGE_ALLOWED_HOSTS: ${OUTAGE_PUBLIC_HOST:?A public DNS hostname is required},127.0.0.1,localhost
     OUTAGE_TRUSTED_PROXY: "172.30.89.2"
@@ -28,15 +32,33 @@ x-runtime: &runtime
     - /srv/arkham/data:/appdata/data
     - /srv/arkham/state:/appdata/state
     - ${OUTAGE_RELEASE_DIR:?A release directory is required}/deploy/app-control.py:/deployment/app-control.py:ro
+    - type: bind
+      source: ${OUTAGE_SECRET_ROOT:?A volatile Key Vault secret directory is required}/app
+      target: /run/secrets
+      read_only: true
+      bind:
+        create_host_path: false
   networks: [backend]
 
 services:
   init:
     <<: *runtime
     command: [python, /deployment/app-control.py, init]
-    env_file:
-      - /etc/arkham/runtime.env
-      - /etc/arkham/bootstrap.env
+    environment:
+      <<: *environment
+      OUTAGE_VIEWER_PASSWORD_FILE: /run/secrets/viewer-password
+      OUTAGE_ANALYST_PASSWORD_FILE: /run/secrets/analyst-password
+      OUTAGE_ADMIN_PASSWORD_FILE: /run/secrets/admin-password
+    volumes:
+      - /srv/arkham/data:/appdata/data
+      - /srv/arkham/state:/appdata/state
+      - ${OUTAGE_RELEASE_DIR}/deploy/app-control.py:/deployment/app-control.py:ro
+      - type: bind
+        source: ${OUTAGE_SECRET_ROOT}/init
+        target: /run/secrets
+        read_only: true
+        bind:
+          create_host_path: false
     restart: "no"
     profiles: [maintenance]
 
@@ -60,9 +82,19 @@ services:
   worker:
     <<: *runtime
     command: [python, -m, outage_explorer.web.manage, run_refresh_worker]
-    env_file:
-      - /etc/arkham/runtime.env
-      - /etc/arkham/worker.env
+    environment:
+      <<: *environment
+      EIA_API_KEY_FILE: /run/secrets/eia-api-key
+    volumes:
+      - /srv/arkham/data:/appdata/data
+      - /srv/arkham/state:/appdata/state
+      - ${OUTAGE_RELEASE_DIR}/deploy/app-control.py:/deployment/app-control.py:ro
+      - type: bind
+        source: ${OUTAGE_SECRET_ROOT}/worker
+        target: /run/secrets
+        read_only: true
+        bind:
+          create_host_path: false
     mem_limit: 1792m
     stop_grace_period: 30s
     restart: unless-stopped

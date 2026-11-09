@@ -31,7 +31,9 @@ def target_path(target, base):
 
 
 def manifest_contract(manifest):
-    if manifest.get("format") != 1 or not re.fullmatch(r"[0-9a-f]{40}", manifest["revision"]):
+    if manifest.get("format") not in {1, 2} or not re.fullmatch(
+        r"[0-9a-f]{40}", manifest["revision"]
+    ):
         raise backup.BackupError("Unsupported backup manifest.")
     if not re.fullmatch(
         re.escape(backup.IMAGE_NAMESPACE) + r"[0-9a-f]{64}", manifest.get("image", "")
@@ -56,12 +58,28 @@ def manifest_contract(manifest):
         ):
             raise backup.BackupError("An archive member violates the safe restore contract.")
         size += info["bytes"]
-    if (
-        size > backup.MAX_BYTES
-        or "state/web.sqlite3" not in files
-        or "config/runtime.env" not in files
-    ):
+    required = (
+        {"state/web.sqlite3", "config/runtime.env"}
+        if manifest["format"] == 1
+        else {
+            "state/web.sqlite3",
+            "config/django-secret-key",
+            "config/deployment.json",
+            "config/key-vault.json",
+            "release/release.json",
+        }
+    )
+    if size > backup.MAX_BYTES or not required <= files.keys():
         raise backup.BackupError("The backup size or required file set is invalid.")
+    if manifest["format"] == 2 and any(name.endswith(".env") for name in files):
+        raise backup.BackupError("The current backup contract does not contain environment files.")
+    if manifest["format"] == 2 and not 1 <= files["config/django-secret-key"]["bytes"] <= 16384:
+        raise backup.BackupError("The restored signing key has an invalid size.")
+    if manifest["format"] == 2 and any(
+        not 1 <= files[name]["bytes"] <= 16384
+        for name in ("config/deployment.json", "config/key-vault.json", "release/release.json")
+    ):
+        raise backup.BackupError("Restored deployment metadata exceeds its safety limit.")
     return files
 
 
@@ -73,6 +91,10 @@ def verify(target):
         source = backup.regular(target / name)
         if source.stat().st_size != info["bytes"] or backup.digest(source) != info["sha256"]:
             raise backup.BackupError("A restored file does not match its sealed fingerprint.")
+    if manifest["format"] == 2:
+        release = json.loads(backup.regular(target / "release/release.json").read_text())
+        if release != {"image": manifest["image"]}:
+            raise backup.BackupError("The restored release metadata differs from its manifest.")
     for name, relative in (("web", "state/web.sqlite3"), ("catalog", "data/catalog.sqlite3")):
         database = target / relative
         if backup.fingerprint(database) != manifest["databases"][name]:

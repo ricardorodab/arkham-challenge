@@ -46,11 +46,22 @@ def source(tmp_path):
         "INSERT INTO service_savedview VALUES(7,1);"
     )
     database.commit()
-    (config / "runtime.env").write_text("OUTAGE_DJANGO_SECRET_KEY=synthetic-secret\n")
-    (config / "deployment.env").write_text("OUTAGE_PUBLIC_HOST=fixture.example\n")
+    (config / "deployment.json").write_text(json.dumps({"public_host": "fixture.example"}))
+    (config / "key-vault.json").write_text(
+        json.dumps({"vault_url": "https://arkhamkv.vault.azure.net", "bootstrap_required": False})
+    )
+    secrets = tmp_path / "secrets"
+    (secrets / "app").mkdir(parents=True)
+    (secrets / "app/django-secret-key").write_text("synthetic-secret")
+    (secrets / "worker").mkdir()
+    (secrets / "worker/eia-api-key").write_text("DO-NOT-BACK-UP-EIA-KEY")
+    (secrets / "init").mkdir()
+    (secrets / "init/admin-password").write_text("DO-NOT-BACK-UP-INITIAL-PASSWORDS")
+    # Old files may remain during a migration. New captures must not consume them.
+    (config / "runtime.env").write_text("DO-NOT-READ-LEGACY-ENVIRONMENT")
     (config / "bootstrap.env").write_text("DO-NOT-BACK-UP-INITIAL-PASSWORDS")
     (config / "worker.env").write_text("EIA_API_KEY=DO-NOT-BACK-UP-EIA-KEY")
-    (release / "release.env").write_text("OUTAGE_IMAGE=" + backup.IMAGE_NAMESPACE + "b" * 64 + "\n")
+    (release / "release.json").write_text(json.dumps({"image": backup.IMAGE_NAMESPACE + "b" * 64}))
     for name in ("compose.production.yaml", "Caddyfile", "app-control.py", "verify-state.py"):
         shutil.copyfile(ROOT / "deploy" / name, release / "deploy" / name)
     yield data, state, config, release
@@ -73,7 +84,7 @@ def age_tools(tmp_path):
 
 def capture(source, tmp_path):
     stage = tmp_path / "sealed"
-    manifest = backup.capture(*source, stage)
+    manifest = backup.capture(*source, stage, secrets=source[2].parent / "secrets")
     return stage, manifest
 
 
@@ -91,10 +102,14 @@ def test_capture_includes_committed_wal_rows_and_excludes_plaintext_credentials(
     assert manifest["databases"]["web"]["tables"]["auth_user"]["rows"] == 3
     assert manifest["databases"]["web"] == backup.fingerprint(source[1] / "web.sqlite3")
     assert manifest["databases"]["catalog"]["exists"] is False
-    assert "config/runtime.env" in manifest["files"]
+    assert manifest["format"] == 2
+    assert (stage / "config/django-secret-key").read_text() == "synthetic-secret"
+    assert "config/key-vault.json" in manifest["files"]
+    assert "config/runtime.env" not in manifest["files"]
     assert "config/worker.env" not in manifest["files"]
     assert "config/bootstrap.env" not in manifest["files"]
     assert not any(name.endswith(("-wal", "-shm")) for name in manifest["files"])
+    assert not any(name.endswith(".env") for name in manifest["files"])
     with sqlite3.connect(stage / "state/web.sqlite3") as database:
         assert database.execute(
             "SELECT username,password FROM auth_user WHERE id=1"
@@ -171,6 +186,58 @@ def test_real_age_round_trip_preserves_accounts_sessions_views_and_catalog(
     assert (target / ".verified").is_file() and not (target / ".incomplete").exists()
     assert backup.fingerprint(target / "state/web.sqlite3") == manifest["databases"]["web"]
     assert restore.verify(target) == result
+    assert (target / "config/django-secret-key").read_text() == "synthetic-secret"
+
+
+def test_historical_format_one_archive_can_still_be_verified_and_restored(
+    source, tmp_path, age_tools
+):
+    stage, manifest = capture(source, tmp_path)
+    # Historical archives retain their original contract. They are never a runtime
+    # fallback for new captures or the current isolated secret-file drill.
+    for name in list(manifest["files"]):
+        if name.startswith("config/") or name == "release/release.json":
+            del manifest["files"][name]
+    legacy = stage / "config/runtime.env"
+    legacy.write_text("OUTAGE_DJANGO_SECRET_KEY=historical-synthetic-key\n")
+    manifest["files"]["config/runtime.env"] = {
+        "bytes": legacy.stat().st_size,
+        "sha256": backup.digest(legacy),
+    }
+    manifest["format"] = 1
+    (stage / "manifest.json").write_text(json.dumps(manifest, sort_keys=True))
+    archive = tmp_path / "historical.age"
+    encrypt(stage, age_tools, archive)
+    result = restore.restore(
+        archive, age_tools[1], tmp_path / "historical-restored", tmp_path, age=age_tools[0]
+    )
+    assert result["accounts"] == 3
+
+
+def test_new_manifest_rejects_environment_file_payloads(source, tmp_path):
+    _, manifest = capture(source, tmp_path)
+    manifest["files"]["config/runtime.env"] = {"bytes": 0, "sha256": "a" * 64}
+    with pytest.raises(backup.BackupError, match="does not contain environment"):
+        restore.manifest_contract(manifest)
+
+
+def test_capture_requires_nonempty_runtime_signing_key(source, tmp_path):
+    (source[2].parent / "secrets/app/django-secret-key").write_bytes(b"")
+    with pytest.raises(backup.BackupError, match="signing key has an invalid size"):
+        capture(source, tmp_path)
+
+
+def test_restored_release_metadata_must_match_sealed_runtime_image(source, tmp_path):
+    stage, manifest = capture(source, tmp_path)
+    path = stage / "release/release.json"
+    path.write_text(json.dumps({"image": backup.IMAGE_NAMESPACE + "c" * 64}))
+    manifest["files"]["release/release.json"] = {
+        "bytes": path.stat().st_size,
+        "sha256": backup.digest(path),
+    }
+    (stage / "manifest.json").write_text(json.dumps(manifest, sort_keys=True))
+    with pytest.raises(backup.BackupError, match="release metadata differs"):
+        restore.verify(stage)
 
 
 def test_corrupted_ciphertext_never_becomes_a_verified_restore(source, tmp_path, age_tools):
@@ -378,7 +445,7 @@ def test_restore_stops_midstream_when_concurrent_writes_consume_reserve(
     archive = tmp_path / "backup.age"
     encrypt(stage, age_tools, archive)
     target = tmp_path / "disk-shrank"
-    partial = target / "config/deployment.env"
+    partial = target / "config/deployment.json"
     checked = 0
 
     def capacity(_):

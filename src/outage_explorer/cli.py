@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +21,7 @@ from outage_explorer.data.domain import DataValidationError, parse_date
 from outage_explorer.data.eia import EIAClient, EIAClientError, sanitize
 from outage_explorer.data.pipeline import IngestConfig, ingest
 from outage_explorer.data.storage import Catalog, StorageError
+from outage_explorer.runtime_secrets import SecretConfigurationError, read_secret
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -184,14 +184,19 @@ def _model_command(args: argparse.Namespace) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     """Parse argv, configure safe logs and execute one operation with stable exit codes.
 
-    Use EIA_API_KEY only from the process environment. Return 0 on success, 2 for
+    Resolve EIA_API_KEY from its secret file or an allowed local environment value. Return
+    0 on success, 2 for
     configuration, 3 for upstream failure, 4 for validation/storage/internal failure, 5 for
     writer contention and 130 for interruption. Catch unexpected failures without printing raw
     transport/filesystem details; output artifacts remain the responsibility of the delegated
     pipeline/catalog/report operations.
     """
     args = parser().parse_args(argv)
-    key = os.environ.get("EIA_API_KEY", "").strip()
+    credential_error = False
+    try:
+        key = read_secret("EIA_API_KEY").strip()
+    except SecretConfigurationError:
+        key, credential_error = "", True
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(JsonLogFormatter(key))
     logger = logging.getLogger("outage_explorer")
@@ -202,6 +207,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "model":
             result = _model_command(args)
         elif args.command == "ingest":
+            if credential_error:
+                raise EIAClientError(
+                    "configuration",
+                    "EIA_API_KEY must be configured from an approved secret source.",
+                )
             config = IngestConfig(
                 args.data_dir,
                 args.mode,

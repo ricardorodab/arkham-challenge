@@ -5,15 +5,28 @@ RefreshWorker context, sanitized worker logs and signal cleanup.
 """
 
 import json
-import logging
-import os
 import signal
 import threading
 
 from django.core.management.base import BaseCommand, CommandError
 
-from outage_explorer.cli import JsonLogFormatter
-from outage_explorer.service.refresh import RefreshWorker, WorkerAlreadyRunning
+from outage_explorer.runtime_secrets import SecretConfigurationError, read_secret
+from outage_explorer.service.refresh import (
+    RefreshWorker,
+    WorkerAlreadyRunning,
+    configure_worker_logging,
+)
+
+
+def _refresh_log_redaction() -> None:
+    """Refresh file-backed redaction without making an unconfigured worker fail startup."""
+    try:
+        key = read_secret("EIA_API_KEY").strip()
+    except SecretConfigurationError:
+        # perform_ingest reports invalid/missing credentials as a safe job failure. Reading
+        # the environment directly here would bypass production's file-only policy.
+        key = ""
+    configure_worker_logging(key)
 
 
 class Command(BaseCommand):
@@ -35,8 +48,7 @@ class Command(BaseCommand):
         even if the queue is empty. Worker context cleanup releases the OS control lock;
         Ctrl+C is reported as stopped, not as an ingestion rollback.
         """
-        for handler in logging.getLogger("outage_explorer").handlers:
-            handler.setFormatter(JsonLogFormatter(os.environ.get("EIA_API_KEY", "").strip()))
+        _refresh_log_redaction()
         interval = options["poll_interval"]
         if not 0.05 <= interval <= 5:
             raise CommandError("Poll interval must be between 0.05 and 5 seconds.")
@@ -56,6 +68,7 @@ class Command(BaseCommand):
         try:
             with RefreshWorker() as worker:
                 while True:
+                    _refresh_log_redaction()
                     job = worker.run_once()
                     if job is not None:
                         self.stdout.write(json.dumps({"job_id": str(job.pk), "status": job.status}))

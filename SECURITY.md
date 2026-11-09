@@ -30,8 +30,11 @@ and workflow logs. Docker's context privacy checks exercise excluded paths using
 synthetic canaries. They complement secret scanning rather than prove arbitrary source
 files contain no secrets.
 
-The VM keeps credentials in root-owned files and supplies only the required values to
-each service. Root and Docker administrators can read runtime secrets; restrict those
+Production credentials are stored in Azure Key Vault. A VM runtime identity retrieves
+them over the private endpoint into role-specific files on host tmpfs. Containers receive
+read-only secret files and path settings, with secret-value environment variables disabled;
+their access to VM identity endpoints stays blocked. Root and Docker administrators can
+read runtime secrets; restrict those
 permissions accordingly. HTTPS and restricted containers reduce exposure but do not
 replace application authorization, security updates, or disaster recovery.
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import io
+import json
+import logging
 import os
 import sqlite3
 import subprocess
@@ -11,9 +14,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Barrier
 from unittest.mock import Mock
+from urllib.parse import quote
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.db import IntegrityError, close_old_connections, transaction
 from django.utils import timezone
 
@@ -280,6 +285,124 @@ def test_worker_publishes_source_and_model_together_and_preserves_both_on_failur
     with Catalog(settings.OUTAGE_DATA_DIR) as catalog:
         assert (catalog.current().id, catalog.current_model().id) == (source_id, model_id)
     assert QueryCacheEntry.objects.count() == 1
+
+
+def test_worker_loads_rotated_file_credential_without_secret_environment_values(
+    refresh_admin, control_directory, settings, tmp_path, monkeypatch
+):
+    settings.OUTAGE_DATA_DIR = tmp_path / "synthetic-file-data"
+    secret = tmp_path / "eia-secret"
+    monkeypatch.delenv("EIA_API_KEY", raising=False)
+    monkeypatch.setenv("OUTAGE_SECRET_FILES_ONLY", "1")
+    monkeypatch.setenv("EIA_API_KEY_FILE", str(secret))
+    observed = []
+
+    def client(key):
+        observed.append(key)
+        assert "EIA_API_KEY" not in os.environ
+        return FakeClient()
+
+    monkeypatch.setattr(refresh, "EIAClient", client)
+    with RefreshWorker() as worker:
+        for key in ("synthetic-first-file-key", "synthetic-rotated-file-key"):
+            secret.write_text(key, encoding="utf-8")
+            job, _ = enqueue_refresh(refresh_admin, "full")
+            worker.run_once()
+            job.refresh_from_db()
+            assert job.status == "succeeded"
+            assert key not in json.dumps(job.result)
+    assert observed == ["synthetic-first-file-key", "synthetic-rotated-file-key"]
+
+
+def test_missing_worker_secret_file_fails_safely_before_upstream_io(
+    refresh_admin, control_directory, settings, tmp_path, monkeypatch
+):
+    settings.OUTAGE_DATA_DIR = tmp_path / "untouched-data"
+    monkeypatch.delenv("EIA_API_KEY", raising=False)
+    monkeypatch.setenv("OUTAGE_SECRET_FILES_ONLY", "1")
+    monkeypatch.setenv("EIA_API_KEY_FILE", str(tmp_path / "private-missing-path-canary"))
+    client = Mock(side_effect=AssertionError("An unavailable key must not reach EIA."))
+    monkeypatch.setattr(refresh, "EIAClient", client)
+    with RefreshWorker() as worker:
+        job, _ = enqueue_refresh(refresh_admin, "recent")
+        worker.run_once()
+    job.refresh_from_db()
+    assert job.status == "failed" and job.error_code == "refresh_not_configured"
+    assert "canary" not in job.public_message
+    client.assert_not_called()
+
+
+def test_worker_command_redacts_file_credentials_and_refreshes_between_jobs(
+    refresh_admin, control_directory, settings, tmp_path, monkeypatch, capsys
+):
+    """Emit unsafe source logs through the real command, pipeline and rotating file source."""
+    from outage_explorer.service.management.commands import run_refresh_worker as command
+
+    settings.OUTAGE_DATA_DIR = tmp_path / "redaction-data"
+    path = tmp_path / "eia-secret"
+    keys = ["synthetic-first-file-canary/+?=", "synthetic-rotated-file-canary/+?="]
+    path.write_text(keys[0], encoding="utf-8")
+    monkeypatch.delenv("EIA_API_KEY", raising=False)
+    monkeypatch.setenv("EIA_API_KEY_FILE", str(path))
+    monkeypatch.setenv("OUTAGE_SECRET_FILES_ONLY", "1")
+    received = []
+    stream = io.StringIO()
+    logger = logging.getLogger("outage_explorer")
+    monkeypatch.setattr(logger, "handlers", [logging.StreamHandler(stream)])
+    monkeypatch.setattr(logger, "level", logging.INFO)
+    monkeypatch.setattr(logger, "propagate", False)
+
+    def client(key):
+        received.append(key)
+        logger.warning(
+            "synthetic-upstream raw=%s encoded=%s https://example.invalid/?api_key=unknown-query-canary",
+            key,
+            quote(key, safe=""),
+            extra={"route": key, "mode": {"api_key": key, "nested": quote(key, safe="")}},
+        )
+        return FakeClient()
+
+    class TwoJobs(RefreshWorker):
+        calls = 0
+
+        def run_once(self):
+            if self.calls == 2:
+                raise KeyboardInterrupt
+            result = super().run_once()
+            self.calls += 1
+            if self.calls == 1:
+                path.write_text(keys[1], encoding="utf-8")
+                enqueue_refresh(refresh_admin, "full")
+            return result
+
+    monkeypatch.setattr(refresh, "EIAClient", client)
+    monkeypatch.setattr(command, "RefreshWorker", TwoJobs)
+    enqueue_refresh(refresh_admin, "full")
+    call_command("run_refresh_worker", poll_interval=0.05)
+    assert received == keys
+    assert RefreshJob.objects.filter(status="succeeded").count() == 2
+    captured = capsys.readouterr()
+    emitted = stream.getvalue() + captured.out + captured.err
+    assert all(key not in emitted and quote(key, safe="") not in emitted for key in keys)
+    assert "unknown-query-canary" not in emitted
+    source_events = [
+        json.loads(line)
+        for line in stream.getvalue().splitlines()
+        if json.loads(line)["event"].startswith("synthetic-upstream")
+    ]
+    assert len(source_events) == 2
+    assert all("[REDACTED]" in record["event"] for record in source_events)
+    assert all(record["route"] == "[REDACTED]" for record in source_events)
+
+
+def test_worker_command_can_start_without_optional_file_credential(
+    control_directory, db, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.delenv("EIA_API_KEY", raising=False)
+    monkeypatch.setenv("OUTAGE_SECRET_FILES_ONLY", "1")
+    monkeypatch.setenv("EIA_API_KEY_FILE", str(tmp_path / "unconfigured"))
+    call_command("run_refresh_worker", once=True)
+    assert capsys.readouterr().out == ""
 
 
 def test_cache_cleanup_is_best_effort_after_success(refresh_admin, control_directory, monkeypatch):

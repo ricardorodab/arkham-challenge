@@ -10,7 +10,6 @@ authoritative publication history.
 from __future__ import annotations
 
 import logging
-import os
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -26,11 +25,24 @@ from outage_explorer.data.eia import EIAClient, EIAClientError
 from outage_explorer.data.pipeline import IngestConfig, ingest
 from outage_explorer.data.storage import Catalog, StorageError, writer_lock
 from outage_explorer.progress import ProgressCallback, ProgressEvent, emit_progress
+from outage_explorer.runtime_secrets import SecretConfigurationError, read_secret
 
 from .job_progress import JobProgressReporter
 from .models import Persona, QueryCacheEntry, RefreshJob
 
 LOG = logging.getLogger(__name__)
+
+
+def configure_worker_logging(secret: str = "") -> None:
+    """Redact the exact active upstream credential from structured worker logs.
+
+    Import the shared formatter at the call boundary because its CLI module imports data
+    modules that also serve the worker. Never place the credential in a LogRecord or output.
+    """
+    from outage_explorer.cli import JsonLogFormatter
+
+    for handler in logging.getLogger("outage_explorer").handlers:
+        handler.setFormatter(JsonLogFormatter(secret))
 
 
 class RefreshServiceError(Exception):
@@ -174,16 +186,22 @@ def _enqueue_refresh(user, mode: str, idempotency_key: str | None):
 def perform_ingest(mode: str, *, progress: ProgressCallback | None = None) -> dict[str, str]:
     """Download/build/publish data at the worker-only upstream credential boundary.
 
-    Read EIA_API_KEY from this process environment, invoke the normal ingestion pipeline and
+    Read the worker-only EIA credential from its secret file (or local environment), invoke
+    the normal ingestion pipeline and
     resolve the model bound to its returned source snapshot. Another operator may publish
     after the ingestion lock releases, so fall back to retained successful model history
     rather than blindly returning the current model. Return snapshot_id/model_id/mode, or fail
-    if that matching publication cannot be verified. No key file is loaded and this function
-    does not finish the Django job row.
+    if that matching publication cannot be verified. Reload the secret on each job so an
+    updated mounted credential can be used without logging it. This function does not finish
+    the Django job row.
     """
-    api_key = os.environ.get("EIA_API_KEY", "").strip()
-    if not api_key:
-        raise RefreshConfigurationError
+    try:
+        api_key = read_secret("EIA_API_KEY", required=True).strip()
+    except SecretConfigurationError:
+        raise RefreshConfigurationError from None
+    # Bind redaction to the same value passed to the client, including a file generation
+    # change after the management command's polling-time logging setup.
+    configure_worker_logging(api_key)
     client = EIAClient(api_key)
 
     def report(event: ProgressEvent) -> None:
