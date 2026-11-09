@@ -1,0 +1,12 @@
+# Review routing. Independent approval can be enabled when another maintainer joins.
+/.github/ @ricardorodab
+/deploy/ @ricardorodab
+/Dockerfile @ricardorodab
+/.dockerignore @ricardorodab
+/pyproject.toml @ricardorodab
+/requirements.txt @ricardorodab
+/requirements-dev.lock @ricardorodab
+/requirements-dev.txt @ricardorodab
+/package.json @ricardorodab
+/package-lock.json @ricardorodab
+/SECURITY.md @ricardorodab
