@@ -1,261 +1,113 @@
-# Why the system works this way: 31 engineering decisions
+# Engineering decisions and trade-offs
 
-Read the [project tour](PROJECT_TOUR.md) for the flow first, then use this record to defend individual choices. Each decision retains the implemented choice, a rejected alternative and its reason. Detailed contracts belong in the linked data, API, security and browser guides; this document explains why those contracts exist.
+This record explains the current design and its main limits. The application runs locally or on one persistent Azure Linux VM. SQLite remains the publication and application-state store; PostgreSQL and horizontal scaling are future options, not deployed features. Start with the [project tour](PROJECT_TOUR.md); detailed contracts and commands stay in the linked guides.
 
-The seven required challenge decisions map to natural keys (§1), kept-current semantics (§5), missing/mismatching parents (§7, §14, §16), asynchronous refresh (§25), supported/rejected SQL (§22), discovery/authorization of every named table (§22), and the additional coherent-publication decision (§3–4, §18). The remaining decisions explain the reliability, security and product trade-offs behind them.
+The challenge's seven required choices map to: natural keys (§1), kept-current behavior (§3), missing/mismatching parents (§5), asynchronous refresh (§11), supported/rejected SQL (§9), discovery and authorization of every named table (§9), and coherent publication (§4).
 
-Read by concern: **source/reliability (§1–13)** → **model/trust (§14–20)** → **identity/SQL/service (§21–26)** → **browser/product (§27–31)**. Azure/PostgreSQL and container hosting remain future work; no hosted deployment is claimed. Test evidence and the actual AI errors/corrections are in [verification](NOTES.md).
+## 1. Identify observations by their source grain
 
-## 1. Natural keys follow the actual source grains
+**Decision:** national keys are `(period)`, facility keys `(period, facility)`, and generator keys `(period, facility, generator)`. A grain describes what one row represents. Keep identifiers as text; names describe identities but do not define them.
 
-**Choice:** national `(period)`, facility `(period, facility)`, generator `(period, facility, generator)`. Preserve identifiers as text and names as descriptive source attributes.
+**Why and trade-off:** generator IDs are unique only within a facility, and names can change. Natural keys support duplicate detection and interval replacement without treating identifiers as quantities or plant names as permanent identities.
 
-**Rejected:** treating a generator identifier or facility name as globally unique.
+## 2. Preserve source evidence and separate errors from warnings
 
-**Reason:** a generator ID is scoped to a facility, and names can change. These keys support deterministic duplicate detection, replacement, and change accounting.
+**Decision:** store typed Parquet with sanitized source JSON and row fingerprints. Measures use `DECIMAL(24,9)`. Scrub credentials from nested request echoes, URLs, errors and recordings before persistence. Missing identity/required fields, invalid dates/units, malformed numbers, lossy conversion and conflicting keys block publication. Identical duplicates may collapse; null measures and representable outliers remain with quality flags.
 
-## 2. Store source observations as Parquet using DuckDB
+**Why and trade-off:** CSV-only storage loses useful types; silently filling, clipping or dropping unusual values changes the evidence. Additive source fields remain in sanitized JSON and run metadata, while incompatible required-field changes fail explicitly. An empty flag list means no configured row warning, not proof that the source is complete or correct. See the [validation contract](DATA_PIPELINE_AND_MODEL.md).
 
-**Choice:** typed Parquet, with DuckDB performing local reads/writes. Preserve a sanitized original source row alongside typed values.
+## 3. Refresh a correction window and verify pagination
 
-**Rejected:** CSV-only persistence or adding a server database for the analytical extracts.
+**Decision:** recent mode rereads each route from its successful watermark minus 29 days through its latest metadata end: a 30-day overlap. Bounded full mode replaces its requested interval; unbounded full mode replaces all stored history. An explicit start requires full mode. Proposed deletions need a second matching extraction; source boundaries that would shrink stored coverage fail before data requests.
 
-**Reason:** Parquet is required by the brief, and DuckDB handles it directly. Keeping the original values makes conversion and anomaly investigation reproducible. Measures use `DECIMAL(24,9)` with loss detection rather than implicit rounding.
+Fetch in complete-key order, advance offsets by rows received, and continue to an empty terminal page with repeat/non-progress guards. Provider totals are diagnostic, not the stopping rule. Missing advertised boundaries fail validation; other calendar gaps remain reported evidence. Use one route worker by default, at most three, sharing a rate gate and bounded backoff honoring `Retry-After`.
 
-## 3. Keep one local publication authority
+**Why and trade-off:** append-only downloads miss corrections; trusting a reported total can truncate extraction. The overlap can still miss older revisions, so broader/full refreshes remain necessary. Data refresh is not automatically scheduled, and EIA's live pages are not a transactional snapshot. Historical provider-count discrepancies are documented in [findings](FINDINGS.md).
 
-**Choice:** SQLite operational state owns the current snapshot, successful watermarks, and run status. Publish all three routes together after writing immutable files. The manifest records evidence, not a second current pointer.
+## 4. Publish matching source and model versions together
 
-**Rejected:** independent `current.json` and database updates, or overwriting the current Parquet files in place.
+**Decision:** close, synchronize and verify immutable candidate files before one SQLite catalog transaction advances the raw/model references and completes ingestion/build records. A standalone model rebuild advances only if its raw source is still current. The catalog is authoritative; manifests and directory names are evidence, not independent current pointers.
 
-**Reason:** one database transaction prevents mixed route generations and contradictory success/current state. Filesystem and SQLite cannot share one transaction: a failed commit may leave an unreferenced directory, but readers will not mistake it for published data.
+**Why and trade-off:** per-route publication or in-place overwrites could mix generations. Filesystem writes and SQLite cannot share one transaction, so failures may leave unreferenced candidates. Recovery runs under the OS writer lock and updates abandoned run states; file presence alone never proves a live writer or successful publication. A pre-commit `validated` report is not committed success. Automatic orphan cleanup and reference-aware retention are still absent.
 
-The full deployed product is planned to move this authority to PostgreSQL. Part 1 remains runnable locally without Azure or a database service; this is a scoped implementation decision, not a claim that SQLite is the final hosted architecture.
+Application refresh-job completion uses a separate database transaction. An interrupted job may already have published data: inspect the catalog before retrying. See [publication and recovery](DATA_PIPELINE_AND_MODEL.md).
 
-## 4. Prefer coherent publication to partial availability
+## 5. Keep independent facts and reconcile without repairing them
 
-**Choice:** any route or required-data validation failure before catalog publication prevents the candidate run from becoming current.
+**Decision:** national, facility and generator observations remain separate daily facts. Dimensions describe observed dates and identities; facts retain observation-time names. Generator keys include facility, and generator facts reference identity dimensions rather than requiring a matching facility-day fact. Full-outer reconciliation preserves unmatched parents and children.
 
-**Rejected:** publishing successful routes one at a time.
+**Why and trade-off:** inner joins, zero-filling and rescaling child totals would hide disagreement or missing observations. Null-aware child sums retain incomplete measures as undefined. Store actual signed/absolute gaps and classify them with tolerances of **0.01 MW** and **0.005 percentage points**. Aggregate agreement does not establish complete entity coverage or physical cause.
 
-**Reason:** downstream users should never unknowingly compare national data from one extraction with generator data from another. The source itself is live and not transactionally frozen; record extraction times and per-route coverage rather than claiming simultaneous EIA observations.
+Model builds also record deterministic quality events for nonpositive capacity, zero-capacity/nonzero percentage, observed-span gaps, capacity changes and reconciliation issues. The capacity-change threshold (at least 100 MW and 10%) prompts review; it does not prove an EIA error. See [findings](FINDINGS.md) for concrete examples and qualifications.
 
-## 5. Define “kept current” explicitly
+## 6. Define the fleet metric and version its meaning
 
-**Choice:** full extraction uses the available source history; recent extraction rereads each route from its last successful date minus 29 days through its own current metadata end. Replace that validated interval, including source deletions, and retain older observations outside it.
+**Decision:** the fleet outage share is same-day national outage MW divided by national capacity MW. Python `Decimal` uses precision 28 and `ROUND_HALF_UP`, storing share to 12 places and percentage to nine independently from the unrounded ratio. Null outage or null/nonpositive capacity yields an undefined metric with a flag; representable outliers are not clipped.
 
-**Rejected:** appending only dates newer than the watermark, or assuming a 30-day overlap finds every historical revision.
+**Why and trade-off:** unweighted child percentages and binary floating-point division change the calculation. Derived overflow or failed quantization rejects the candidate with `invalid_model`, retaining the previous publication; valid source operands do not guarantee a derived value will fit.
 
-**Reason:** EIA can revise older observations and has no general update timestamp. The overlap catches recent changes; periodic full refresh is still needed. Scheduling belongs to later operational work. Display actual source coverage and extraction times instead of promising that today's data must already exist.
+Model v2 corrected percentage unit labels without changing numerical data. The frozen [v1 contract](../src/outage_explorer/analytics/contracts/model-v1.json) keeps older artifacts readable with a warning; the metric formula remains version 1. Absolute percentages and percentage-point differences remain distinct.
 
-An explicit start is accepted only with full mode. Bounded full extraction replaces its interval while retaining observations outside it; unbounded full extraction replaces all stored history. If a refresh would delete observations, a second extraction must confirm identical logical source content. In full and recent modes, a source start later than stored coverage or an end before the stored watermark fails before data requests, rather than silently shrinking history.
+## 7. Use Parquet layout and readers suited to each task
 
-## 6. Treat source totals as diagnostic metadata
+**Decision:** one ZSTD Parquet file per dataset/model, sorted by natural key with date first for daily data; row groups target 122,880 rows. Native DuckDB handles trusted transforms, packaged reports and structured Explore requests. Reports may use joins and fixed SQL with bound dates; this does not expand user SQL permissions.
 
-**Choice:** explicit complete-key sort, offsets advanced by received row count, and termination on an empty page with repeated/non-progress guards. Record declared versus observed counts.
+Explore applies typed filters, literal search and sort-plus-primary-key seek pagination across the selected dataset, returning only a bounded page. It uses a separate isolated native reader, not the WASM whole-file buffer.
 
-**Rejected:** terminating solely when offset reaches `response.total`, or failing every run when that total disagrees with observed records.
+**Why and trade-off:** many small date partitions add overhead without demonstrated benefit at this volume. Seek avoids deep OFFSET growth but does not create an index; substring search and arbitrary sorting may scan input. The [three-million-row benchmark](BROWSE_PERFORMANCE.md) is scoped synthetic evidence, not a concurrent-load or latency guarantee. Partitioning and incremental model materialization require further measurement; every refresh currently rebuilds the full model.
 
-**Reason:** preliminary source inspection observed an inconsistent facility total. A short page or advertised count is insufficient proof of completion. Pagination checks and coverage checks provide stronger evidence, while source consistency remains a documented limitation.
+## 8. Keep identity and account policy on the server
 
-The completed full-history run confirmed this distinction: facility declared 714,657 rows, but 438,119 facility observations were actually received and published. Generator contained 714,657 rows. This is a reproducible observed API-metadata inconsistency, not an explanation of differences between the analytical grains.
+**Decision:** Django sessions, CSRF and a persisted product persona authorize requests. Viewer accesses national/fleet datasets; Analyst accesses all ten; Admin additionally manages accounts and refresh. Product Admin does not imply Django staff/superuser or VM access. Persisted user/session/role checks repeat before result delivery and cache use.
 
-A missing metadata-advertised source boundary prevents publication as potentially truncated. Other missing requested/calendar dates are reported in quality metadata rather than fabricated. These checks do not prove that every historically expected generator was supplied by EIA.
+**Why and trade-off:** client role fields, staff flags and cached identity alone cannot establish current permission. Admin user changes use version checks to prevent lost updates; role/activity changes and password resets retire sessions. Random passwords are returned once and stored as hashes. Existing account edits/deletions survive initialization; bootstrap credentials do not track later passwords. See [account and session rules](API_CONTRACT.md).
 
-## 7. Fail on broken structure; preserve suspicious measurements
+## 9. Restrict user SQL and isolate its execution
 
-**Choice:** missing identity, invalid dates, missing required fields, incompatible units, malformed/non-finite numbers, lossy conversion, and conflicting natural keys fail publication. Nullable measures and semantic outliers remain present with quality flags. Identical duplicate rows may be collapsed.
+**Decision:** accept a single-dataset, read-only SELECT subset: projections, predicates, arithmetic, ordering, grouping and allowlisted functions. Reject writes, table functions, arbitrary functions, joins, CTEs, subqueries, unions, window syntax, qualifiers and unknown columns. Discover every named table and authorize it before analytical I/O, including references in unsupported shapes; execute regenerated SQL only.
 
-**Rejected:** coercing missing measurements to zero, discarding generator orphans, or clipping values to expected bounds.
+A bounded disposable Python compiler precedes a disposable Node/DuckDB-WASM worker. The latter receives only selected checksummed Parquet bytes through a BUFFER-only runtime, with offline extension loading followed by locked external-access settings. SQLGlot parsing and engine settings alone are not the sandbox; there is no native-engine fallback for submitted SQL.
 
-**Reason:** structural failures undermine identity and interpretation. An unusual measurement may be legitimate, and deleting it would destroy evidence. Part 2 explains observed cross-grain differences in `docs/FINDINGS.md`; transformations must not manufacture agreement.
+**Why and trade-off:** the original Windows environment lacked Docker/WSL, explaining the initial WASM choice; Linux Docker acceptance and Azure hosting are now verified. Native DuckDB 2.0 and WASM DuckDB 1.5.4 have different trust roles. Isolation costs child startup and whole-file transfer, including a **64 MiB selected-Parquet input ceiling for user SQL**. OS and engine limits supplement capability restrictions; the Python compiler is resource-bounded, not filesystem-jailed. See [query security](QUERY_SECURITY.md) for platform-specific memory/CPU limits and engine denial tests.
 
-## 8. Handle additive schema changes without silent data loss
+## 10. Bound requests, caches and continuation
 
-**Choice:** preserve new source fields in sanitized source JSON and report them in run metadata. Keep a stable typed contract for required fields. Reject incompatible required-field evolution.
+**Decision:** OS-backed admission allows one pending/executing analytical request per account, two execution slots and eight waiting slots. Waiting is capped at five seconds. Startup, preparation, compilation and execution share eight admitted seconds; the compiler gets at most two. SQL retains at most 1,000 rows with 2 MiB output.
 
-**Rejected:** dropping every unrecognized field or changing typed schema implicitly from the first response.
+Signed cursors expire after 15 minutes and bind identity/session, effective request and immutable publication; they are not encrypted. SQL caches last 60 seconds, at most eight per user, and bind session/role/query/limits/model/current generation. Cache hits still undergo admission, compilation and authorization.
 
-**Reason:** additive source information should remain available for review. Breaking changes need an explicit code/schema decision rather than a silently corrupted extract.
+**Why and trade-off:** LIMIT does not bound scan or aggregate cost. Shared locks coordinate processes and release after crashes; process-local counters do not. Unscoped caches and unsigned offsets risk cross-user or mixed-version results. Errors use static Problem Details and request IDs, excluding raw SQL, credentials and engine paths. [OpenAPI and API contracts](API_CONTRACT.md) define exact behavior.
 
-## 9. Conservative concurrency and bounded retry
+## 11. Run refresh outside HTTP and show measured progress
 
-**Choice:** one route worker by default; optional workers are limited to three and share a global rate gate. Retry transient network/5xx/429 failures with bounded backoff; honor `Retry-After` and stop when the requested wait exceeds the allowed execution policy.
+**Decision:** Admin POST durably queues a job and returns `202` plus a status URL. A separate worker holds its control lock, rechecks the owner's active Admin permission, and runs ingestion. A database constraint permits one queued/running job globally; owner-scoped idempotency keys deduplicate retries. Job history is owner-only.
 
-**Rejected:** unbounded parallelism, immediate retries, or sleeping indefinitely.
+Persist actual stages, route/page/row counts, timestamps and outcomes. Only the fixed model-export stage has a truthful completion percentage; there is no overall ingestion percentage or heartbeat claim. Unknown POST outcomes reuse the same key.
 
-**Reason:** source limits depend on key, IP, route, and demand. More threads must not multiply the permitted global request rate. Explicit failures let a later invocation resume without obscuring the previous valid snapshot.
+**Why and trade-off:** long downloads cannot belong inside HTTP requests or disposable web threads. Worker restart marks abandoned running jobs interrupted, but cannot undo an already committed publication or guarantee exactly-once extraction. Progress remains inspectable after reload/failure.
 
-## 10. Use actual process locking and recoverable run records
+**Open issue:** if a competing job finishes after an enqueue constraint failure but before its error-handler checks, the request can return `500` instead of the intended `409 refresh_busy`. The one-active-job constraint still holds. This classification race remains unfixed.
 
-**Choice:** hold an OS writer lock for ingestion, keep durable run states, and reconcile interrupted work after acquiring that lock.
+## 12. Keep the browser useful without moving trust into it
 
-**Rejected:** treating the presence of a `.lock` file as proof that a writer is alive.
+**Decision:** Django templates and native browser modules call the API; normal installation uses packaged assets. CodeMirror provides SQL highlighting/completion, selectable schema fields and three query starters per dataset. English/Spanish labels leave canonical SQL/data identifiers unchanged.
 
-**Reason:** the operating system releases a process lock after a crash. A leftover file need not block future work, and another live writer must never be displaced based only on timestamps.
+Overview, Explore and SQL share one pinned model; **Use latest** explicitly adopts a new publication. Local loaded-page filtering stays separate from an applied database query. Analyst/Admin can save named tables/charts and choose sharing audiences; owner mutations and each reader's dataset permissions remain authoritative. Saved definitions do not grant data access or persist result rows.
 
-## 11. Secrets are excluded from provenance
+**Why and trade-off:** a separate frontend platform or browser analytics engine would duplicate responsibilities. Exact typed values remain text in tables/CSV, with formula guards; charts preserve zero and gaps and offer a semantic table. Responsive layouts, keyboard controls and accessibility scans complement visual checks, not certify every assistive technology.
 
-**Choice:** read the EIA key only from `EIA_API_KEY`; scrub nested request echoes, URLs, exceptions, fixtures, and recordings before persistence. Ignore local credential files and generated data before the first commit.
+At most ten recent query texts/statuses stay in session-scoped `sessionStorage`, without result rows. Login/logout, revocation and stale-response guards retire private state; uncertain network outcomes keep a retry shield. These controls cannot erase information already observed. See the [browser guide](BROWSER_WORKSPACE.md).
 
-**Rejected:** committing the provided key file, automatically loading it in application code, or retaining raw full responses that echo the key.
+## 13. Deploy one persistent VM with managed secrets
 
-**Reason:** environment configuration satisfies the brief, and a sanitized request still contains enough information to reproduce it with a separately supplied key.
+**Decision:** Docker runs separate web/refresh processes behind Caddy HTTPS on one Azure Linux VM. Waitress binds inside its container; its host port stays on loopback. SQLite and immutable files remain on persistent host mounts. PostgreSQL/shared coordination and horizontal replicas require a broader design.
 
-## 12. Verify behavior with offline fixtures and separate live evidence
+Local setup retains private generated JSON credentials and process-environment inputs. Production instead fetches five application secrets from private Key Vault using a separate VM managed identity. Each process receives only its read-only temporary secret files; strict file-only mode rejects secret-valued environment variables. Container access to identity endpoints stays blocked, the Django key is pinned, and logs redact the exact loaded EIA key. Moving a key does not rotate it.
 
-**Choice:** deterministic offline tests plus explicitly recorded/sanitized source fixtures, then a separate live run and repeat/verify acceptance sequence.
+**Why and trade-off:** Key Vault centralizes credential access, while VM/root/Docker operators remain trusted and cold starts depend on private DNS/network/vault availability. Protected `main` requires PRs and checks, including for admins. GitHub's OIDC identity deploys the accepted immutable image and verifies its revision over HTTPS; root deployment authority remains privileged. Independent PR approval awaits another reviewer. See [deployment](../deploy/README.md) and [security policy](../SECURITY.md).
 
-**Rejected:** making CI depend on EIA uptime, treating invented rows as findings, or considering a single successful run proof of idempotency.
+## 14. Keep verification and recovery claims scoped
 
-**Reason:** failure behavior must be reproducible. Tests, remote extraction, stored-data integrity, and rerun safety prove different things and require separate evidence.
+**Decision:** offline synthetic and sanitized recorded fixtures make failures reproducible; live extraction, repeat-run hashes, independent arithmetic and actual process/container/browser tests provide separate evidence. CI covers Windows/Linux, SQL engines, secret handling and deployment; [README verification](../README.md#verification-status) links the verified baseline. Partial first-page recordings are not a complete source capture, and synthetic data is not a real-world finding.
 
-Genuine sanitized metadata and first-page responses for all three routes, plus an independently captured HTTP 403 credential failure, are retained under `tests/fixtures/recorded/`. Their provenance identifies partial capture scope, timestamps and hashes. Synthetic fixtures and synthetic terminal pages remain explicitly labeled. A successful full backfill and a real recent rerun produced the same three logical hashes; the final evidence matrix records their run IDs and counts.
-
-## 13. Distinguish validation evidence from committed success
-
-**Choice:** per-run `quality.json` initially records `status: validated`; the SQLite transaction alone determines successful publication. Failed/interrupted work receives the corresponding failure quality state when diagnostics can be persisted.
-
-**Rejected:** labeling a pre-commit quality file as a successful publication.
-
-**Reason:** a process can die between writing quality evidence and committing state. Real subprocess-death cases before and after commit cover a crash before the commit and a crash after the commit; the database pointer and history must retain the correct state in both cases.
-
-## 14. Model source grains separately and preserve missing parents
-
-**Choice:** separate national, facility and generator facts, with date and observed-identity dimensions. A generator key includes its facility. Observation-time names remain in the facts; the facility dimension carries the latest observed descriptive name. Reconciliation uses full outer coverage rather than inner joins.
-
-**Rejected:** discarding generators without a matching facility-day parent, rescaling child measures to force agreement, or replacing a published parent's values with child sums.
-
-**Reason:** the three routes are independently published observations. A generator can exist while its facility-day observation is absent. Its FK points to the identity dimension, not to a facility fact, so that absence survives as evidence. No missing row becomes zero, and no generator is discarded to satisfy a relationship. The dimensional name is not a claim of complete temporal ownership/name history.
-
-## 15. Derive US-08 from national operands with explicit decimal semantics
-
-**Choice:** use national outage divided by national capacity for the same day. Python `Decimal` uses precision 28 and `ROUND_HALF_UP`; share is stored at 12 decimal places, percentage at nine. Calculate each from the unrounded ratio. Nonpositive/null denominator or null outage yields a null result and quality flag. Preserve representable source values and implausible ratios without clipping. If a derived value exceeds the declared decimal envelope or cannot be quantized at the specified precision, reject the entire candidate with `invalid_model` and retain the prior raw/model publication. Source values fitting their own types do not guarantee every derived expression will fit; widening that envelope requires a versioned contract decision.
-
-**Rejected:** averaging child percentages, dividing through binary floating point for the canonical metric, silently substituting child totals, or clipping to 0–100%.
-
-**Reason:** changing numerator, denominator or rounding order changes the metric. DuckDB decimal division returns floating point, so canonical ratio calculation occurs in Python. SQL reports label weighted published percentages as diagnostics. Absolute percentages use percent; a difference between percentages uses percentage points. See the catalog's versioned metric definition and the exact arithmetic rounding tests.
-
-## 16. Reconcile exact MW before interpreting percentage differences
-
-**Choice:** retain parent values, child sums, child/null counts, signed and absolute gaps, and coverage status. Null child measures make the relevant sum undefined rather than allowing SQL `SUM` to conceal them. Classify gaps using 0.01 MW and 0.005 percentage-point tolerances, while retaining the actual differences.
-
-**Reason:** a weighted average of independently rounded percentages need not equal a rounded national ratio. The real 30-day example has zero MW gaps; inventing a numerical discrepancy would misrepresent the data. River Bend demonstrates that all grains can agree while sharing a coverage omission. Reconciliation and entity-coverage checks answer different questions.
-
-## 17. Use one sorted file per dataset at this measured volume
-
-**Choice:** ZSTD Parquet sorted by natural key, with date first for daily facts and reconciliation. One file per dataset per model; row groups target 122,880 rows. The raw three-route snapshot is about 46.4 MB compressed. No year/month directory partitions yet.
-
-**Reason:** expected reads filter by date and may scan the whole history. Many tiny date partitions would add file-opening and metadata overhead without a demonstrated benefit. At larger volume, benchmark date pruning, memory, latency and file sizes before choosing annual/monthly partitions; retain useful file sizes, avoid facility-level partition explosion, and compact small outputs. `docs/DATA_PIPELINE_AND_MODEL.md` describes the trade-offs and migration triggers. This is a deliberate partitioning strategy, not an unmeasured scalability claim.
-
-## 18. Publish derived and raw generations together and retain versioned contracts
-
-**Choice:** build and verify all model files before one SQLite transaction advances both pointers and completes the ingestion-run and model-build records in the data catalog. Application refresh-job completion is a separate transaction in the Django database. A standalone offline rebuild advances the model only if its raw source is still current. Each model records source hashes/counts, schema/metric versions, file and logical hashes, and quality rules. Retain immutable historical artifacts.
-
-**Reason:** serving a new source through an old model would create contradictory results. Three actual-process crash positions now cover raw-file rename, model-file rename, and post-commit recovery. Unreferenced files may remain after a failure; they are never promoted by directory discovery. Automatic candidate cleanup, reference-aware retention and off-machine backup/restore are not implemented. The process-crash evidence is not a universal power-loss durability guarantee.
-
-The first local model version 1 used incorrect catalog unit labels for absolute percentages. Its numerical data was correct. Rather than rewriting published evidence, the original contract was frozen in `contracts/model-v1.json`; version 2 corrects labels. Historical v1 reads use that frozen profile and expose a warning. All ten logical data hashes matched between versions; the metric formula remains version 1.
-
-## 19. Expose backend-ready metadata without claiming a user-SQL boundary
-
-**Choice:** logical dataset IDs, explicit contracts/metric definitions and a context-managed DuckDB adapter for trusted backend code. Resolve one model per operation; reject disallowed datasets before reading their Parquet; verify selected file hashes before registering views. Only national/fleet metadata is available to the Viewer policy. Reports run fixed packaged SELECT assets with bound dates.
-
-**Reason:** Django handlers can consume stable modeled data without reimplementing metrics. A caller able to execute arbitrary SQL on a local DuckDB connection can bypass a view-only convention; therefore the adapter remains trusted-code-only. Part 3 adds separate authenticated capabilities and an isolated user-query path; it never exposes this native connection to submitted SQL.
-
-## 20. Automate anomaly detection without silently repairing history
-
-**Choice:** deterministic review events for nonpositive capacity, zero-capacity/nonzero percentage, observed-span entity gaps, consecutive capacity changes and reconciliation issues. Check rules during every model build; structural violations fail publication, semantic warnings are preserved.
-
-**Reason:** the three documented historical anomalies now have concrete stored events and reproducible SQL. Coverage events identify missing observations between observed dates; they do not infer a plant's entire operating lifetime. A capacity change of at least 100 MW and 10% is a review threshold, not proof of an EIA mistake. Thresholds, units and event identity are part of the versioned model contract.
-
-## 21. Use Django sessions and a single server-owned product persona
-
-**Choice:** Django 5.2 LTS, server-side sessions, CSRF on all POSTs, and one validated Viewer/Analyst/Admin record per user. Seed accounts use environment-supplied passwords; the explicit local setup generates private random credentials. Product Admin has no Django staff/superuser privilege.
-
-**Rejected:** trusting a persona header/body field, granting implicit product access to staff, or shipping a shared hardcoded demo password.
-
-**Reason:** this fits the user's Django experience and supplies established password/session handling. The policy reloads the active user, persona, authentication hash and persisted unexpired session before access and delivery. Revocation during execution cannot be hidden by cached request identity or cached results. The CLI/local filesystem is an operator boundary, not a remote product capability.
-
-## 22. Keep user SQL deliberately small and inspect every reference
-
-**Choice:** one selected dataset; SELECT projections, predicates, arithmetic, ordering, grouping and explicit safe scalar/aggregate functions. Reject commands, writes, table functions, arbitrary functions, JOIN/CTE/subquery/UNION/window syntax, database/schema qualifiers and unknown columns. Compile using SQLGlot's DuckDB dialect, then execute only regenerated SQL.
-
-**Rejected:** first-keyword checks, regex table extraction, trusting a client-selected dataset while ignoring other references, or supporting SQL syntax without defining its full authorization behavior.
-
-**Reason:** the minimum is useful and defensible within this part. The compiler walks every table node, preserving references even when a query shape is unsupported; the web service authorizes each discovered logical name before analytical I/O. Unsupported syntax cannot smuggle detail through a permitted national dataset. Broader SQL is an optional future language expansion requiring new scope/column/permission tests.
-
-Compilation itself runs in a disposable Python process with bounded input/output, memory and a two-second subdeadline, rather than parsing untrusted text recursively inside Django. Input tokens, depth, AST size and generated SQL are also bounded. No in-process compilation or native-engine fallback exists.
-
-## 23. Use a real WASM capability boundary for the local query engine
-
-**Choice:** a disposable DuckDB-WASM process receives one checksummed Parquet buffer over stdin through a custom BUFFER-only runtime. Bootstrap preloads one pinned offline Parquet extension, then disables external access/autoload and locks configuration. Application secrets, model host paths and other datasets are absent. Windows Job Objects apply hard process memory/CPU/lifetime limits; WASM/V8 and output/deadline limits add independent bounds.
-
-**Rejected:** treating DuckDB settings or SQLGlot as a sandbox, same-user native DuckDB with full host capabilities, or declaring an unavailable Docker/WSL environment tested.
-
-**Reason:** the recorded Windows acceptance environment had neither Docker nor installed WSL. DuckDB's primary security guidance explicitly lists WASM as a sandbox option. The custom runtime was necessary because the npm package's normal Node runtime can access the host filesystem. Engine-level tests independently deny host CSV/Parquet, HTTP, COPY and ATTACH, without relying on AST rejection. [DuckDB security guidance](https://www.duckdb.org/docs/2.0/operations_manual/securing_duckdb/overview).
-
-Native DuckDB 2.0 remains trusted ingestion/modeling code; the pinned npm runtime embeds DuckDB 1.5.4. Interoperable Parquet and exact decimal/date behavior are tested. This costs another runtime and startup/whole-file-transfer overhead; a per-query 64 MiB input limit is explicit. POSIX allocation limits are implemented but not asserted live-verified here. The deployment platform must repeat acceptance before hosting.
-
-## 24. Pin navigation and private cached results to immutable generations
-
-**Choice:** signed, expiring cursors bind user/session/persona, request parameters and one model. Preview uses full-primary-key keysets. SQL returns at most 1,000 retained rows and pages within that cap. A 60-second cache includes the owner/authentication binding, canonical query, selected model and current publication generation; only eight entries per user are retained.
-
-**Rejected:** a shared SQL-string-only cache, unsigned offsets, applying permissions only when a result is first generated, or silently moving a continuation to new data.
-
-**Reason:** identical text does not imply identical authorization or source version. Permission checks precede lookup and repeat before delivery. A new publication changes the cache generation even if cleanup fails, while an explicitly pinned cursor can still read immutable history. A cache hit remains subject to admission and reauthorization.
-
-## 25. Refresh asynchronously through a durable, separately invoked worker
-
-**Choice:** Admin POST creates a database job and returns 202/status URL. A separate worker consumes it, owns the EIA environment key and calls the existing joint-publication pipeline. DB constraints enforce one queued/running refresh; owner-scoped idempotency keys deduplicate retries. Job status is visible only to its active Admin owner.
-
-**Rejected:** doing a multi-minute download inside an HTTP request, background threads that vanish with a web process, or exposing a generic shell/task endpoint.
-
-**Reason:** the real full-history rebuild takes minutes while HTTP polling stays responsive. A distinct OS worker-control lock distinguishes an active worker from an abandoned job. After process death, the next worker records interrupted work. Publication is authoritative in the data catalog: a crash after its commit but before the separate job completion may have published, so the job message explicitly requests publication review. It never falsely promises an unchanged source. No exactly-once external-source transaction is claimed.
-
-## 26. Bound admission and expose an inspectable API contract
-
-**Choice:** process-shared OS locks permit two admitted operations, one per account and eight waiting. Queue wait is capped at five seconds; compiler/startup/input/execution share eight admitted seconds. Row/output limits apply independently. Errors use Problem Details, static safe messages and server-generated request IDs; logs omit SQL, bodies, cookies, credentials and concrete filter values. OpenAPI 3.1 and health endpoints document the contract.
-
-**Rejected:** process-local counters, a LIMIT-only cost policy, unbounded queues, or passing engine exceptions and physical paths to clients.
-
-**Reason:** multiple HTTP processes must share capacity, and aggregate/sort cost is independent of returned row count. OS locks release on process death. Public liveness reveals no data; readiness requires Admin and checks local model/runtime availability. The shipped Waitress launcher binds loopback with explicit HTTP/body/connection/thread limits. It is a local backend, not an Azure deployment or an availability guarantee.
-
-## 27. Build the browser on Django templates and native modules
-
-**Choice:** protected Django HTML, a compact allowlisted set of packaged assets and native ES modules calling the existing API. Authentication, dataset policy, metrics, pagination and SQL execution remain server-owned.
-
-**Rejected:** a separate frontend framework/build service or a second analytical engine in the browser.
-
-**Reason:** the user already knows Django, and the four core browser flows do not require a second application platform. This keeps the local/wheel setup inspectable and avoids duplicating authorization or formulas. Richer product interactions can justify a framework later; adding one now would not prove better correctness or usability. Assets work with `DEBUG=False` without a development server or runtime asset build.
-
-## 28. Pin the whole workspace and explicitly adopt refreshes
-
-**Choice:** one catalog model ID pins overview, explorer and SQL. Draft changes disable incompatible continuation; sequence/version guards reject obsolete responses. Successful refresh announces a new publication; **Use latest** resets cursors/results while retaining relevant draft/filter intent.
-
-**Rejected:** silently switching active charts, tables or later pages to whatever model is current when each request arrives.
-
-**Reason:** a correct individual response can still mislead when displayed under a changed question or mixed with another generation. Explicit adoption preserves an investigation while keeping freshness visible. Browser requests serialize analytics for the server's per-user budget; bounded recoverable retries respect its busy response rather than changing limits.
-
-## 29. Scope retained query text to the actual server session
-
-**Choice:** keep at most ten query texts/statuses in `sessionStorage`, under an opaque HMAC session scope; store no result rows. Login, logout, role/session replacement and revocation retire private state. Focus/visibility/bfcache return shield content during confirmation, including escalation of an already-running background check. Unknown network outcomes keep a retry shield.
-
-**Rejected:** unscoped `localStorage`, raw session identifiers in JavaScript, assuming the same username means the same session, or claiming logout succeeded after an unknown network response.
-
-**Reason:** query text can contain sensitive filters. Server-side authorization remains primary, while the browser avoids presenting another session's retained state. The scope is additive API metadata, not a credential or authority. Already observed information cannot be remotely erased; the documented lifecycle bounds the actual behavior without promising instant revocation of every visible pixel.
-
-## 30. Preserve exact values and expose a chart alternative
-
-**Choice:** render external scalars as text; keep exact decimal/integer strings and text IDs through tables/exports. CSV includes the displayed page only, with guards for formula-like text. Plot the stored US-08 series, retain actual zero, and break the line at nulls or absent dates. Supply the same observations in a semantic table, with native keyboard controls and responsive contained scrolling.
-
-**Rejected:** converting all scalars to JavaScript numbers, interpolating result HTML, connecting missing dates as if observed, or silently exporting more rows than shown.
-
-**Reason:** large integers and decimal precision must survive presentation, missingness is analytical evidence, and keyboard/table access makes the insight useful beyond the chart. CSV import typing belongs to spreadsheet software; canonical types remain explicit in the API. These choices are tested with zero, gaps, very large numeric text, hostile-looking names and formula-shaped cells.
-
-## 31. Show real refresh states and verify the complete browser flow
-
-**Choice:** owned Admin jobs show queued/running indeterminate progress and explicit outcomes. Unknown POST outcomes reuse an idempotency key. Tests run an isolated synthetic service, real query worker and separate refresh worker, alongside a separately recorded real-data UI acceptance. Chromium has one worker and zero automatic retries; desktop/mobile axe scans complement keyboard and visual checks.
-
-**Rejected:** invented completion percentages, a browser-only fake refresh, running destructive test controls against operator state, or interpreting a clean automated scan as full accessibility certification.
-
-**Reason:** the pipeline has no truthful percentage-complete signal, and a multi-minute job must remain understandable after HTTP returns. Isolated fixtures provide repeatable failure/gap cases while real local acceptance checks integration with the published EIA data. Separate evidence records prevent synthetic results from being presented as source findings.
+**Why and trade-off:** reproducibility cannot depend on EIA uptime or one successful invocation. Real crashes test specific publication boundaries, not every disk/power failure. Encrypted off-host backup/restore tools are implemented and tested, but their storage and timers remain inactive in the current deployment. Immutable files and local migration copies do not replace an operational off-machine backup. See [recovery](../deploy/backup-restore.md) and [verification records](NOTES.md).

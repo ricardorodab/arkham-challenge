@@ -114,60 +114,111 @@ Identifiers are `VARCHAR`. A generator named `1` at one facility differs from ge
 
 Facility identities are the union of both detail routes. This preserves a generator whose facility-day parent is absent. `generator_daily` references `dim_generator`, **not** `facility_daily`: an FK to the latter would reject the coverage anomalies reconciliation must expose. National reconciliation references the date dimension and can exist without a national source row. Observed first/last dates do not assert commissioning or retirement dates.
 
-The diagram shows every declared PK/FK and omits non-key attributes for readability. The complete column reference follows below. The diagram source is [ER.mmd](ER.mmd).
+The diagram separates **directories** (which dates and identities exist), **observations** (what EIA reported), and **derived results** (the fleet metric, comparisons and review events). Read from the date and identity directories on the left toward daily records and the fleet metric. It shows all ten analytical datasets and every declared relationship, with selected fields to explain their purpose. Entity titles use plain language; the table above maps them to exact dataset names. The complete column reference follows below. [Open the full-size diagram](ER.svg) or its [editable Mermaid source](ER.mmd).
+
+Read each line as a relationship between rows. **PK** is the field or combination of fields that uniquely identifies a row; **FK** connects it to another table. `||` means exactly one, `o|` zero or one, and `o{` zero or many. For example, one facility can have many generators; one national observation can supply at most one fleet metric. Solid lines use the parent key as part of the child's identity; the dashed line connects an independently identified review event to its date. Multiple PK labels form one combined key, not separate keys. MW means megawatts. Decimal precision is defined in the column reference.
 
 ```mermaid
+---
+title: Nuclear outage data model
+config:
+  theme: base
+  fontFamily: Arial, sans-serif
+  htmlLabels: false
+  themeVariables:
+    fontFamily: Arial, sans-serif
+    fontSize: 16px
+    primaryColor: "#eaf2fb"
+    primaryTextColor: "#172b4d"
+    primaryBorderColor: "#7892b3"
+    lineColor: "#62748b"
+    secondaryColor: "#ffffff"
+    tertiaryColor: "#f7f9fc"
+    attributeBackgroundColorEven: "#f1f5fa"
+    attributeBackgroundColorOdd: "#ffffff"
+  er:
+    diagramPadding: 24
+    entityPadding: 8
+    minEntityWidth: 160
+    useMaxWidth: true
+---
 erDiagram
     direction LR
-    dim_date {
+    accTitle: Nuclear outage data model
+    accDescr: Ten analytical datasets connect daily national, facility and generator observations to date and identity directories. National observations supply the fleet metric. Comparison tables preserve agreement and missing coverage, and independently identified review events link to their dates.
+
+    %% Directory tables identify dates, facilities and generators.
+    dim_date["Observed dates"] {
         DATE period PK
     }
-    dim_facility {
+    dim_facility["Facility directory"] {
         VARCHAR facility_id PK
+        VARCHAR facility_name
     }
-    dim_generator {
+    dim_generator["Generator directory"] {
         VARCHAR facility_id PK, FK
         VARCHAR generator_id PK
     }
-    national_daily {
+
+    %% Independent observations retain each source's daily measurements.
+    national_daily["National observations"] {
         DATE period PK, FK
+        DECIMAL capacity_mw
+        DECIMAL outage_mw
     }
-    facility_daily {
+    facility_daily["Facility observations"] {
         DATE period PK, FK
         VARCHAR facility_id PK, FK
+        DECIMAL capacity_mw
+        DECIMAL outage_mw
     }
-    generator_daily {
+    generator_daily["Generator observations"] {
         DATE period PK, FK
         VARCHAR facility_id PK, FK
         VARCHAR generator_id PK, FK
+        DECIMAL capacity_mw
+        DECIMAL outage_mw
     }
-    fleet_daily {
+
+    %% Derived metrics and checks supplement the preserved observations.
+    fleet_daily["Fleet outage metric"] {
         DATE period PK, FK
+        DECIMAL offline_pct
     }
-    facility_reconciliation_daily {
+    facility_reconciliation_daily["Facility comparison"] {
         DATE period PK, FK
         VARCHAR facility_id PK, FK
+        VARCHAR coverage_status
+        VARCHAR mw_comparison_status
     }
-    national_reconciliation_daily {
+    national_reconciliation_daily["National comparison"] {
         DATE period PK, FK
+        VARCHAR coverage_status
+        VARCHAR mw_comparison_status
     }
-    data_quality_events {
+    data_quality_events["Quality review events"] {
         VARCHAR event_id PK
         DATE period FK
+        VARCHAR rule_id
     }
-    dim_facility ||--o{ dim_generator : "facility_id"
-    dim_date ||--o| national_daily : "period"
-    dim_date ||--o{ facility_daily : "period"
-    dim_facility ||--o{ facility_daily : "facility_id"
-    dim_date ||--o{ generator_daily : "period"
-    dim_generator ||--o{ generator_daily : "facility_id, generator_id"
-    dim_date ||--o| fleet_daily : "period"
-    national_daily ||--o| fleet_daily : "period"
-    dim_date ||--o{ facility_reconciliation_daily : "period"
-    dim_facility ||--o{ facility_reconciliation_daily : "facility_id"
-    dim_date ||--o| national_reconciliation_daily : "period"
-    dim_date ||..o{ data_quality_events : "period"
+
+    dim_facility ||--o{ dim_generator : "identifies"
+    dim_facility ||--o{ facility_daily : "identifies"
+    dim_generator ||--o{ generator_daily : "identifies"
+    dim_facility ||--o{ facility_reconciliation_daily : "identifies"
+
+    dim_date ||--o| national_daily : "on date"
+    dim_date ||--o{ facility_daily : "on date"
+    dim_date ||--o{ generator_daily : "on date"
+    dim_date ||--o| fleet_daily : "on date"
+    dim_date ||--o{ facility_reconciliation_daily : "on date"
+    dim_date ||--o| national_reconciliation_daily : "on date"
+    dim_date ||..o{ data_quality_events : "on date"
+
+    national_daily ||--o| fleet_daily : "provides inputs"
 ```
+
+A comparison table checks agreement; its lines do not mean that missing source observations are discarded. Quality events link to the date directory; their optional facility/generator identifiers are context, not declared foreign keys. The operational databases for accounts, sessions and publication tracking are outside this analytical model.
 
 Before publication, primary keys are checked for uniqueness and non-null values, and each declared FK is checked with an anti-join. These are executable model constraints; standalone Parquet files do not enforce relational constraints. Catalog metadata exposes the same keys to consumers.
 
